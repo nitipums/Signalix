@@ -1,0 +1,59 @@
+# Cloud Scheduler job definitions for Signalix
+# Deploy with: gcloud scheduler jobs create http <name> --flags...
+#
+# All times are in Asia/Bangkok timezone (ICT, UTC+7)
+# Cloud Scheduler cron uses UTC — ICT = UTC+7
+# 10:30 ICT = 03:30 UTC → "30 3 * * 1-5"  (Mon–Fri)
+# 12:00 ICT = 05:00 UTC → "0 5 * * 1-5"
+# 15:15 ICT = 08:15 UTC → "15 8 * * 1-5"
+# 16:30 ICT = 09:30 UTC → "30 9 * * 1-5"
+
+jobs:
+
+  - name: signalix-morning-scan
+    description: "10:30 ICT — Morning breakout scan"
+    schedule: "30 3 * * 1-5"
+    timeZone: "Asia/Bangkok"
+    httpTarget:
+      uri: "${CLOUD_RUN_URL}/scan"
+      httpMethod: POST
+      headers:
+        Content-Type: application/json
+        X-Scan-Secret: "${SCAN_SECRET}"
+      body: '{"scan_type": "breakout", "broadcast": true}'
+
+  - name: signalix-midday-breadth
+    description: "12:00 ICT — Midday market breadth"
+    schedule: "0 5 * * 1-5"
+    timeZone: "Asia/Bangkok"
+    httpTarget:
+      uri: "${CLOUD_RUN_URL}/scan"
+      httpMethod: POST
+      headers:
+        Content-Type: application/json
+        X-Scan-Secret: "${SCAN_SECRET}"
+      body: '{"scan_type": "breadth", "broadcast": true}'
+
+  - name: signalix-preclose-scan
+    description: "15:15 ICT — Pre-close strong signals"
+    schedule: "15 8 * * 1-5"
+    timeZone: "Asia/Bangkok"
+    httpTarget:
+      uri: "${CLOUD_RUN_URL}/scan"
+      httpMethod: POST
+      headers:
+        Content-Type: application/json
+        X-Scan-Secret: "${SCAN_SECRET}"
+      body: '{"scan_type": "vcp", "broadcast": true}'
+
+  - name: signalix-postclose-report
+    description: "16:30 ICT — Post-close full report"
+    schedule: "30 9 * * 1-5"
+    timeZone: "Asia/Bangkok"
+    httpTarget:
+      uri: "${CLOUD_RUN_URL}/scan"
+      httpMethod: POST
+      headers:
+        Content-Type: application/json
+        X-Scan-Secret: "${SCAN_SECRET}"
+      body: '{"scan_type": "full", "broadcast": true}'
