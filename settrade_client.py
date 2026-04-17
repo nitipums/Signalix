@@ -117,5 +117,30 @@ def get_stock_list_from_api() -> list[dict]:
         return []
 
 
+def get_quote(symbol: str) -> Optional[dict]:
+    """Fetch real-time quote for a symbol using get_quote_symbol."""
+    try:
+        investor = _get_investor()
+        if not investor:
+            return None
+        market = investor.MarketData()
+        q = market.get_quote_symbol(symbol)
+        if not q:
+            return None
+        return {
+            "symbol":      q.get("symbol", symbol),
+            "last":        q.get("last") or 0,
+            "change":      q.get("change") or 0,
+            "change_pct":  q.get("percentChange") or 0,
+            "volume":      q.get("totalVolume") or 0,
+            "high":        q.get("high") or 0,
+            "low":         q.get("low") or 0,
+            "status":      q.get("marketStatus", ""),
+        }
+    except Exception as exc:
+        logger.error("get_quote(%s) failed: %s", symbol, exc)
+        return None
+
+
 def get_all_symbols_from_api() -> list[str]:
     return [s["symbol"] for s in get_stock_list_from_api() if s.get("symbol")]
