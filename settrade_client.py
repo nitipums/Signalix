@@ -1,107 +1,82 @@
 """
-settrade_client.py — SET Trade Open API client.
+settrade_client.py — SET Trade Open API client using official SDK.
 
-Credentials required (store in Secret Manager / .env):
+Uses: settrade-open-api Python SDK
+Docs: https://settrade-open-api.readthedocs.io
+
+Credentials (stored in Secret Manager):
   SETTRADE_APP_ID, SETTRADE_APP_SECRET, SETTRADE_BROKER_ID, SETTRADE_APP_CODE
-
-Provides:
-  - get_stock_list()       → all SET/MAI listed symbols
-  - get_ohlcv()            → historical OHLCV (daily)
-  - get_quote()            → real-time quote
-  - get_sector_list()      → sector classification
 """
 
 import logging
-import time
+from functools import lru_cache
 from typing import Optional
 
-import httpx
 import pandas as pd
 
 from config import get_settings
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://openapi.settrade.com"
 
-_token_cache: dict = {"access_token": None, "expires_at": 0}
-
-
-# ─── Authentication ───────────────────────────────────────────────────────────
-
-def _get_token() -> Optional[str]:
-    """Get a valid access token, refreshing if expired."""
-    now = time.time()
-    if _token_cache["access_token"] and _token_cache["expires_at"] > now + 60:
-        return _token_cache["access_token"]
-
+@lru_cache(maxsize=1)
+def _get_investor():
+    """Return a cached Settrade Investor instance."""
     settings = get_settings()
-    if not settings.settrade_app_id or not settings.settrade_app_secret:
-        logger.warning("SET Trade API credentials not configured")
+    if not all([
+        settings.settrade_app_id,
+        settings.settrade_app_secret,
+        settings.settrade_broker_id,
+        settings.settrade_app_code,
+    ]):
+        logger.warning("SET Trade API credentials not fully configured")
         return None
-
     try:
-        resp = httpx.post(
-            f"{BASE_URL}/api/RTS/1.0/Token/getToken",
-            json={
-                "appId": settings.settrade_app_id,
-                "appSecret": settings.settrade_app_secret,
-                "appCode": settings.settrade_app_code,
-                "brokerId": settings.settrade_broker_id,
-            },
-            timeout=10,
+        from settrade_open_api import Investor
+        investor = Investor(
+            app_id=settings.settrade_app_id,
+            app_secret=settings.settrade_app_secret,
+            broker_id=settings.settrade_broker_id,
+            app_code=settings.settrade_app_code,
         )
-        resp.raise_for_status()
-        data = resp.json()
-
-        token = data.get("access_token") or data.get("accessToken")
-        expires_in = int(data.get("expires_in", 1800))
-
-        if token:
-            _token_cache["access_token"] = token
-            _token_cache["expires_at"] = now + expires_in
-            logger.info("SET Trade API token refreshed (expires in %ds)", expires_in)
-            return token
-        else:
-            logger.error("No token in response: %s", data)
-            return None
-
+        logger.info("SET Trade API client initialised")
+        return investor
     except Exception as exc:
-        logger.error("Failed to get SET Trade API token: %s", exc)
+        logger.error("Failed to init SET Trade API client: %s", exc)
         return None
 
 
-def _headers() -> dict:
-    token = _get_token()
-    if not token:
-        return {}
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+def is_api_available() -> bool:
+    """Return True if Settrade API is configured and reachable."""
+    try:
+        investor = _get_investor()
+        if investor is None:
+            return False
+        # Light ping — get market data client
+        investor.MarketData()
+        return True
+    except Exception as exc:
+        logger.warning("SET Trade API not available: %s", exc)
+        return False
 
-
-# ─── Stock list ───────────────────────────────────────────────────────────────
 
 def get_stock_list_from_api() -> list[dict]:
     """
-    Fetch all listed securities from SET Trade API.
+    Fetch all SET-listed securities via SDK.
 
-    Returns list of dicts with keys: symbol, nameTH, nameEN, sector, market
-    Falls back to empty list on failure.
+    Returns list of dicts: {symbol, name_th, name_en, sector, market}
     """
     try:
-        resp = httpx.get(
-            f"{BASE_URL}/api/RTS/1.0/Market/SecurityList",
-            headers=_headers(),
-            params={"securityType": "S", "market": "SET"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        securities = data.get("securityList") or data.get("data") or data
+        investor = _get_investor()
+        if not investor:
+            return []
+        md = investor.MarketData()
+        securities = md.get_security_list(market="SET")
 
         result = []
         for s in securities:
             result.append({
-                "symbol": s.get("symbol") or s.get("securityId", ""),
+                "symbol": s.get("symbol", ""),
                 "name_th": s.get("nameTH") or s.get("securityNameTH", ""),
                 "name_en": s.get("nameEN") or s.get("securityNameEN", ""),
                 "sector": s.get("industryName") or s.get("sector", ""),
@@ -109,62 +84,64 @@ def get_stock_list_from_api() -> list[dict]:
             })
         logger.info("Fetched %d securities from SET Trade API", len(result))
         return result
-
     except Exception as exc:
-        logger.error("Failed to fetch stock list: %s", exc)
+        logger.error("get_stock_list_from_api failed: %s", exc)
         return []
 
 
-# ─── Historical OHLCV ─────────────────────────────────────────────────────────
-
 def get_ohlcv(symbol: str, period: str = "1Y") -> Optional[pd.DataFrame]:
     """
-    Fetch historical daily OHLCV from SET Trade API.
+    Fetch historical daily OHLCV via SDK.
 
     Args:
-        symbol: SET ticker, e.g. "PTT"
+        symbol: SET ticker e.g. "PTT"
         period: "1M" | "3M" | "6M" | "1Y" | "3Y" | "5Y"
-
-    Returns DataFrame with [Open, High, Low, Close, Volume] indexed by Date.
     """
     try:
-        resp = httpx.get(
-            f"{BASE_URL}/api/RTS/1.0/Market/SecurityDailyInfo",
-            headers=_headers(),
-            params={"symbol": symbol, "period": period},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        rows = data.get("dailyList") or data.get("data") or []
+        investor = _get_investor()
+        if not investor:
+            return None
+        md = investor.MarketData()
 
-        if not rows:
+        # Map period to limit (trading days)
+        limit_map = {"1M": 30, "3M": 90, "6M": 180, "1Y": 365, "3Y": 1095, "5Y": 1825}
+        limit = limit_map.get(period, 365)
+
+        candles = md.get_candlestick(
+            symbol=symbol,
+            limit=limit,
+            timeframe="1D",
+        )
+        if not candles:
             return None
 
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(candles)
 
-        # Normalise column names — API may use different casing
-        col_map = {}
+        # Normalise column names
+        rename = {}
         for col in df.columns:
-            lower = col.lower()
-            if "date" in lower:
-                col_map[col] = "Date"
-            elif lower in ("open", "o"):
-                col_map[col] = "Open"
-            elif lower in ("high", "h"):
-                col_map[col] = "High"
-            elif lower in ("low", "l"):
-                col_map[col] = "Low"
-            elif lower in ("close", "c", "last", "prior"):
-                col_map[col] = "Close"
-            elif "vol" in lower:
-                col_map[col] = "Volume"
-        df = df.rename(columns=col_map)
+            low = col.lower()
+            if low in ("time", "date", "datetime", "t"):
+                rename[col] = "Date"
+            elif low in ("open", "o"):
+                rename[col] = "Open"
+            elif low in ("high", "h"):
+                rename[col] = "High"
+            elif low in ("low", "l"):
+                rename[col] = "Low"
+            elif low in ("close", "c"):
+                rename[col] = "Close"
+            elif "vol" in low:
+                rename[col] = "Volume"
+        df = df.rename(columns=rename)
 
         if "Date" not in df.columns:
+            logger.warning("No date column in candlestick response for %s", symbol)
             return None
 
-        df["Date"] = pd.to_datetime(df["Date"])
+        df["Date"] = pd.to_datetime(df["Date"], unit="ms", errors="coerce").fillna(
+            pd.to_datetime(df["Date"], errors="coerce")
+        )
         df = df.set_index("Date").sort_index()
 
         for col in ["Open", "High", "Low", "Close", "Volume"]:
@@ -175,29 +152,20 @@ def get_ohlcv(symbol: str, period: str = "1Y") -> Optional[pd.DataFrame]:
         return df
 
     except Exception as exc:
-        logger.error("Failed to fetch OHLCV for %s: %s", symbol, exc)
+        logger.error("get_ohlcv(%s) failed: %s", symbol, exc)
         return None
 
 
-# ─── Real-time quote ──────────────────────────────────────────────────────────
-
 def get_quote(symbol: str) -> Optional[dict]:
-    """
-    Fetch real-time quote for a single symbol.
-
-    Returns dict with: symbol, last, change, change_pct, volume, bid, ask
-    """
+    """Fetch real-time quote for a symbol."""
     try:
-        resp = httpx.get(
-            f"{BASE_URL}/api/RTS/1.0/Market/SecurityQuote",
-            headers=_headers(),
-            params={"symbol": symbol},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        q = data.get("quote") or data.get("data") or data
-
+        investor = _get_investor()
+        if not investor:
+            return None
+        md = investor.MarketData()
+        q = md.get_quote_symbol(symbol=symbol)
+        if not q:
+            return None
         return {
             "symbol": symbol,
             "last": float(q.get("last") or q.get("close") or 0),
@@ -207,32 +175,12 @@ def get_quote(symbol: str) -> Optional[dict]:
             "bid": float(q.get("bid") or 0),
             "ask": float(q.get("offer") or q.get("ask") or 0),
         }
-
     except Exception as exc:
-        logger.error("Failed to fetch quote for %s: %s", symbol, exc)
+        logger.error("get_quote(%s) failed: %s", symbol, exc)
         return None
 
 
-# ─── Sector list ─────────────────────────────────────────────────────────────
-
-def get_sector_list() -> list[dict]:
-    """Fetch all SET sectors/industries."""
-    try:
-        resp = httpx.get(
-            f"{BASE_URL}/api/RTS/1.0/Market/SectorList",
-            headers=_headers(),
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("sectorList") or data.get("data") or []
-    except Exception as exc:
-        logger.error("Failed to fetch sector list: %s", exc)
-        return []
-
-
-# ─── Health check ─────────────────────────────────────────────────────────────
-
-def is_api_available() -> bool:
-    """Check if SET Trade API is reachable and credentials are valid."""
-    return _get_token() is not None
+def get_all_symbols_from_api() -> list[str]:
+    """Return just the symbol strings for all SET-listed stocks."""
+    stocks = get_stock_list_from_api()
+    return [s["symbol"] for s in stocks if s.get("symbol")]
