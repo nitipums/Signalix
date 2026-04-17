@@ -90,7 +90,43 @@ async def health():
         "status": "ok",
         "time": datetime.now(BANGKOK_TZ).isoformat(),
         "firestore": FIRESTORE_AVAILABLE,
+        "cached_stocks": len(_last_signals),
     }
+
+
+@app.get("/test/settrade")
+async def test_settrade():
+    """Test SET Trade API connectivity and return sample data."""
+    from settrade_client import is_api_available, get_stock_list_from_api, get_ohlcv, get_quote
+
+    result: dict = {"api_available": False, "stock_count": 0, "sample_stocks": [], "sample_ohlcv": None, "sample_quote": None}
+
+    result["api_available"] = is_api_available()
+    if not result["api_available"]:
+        result["error"] = "Cannot get access token — check SETTRADE_APP_ID / APP_SECRET credentials"
+        return result
+
+    # Stock list
+    stocks = get_stock_list_from_api()
+    result["stock_count"] = len(stocks)
+    result["sample_stocks"] = stocks[:5]
+
+    # OHLCV for PTT
+    df = get_ohlcv("PTT", period="1M")
+    if df is not None:
+        result["sample_ohlcv"] = {
+            "symbol": "PTT",
+            "rows": len(df),
+            "latest_date": str(df.index[-1].date()),
+            "latest_close": round(float(df["Close"].iloc[-1]), 2),
+        }
+
+    # Real-time quote for PTT
+    quote = get_quote("PTT")
+    if quote:
+        result["sample_quote"] = quote
+
+    return result
 
 
 # ─── Scan endpoint (Cloud Scheduler → POST /scan) ────────────────────────────
