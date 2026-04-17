@@ -21,33 +21,80 @@ BANGKOK_TZ = pytz.timezone("Asia/Bangkok")
 # Major SET stocks covering key sectors + all SET indexes.
 # Expand this list or replace with a live fetch from SET Trade API.
 SET_STOCKS = [
-    # Energy
-    "PTT", "PTTEP", "TOP", "IRPC", "SPRC", "BCP",
+    # Energy & Petrochemical
+    "PTT", "PTTEP", "TOP", "IRPC", "SPRC", "BCP", "ESSO", "PTTGC",
     # Banking & Finance
-    "BBL", "KBANK", "SCB", "KTB", "TMB", "BAY", "TISCO", "KKP", "TCAP",
+    "BBL", "KBANK", "SCB", "KTB", "BAY", "TISCO", "KKP", "TCAP",
+    "AEONTS", "MTC", "SAWAD", "TIDLOR",
+    # Insurance
+    "BLA", "THRE", "TQM",
     # Telecom & Tech
-    "ADVANC", "DTAC", "TRUE", "INTUCH",
+    "ADVANC", "TRUE", "INTUCH", "DTAC", "JMART", "JMT",
     # Property & Construction
-    "LH", "QH", "SIRI", "AP", "PSH", "SC", "ORI", "SPALI", "CPN", "AMATA",
+    "LH", "QH", "SIRI", "AP", "PSH", "SC", "ORI", "SPALI",
+    "CPN", "AMATA", "WHA", "LALIN", "NOBLE", "ANAN",
     # Commerce & Retail
-    "CPALL", "BJC", "MAKRO", "ROBINS", "HMPRO",
+    "CPALL", "BJC", "MAKRO", "ROBINS", "HMPRO", "COM7", "SINGER",
     # Food & Beverage
-    "CPF", "TU", "OSP", "CBG",
-    # Healthcare
-    "BDMS", "BH", "BCH", "CHG",
-    # Industrial & Transport
+    "CPF", "TU", "OSP", "CBG", "OISHI", "ICHI", "SNP",
+    # Healthcare & Pharma
+    "BDMS", "BH", "BCH", "CHG", "PR9", "RJH", "VIH",
+    # Industrial & Materials
     "DELTA", "HANA", "KCE", "SCC", "SCCC", "PYLON",
-    # Tourism & Aviation
-    "AOT", "THAI", "AAV", "MINT",
-    # Utilities
-    "GULF", "GPSC", "RATCH", "BGRIM", "EGCO",
+    "STEC", "ITD", "CK", "TPIPL",
+    # Tourism, Hotel & Aviation
+    "AOT", "THAI", "AAV", "MINT", "ERW", "CENTEL", "AWC",
+    # Utilities & Power
+    "GULF", "GPSC", "RATCH", "BGRIM", "EGCO", "EA", "BCPG",
+    "SUPER", "SPCG",
     # Media & Entertainment
-    "BEC", "WORK", "PLANB",
+    "BEC", "WORK", "PLANB", "MAJOR", "VGI",
     # Agriculture
-    "GFPT", "NMG",
+    "GFPT", "NMG", "TFG",
+    # Logistics
+    "WICE", "LEO", "SONIC",
+    # Electronics & Auto
+    "STANLY", "SAT", "AH",
 ]
 
+# Alias map — common brand names → actual SET ticker
+SYMBOL_ALIASES: dict[str, str] = {
+    "SCG": "SCC",          # Siam Cement Group brand → SCC ticker
+    "SIAM CEMENT": "SCC",
+    "KASIKORN": "KBANK",
+    "KASIKORNBANK": "KBANK",
+    "KRUNGTHAI": "KTB",
+    "BANGKOK BANK": "BBL",
+    "SCB": "SCB",
+    "KRUNGSRI": "BAY",
+    "CENTRAL PATTANA": "CPN",
+    "CENTRAL RETAIL": "CRC",
+    "THAI UNION": "TU",
+    "CHAROEN POKPHAND": "CPF",
+    "TRUE CORP": "TRUE",
+    "AIS": "ADVANC",
+    "PTG": "PTG",
+}
+
 SET_INDEXES = ["^SET.BK"]  # SET Index
+
+_STOCK_SET = set(SET_STOCKS)
+
+
+def resolve_symbol(text: str) -> Optional[str]:
+    """
+    Resolve user input to a valid SET symbol.
+    Handles aliases (SCG→SCC), case, and whitespace.
+    Returns the symbol string or None if not found.
+    """
+    upper = text.upper().strip().replace("SET:", "")
+    if upper in _STOCK_SET:
+        return upper
+    alias = SYMBOL_ALIASES.get(upper)
+    if alias and alias in _STOCK_SET:
+        return alias
+    return None
+
 
 # Map clean symbol → yfinance ticker
 def _to_yf_ticker(symbol: str) -> str:

@@ -28,7 +28,7 @@ from analyzer import (
     scan_stock,
 )
 from config import get_settings
-from data import fetch_ohlcv, get_stock_list, tradingview_url
+from data import fetch_ohlcv, get_stock_list, resolve_symbol, tradingview_url
 from notifier import (
     broadcast_flex,
     build_help_card,
@@ -59,6 +59,27 @@ app = FastAPI(title="Signalix", version="1.0.0")
 # In-memory cache of last scan results (refreshed on each /scan call)
 _last_signals: list[StockSignal] = []
 _last_breadth: Optional[MarketBreadth] = None
+
+
+@app.on_event("startup")
+async def startup_scan():
+    """Run a background scan on startup so cache is warm immediately."""
+    import asyncio
+    asyncio.create_task(_background_scan())
+
+
+async def _background_scan():
+    import asyncio
+    await asyncio.sleep(5)  # let server finish booting first
+    global _last_signals, _last_breadth
+    try:
+        logger.info("Running startup scan...")
+        signals = run_full_scan()
+        _last_signals = signals
+        _last_breadth = compute_market_breadth(signals)
+        logger.info("Startup scan complete: %d stocks", len(signals))
+    except Exception as exc:
+        logger.error("Startup scan failed: %s", exc)
 
 
 # ─── Health ────────────────────────────────────────────────────────────────────
@@ -287,13 +308,13 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
 
     # ── Single stock lookup ──
     else:
-        symbol = text.upper().strip().replace("SET:", "")
-        if symbol in get_stock_list():
+        symbol = resolve_symbol(text)
+        if symbol:
             _reply_single_stock(reply_token, symbol)
         else:
             reply_text(
                 reply_token,
-                f'ไม่พบหุ้น "{text}"\nลองพิมพ์ help เพื่อดูคำสั่งทั้งหมด',
+                f'ไม่พบหุ้น "{text.upper()}"\n\nเช็คชื่อ ticker ที่ถูกต้อง เช่น:\n• SCC (ไม่ใช่ SCG)\n• ADVANC (ไม่ใช่ AIS)\n\nพิมพ์ help เพื่อดูคำสั่งทั้งหมดครับ',
             )
 
 
