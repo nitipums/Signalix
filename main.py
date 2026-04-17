@@ -581,7 +581,6 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str) 
 
 def _reply_single_stock(reply_token: str, symbol: str) -> None:
     # Always fetch fresh data (Settrade API → yfinance fallback)
-    reply_text(reply_token, f"กำลังวิเคราะห์ {symbol}...")
     df = fetch_ohlcv(symbol)
     if df is None:
         reply_text(reply_token, f"ไม่พบข้อมูล {symbol}")
