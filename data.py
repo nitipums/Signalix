@@ -117,16 +117,24 @@ def get_all_symbols() -> list[str]:
 
 def fetch_ohlcv(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
     """
-    Fetch OHLCV data for a single symbol.
-
-    Args:
-        symbol: Clean SET symbol, e.g. "PTT" or "SET" (for index)
-        period: yfinance period string, e.g. "1y", "2y", "5y"
-
-    Returns:
-        DataFrame with columns [Open, High, Low, Close, Volume, Adj Close]
-        indexed by Date (timezone-naive), or None on failure.
+    Fetch OHLCV for a single symbol.
+    Tries SET Trade API first, falls back to yfinance.
     """
+    # ── Primary: SET Trade Open API ──
+    try:
+        from settrade_client import get_ohlcv, is_api_available
+        if is_api_available():
+            # Map period: yfinance "1y" → settrade "1Y"
+            period_map = {"1y": "1Y", "2y": "3Y", "5y": "5Y", "6mo": "6M", "3mo": "3M"}
+            st_period = period_map.get(period, "1Y")
+            df = get_ohlcv(symbol, period=st_period)
+            if df is not None and not df.empty:
+                logger.debug("Fetched %s from SET Trade API (%d rows)", symbol, len(df))
+                return df
+    except Exception as exc:
+        logger.debug("SET Trade API failed for %s, falling back: %s", symbol, exc)
+
+    # ── Fallback: yfinance ──
     ticker = "^SET.BK" if symbol == "SET" else _to_yf_ticker(symbol)
     try:
         df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
@@ -135,13 +143,12 @@ def fetch_ohlcv(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
             return None
         df.index = pd.to_datetime(df.index).tz_localize(None)
         df.index.name = "Date"
-        # Flatten multi-level columns if present
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df.columns = [c.replace(" ", "_") for c in df.columns]
         return df
     except Exception as exc:
-        logger.error("Failed to fetch %s: %s", ticker, exc)
+        logger.error("yfinance also failed for %s: %s", ticker, exc)
         return None
 
 

@@ -10,9 +10,11 @@ class Settings(BaseSettings):
     line_channel_access_token: str = ""
     line_channel_secret: str = ""
 
-    # SET Trade Open API (future)
-    settrade_api_key: str = ""
-    settrade_api_secret: str = ""
+    # SET Trade Open API
+    settrade_app_id: str = ""
+    settrade_app_secret: str = ""
+    settrade_broker_id: str = ""
+    settrade_app_code: str = ""
 
     # Internal security — Cloud Scheduler passes this header to /scan
     scan_secret: str = "dev-secret"

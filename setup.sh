@@ -32,6 +32,10 @@ fi
 LINE_TOKEN=$(grep 'LINE_CHANNEL_ACCESS_TOKEN' env.yaml | sed 's/.*: *//' | tr -d '"')
 LINE_SECRET=$(grep 'LINE_CHANNEL_SECRET' env.yaml | sed 's/.*: *//' | tr -d '"')
 SCAN_SECRET=$(grep 'SCAN_SECRET' env.yaml | sed 's/.*: *//' | tr -d '"')
+SETTRADE_APP_ID=$(grep 'SETTRADE_APP_ID' env.yaml | sed 's/.*: *//' | tr -d '"')
+SETTRADE_APP_SECRET=$(grep 'SETTRADE_APP_SECRET' env.yaml | sed 's/.*: *//' | tr -d '"')
+SETTRADE_BROKER_ID=$(grep 'SETTRADE_BROKER_ID' env.yaml | sed 's/.*: *//' | tr -d '"')
+SETTRADE_APP_CODE=$(grep 'SETTRADE_APP_CODE' env.yaml | sed 's/.*: *//' | tr -d '"')
 
 # ── 1. Enable APIs ────────────────────────────────────────────────────────────
 echo ""
@@ -61,6 +65,10 @@ store_secret() {
 store_secret "LINE_CHANNEL_ACCESS_TOKEN" "$LINE_TOKEN"
 store_secret "LINE_CHANNEL_SECRET" "$LINE_SECRET"
 store_secret "SCAN_SECRET" "$SCAN_SECRET"
+[ -n "$SETTRADE_APP_ID" ]     && store_secret "SETTRADE_APP_ID"     "$SETTRADE_APP_ID"
+[ -n "$SETTRADE_APP_SECRET" ] && store_secret "SETTRADE_APP_SECRET" "$SETTRADE_APP_SECRET"
+[ -n "$SETTRADE_BROKER_ID" ]  && store_secret "SETTRADE_BROKER_ID"  "$SETTRADE_BROKER_ID"
+[ -n "$SETTRADE_APP_CODE" ]   && store_secret "SETTRADE_APP_CODE"   "$SETTRADE_APP_CODE"
 
 # ── 3. Grant Cloud Build access to secrets ────────────────────────────────────
 echo ""
