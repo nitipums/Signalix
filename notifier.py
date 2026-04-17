@@ -26,8 +26,9 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.messaging.models import FlexBubble  # noqa: F401 (used via dict below)
 
-from analyzer import MarketBreadth, StockSignal
+from analyzer import MarketBreadth, SectorSummary, StockSignal
 from config import get_settings
+from data import INDEX_TV_URLS
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +82,29 @@ def _pct_color(pct: float) -> str:
 
 def build_market_breadth_card(breadth: MarketBreadth) -> dict:
     """Build a Flex Bubble card for market breadth summary."""
-    adv_ratio = (
-        f"{breadth.advancing}/{breadth.declining}"
-        if breadth.total_stocks > 0
-        else "N/A"
-    )
+    chg_color = _pct_color(getattr(breadth, "set_index_change_pct", 0.0))
+    chg_sign = "+" if getattr(breadth, "set_index_change_pct", 0.0) > 0 else ""
+    set_close = getattr(breadth, "set_index_close", 0.0)
+    set_chg = getattr(breadth, "set_index_change_pct", 0.0)
+    above_pct = getattr(breadth, "above_ma200_pct", 0.0)
+    below_pct = round(100 - above_pct, 1)
+    above_cnt = getattr(breadth, "above_ma200", 0)
+    below_cnt = getattr(breadth, "below_ma200", 0)
+
+    index_row = []
+    if set_close > 0:
+        index_row = [
+            {
+                "type": "box",
+                "layout": "horizontal",
+                "contents": [
+                    _kv_box("SET Index", f"{set_close:,.2f}", "#FFFFFF"),
+                    _kv_box("เปลี่ยนแปลง", f"{chg_sign}{set_chg:.2f}%", chg_color),
+                ],
+            },
+            {"type": "separator"},
+        ]
+
     return {
         "type": "bubble",
         "size": "mega",
@@ -115,6 +134,8 @@ def build_market_breadth_card(breadth: MarketBreadth) -> dict:
             "layout": "vertical",
             "spacing": "md",
             "contents": [
+                # SET index level (shown only when data available)
+                *index_row,
                 # Stage distribution
                 {
                     "type": "box",
@@ -138,6 +159,16 @@ def build_market_breadth_card(breadth: MarketBreadth) -> dict:
                     ],
                 },
                 {"type": "separator"},
+                # MA200 above/below
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        _kv_box("เหนือ MA200", f"{above_pct:.0f}%\n({above_cnt})", "#27AE60"),
+                        _kv_box("ต่ำกว่า MA200", f"{below_pct:.0f}%\n({below_cnt})", "#E74C3C"),
+                    ],
+                },
+                {"type": "separator"},
                 # Patterns
                 {
                     "type": "box",
@@ -157,6 +188,19 @@ def build_market_breadth_card(breadth: MarketBreadth) -> dict:
                 },
             ],
             "paddingAll": "16px",
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {
+                    "type": "button",
+                    "action": {"type": "message", "label": "ⓘ Stage คืออะไร?", "text": "explain stage"},
+                    "style": "secondary",
+                    "height": "sm",
+                },
+            ],
+            "paddingAll": "8px",
         },
     }
 
@@ -415,6 +459,7 @@ def build_single_stock_card(signal: StockSignal) -> dict:
         "footer": {
             "type": "box",
             "layout": "vertical",
+            "spacing": "sm",
             "contents": [
                 {
                     "type": "button",
@@ -425,6 +470,34 @@ def build_single_stock_card(signal: StockSignal) -> dict:
                     },
                     "style": "primary",
                     "color": "#1565C0",
+                },
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "spacing": "sm",
+                    "contents": [
+                        {
+                            "type": "button",
+                            "action": {"type": "message", "label": f"ⓘ {STAGE_LABEL.get(signal.stage, 'Stage')}", "text": f"explain stage{signal.stage}"},
+                            "style": "secondary",
+                            "height": "sm",
+                            "flex": 1,
+                        },
+                        {
+                            "type": "button",
+                            "action": {"type": "message", "label": f"ⓘ {PATTERN_LABEL.get(signal.pattern, signal.pattern)}", "text": f"explain {signal.pattern}"},
+                            "style": "secondary",
+                            "height": "sm",
+                            "flex": 1,
+                        },
+                        {
+                            "type": "button",
+                            "action": {"type": "message", "label": "ⓘ Score", "text": "explain score"},
+                            "style": "secondary",
+                            "height": "sm",
+                            "flex": 1,
+                        },
+                    ],
                 },
             ],
             "paddingAll": "12px",
@@ -450,6 +523,204 @@ def build_stock_list_carousel(signals: list[StockSignal], title: str = "หุ�
     return {
         "type": "carousel",
         "contents": bubbles,
+    }
+
+
+def build_compact_stock_bubble(signal: StockSignal) -> dict:
+    """Compact notification bubble — minimal info, tap to get full analysis."""
+    pcolor = PATTERN_COLOR.get(signal.pattern, "#7F8C8D")
+    pattern_label = PATTERN_LABEL.get(signal.pattern, signal.pattern)
+    stage_color = STAGE_COLOR.get(signal.stage, "#95A5A6")
+    chg_color = _pct_color(signal.change_pct)
+    chg_sign = "+" if signal.change_pct > 0 else ""
+
+    return {
+        "type": "bubble",
+        "size": "nano",
+        "header": {
+            "type": "box",
+            "layout": "horizontal",
+            "contents": [
+                {"type": "text", "text": signal.symbol, "weight": "bold", "size": "sm", "color": "#FFFFFF", "flex": 1},
+                {"type": "text", "text": f"S{signal.stage}", "size": "xxs", "color": stage_color, "align": "end", "weight": "bold"},
+            ],
+            "backgroundColor": "#1A1A2E",
+            "paddingAll": "8px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "xs",
+            "contents": [
+                {"type": "text", "text": pattern_label, "size": "xxs", "color": pcolor, "weight": "bold"},
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        {"type": "text", "text": f"฿{signal.close:,.2f}", "size": "xs", "weight": "bold", "flex": 1},
+                        {"type": "text", "text": f"{chg_sign}{signal.change_pct:.1f}%", "size": "xxs", "color": chg_color, "align": "end"},
+                    ],
+                },
+            ],
+            "paddingAll": "8px",
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {
+                    "type": "button",
+                    "action": {"type": "message", "label": "วิเคราะห์", "text": signal.symbol},
+                    "style": "primary",
+                    "color": "#1565C0",
+                    "height": "sm",
+                },
+            ],
+            "paddingAll": "4px",
+        },
+    }
+
+
+def build_compact_stock_carousel(signals: list[StockSignal], title: str = "หุ้นเด่น") -> dict:
+    """Compact carousel for broadcast notifications (max 10 nano bubbles)."""
+    bubbles = [build_compact_stock_bubble(s) for s in signals[:10]]
+    return {"type": "carousel", "contents": bubbles}
+
+
+def build_remaining_symbols_text(signals: list[StockSignal], title: str) -> str:
+    """Build plain-text list of all symbols (beyond first 10) for overflow display."""
+    remaining = signals[10:]
+    if not remaining:
+        return ""
+    lines = [f"📋 {title} ทั้งหมด {len(signals)} หุ้น (แสดง 10 แรก)", "—" * 20]
+    for i in range(0, len(remaining), 5):
+        lines.append("  ".join(s.symbol for s in remaining[i:i + 5]))
+    lines.append("\nพิมพ์ชื่อหุ้นเพื่อดูรายละเอียด")
+    return "\n".join(lines)
+
+
+def build_index_carousel(indexes: dict[str, dict]) -> dict:
+    """Build a carousel of index bubbles (SET, SET50, SET100, MAI, sSET)."""
+    INDEX_COLORS = {
+        "SET": "#1A237E", "SET50": "#0D47A1", "SET100": "#1565C0",
+        "MAI": "#4A148C", "sSET": "#006064",
+    }
+    bubbles = []
+    for name, data in indexes.items():
+        close = data.get("close", 0.0)
+        chg = data.get("change_pct", 0.0)
+        chg_sign = "+" if chg > 0 else ""
+        chg_color = _pct_color(chg)
+        tv_url = INDEX_TV_URLS.get(name, "https://www.tradingview.com")
+        bg = INDEX_COLORS.get(name, "#1A237E")
+        bubbles.append({
+            "type": "bubble",
+            "size": "kilo",
+            "header": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": name, "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+                ],
+                "backgroundColor": bg,
+                "paddingAll": "12px",
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "sm",
+                "contents": [
+                    {"type": "text", "text": f"{close:,.2f}", "weight": "bold", "size": "xl"},
+                    {"type": "text", "text": f"{chg_sign}{chg:.2f}%", "size": "md", "color": chg_color, "weight": "bold"},
+                ],
+                "paddingAll": "12px",
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "button", "action": {"type": "uri", "label": "ดูชาร์ต", "uri": tv_url}, "style": "primary", "color": "#1565C0", "height": "sm"},
+                ],
+                "paddingAll": "8px",
+            },
+        })
+    return {"type": "carousel", "contents": bubbles}
+
+
+def build_sector_carousel(sectors: list[SectorSummary]) -> dict:
+    """Build a carousel showing SET sector breadth."""
+    SECTOR_COLORS = {
+        "AGRO": "#27AE60", "CONSUMP": "#F39C12", "FINCIAL": "#2980B9",
+        "INDUS": "#8E44AD", "PROPCON": "#E67E22", "RESOURC": "#E74C3C",
+        "SERVICE": "#1ABC9C", "TECH": "#3498DB", "OTHER": "#95A5A6",
+    }
+    SECTOR_THAI = {
+        "AGRO": "เกษตร/อาหาร", "CONSUMP": "สินค้าผู้บริโภค", "FINCIAL": "การเงิน",
+        "INDUS": "อุตสาหกรรม", "PROPCON": "อสังหา/ก่อสร้าง", "RESOURC": "พลังงาน/ทรัพยากร",
+        "SERVICE": "บริการ", "TECH": "เทคโนโลยี", "OTHER": "อื่นๆ",
+    }
+    bubbles = []
+    for sec in sectors[:12]:
+        color = SECTOR_COLORS.get(sec.sector, "#95A5A6")
+        thai = SECTOR_THAI.get(sec.sector, sec.sector)
+        adv_sign = "+" if sec.advancing >= sec.declining else ""
+        bubbles.append({
+            "type": "bubble",
+            "size": "kilo",
+            "header": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": sec.sector, "weight": "bold", "size": "sm", "color": "#FFFFFF"},
+                    {"type": "text", "text": thai, "size": "xxs", "color": "#CCCCCC"},
+                ],
+                "backgroundColor": color,
+                "paddingAll": "10px",
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "xs",
+                "contents": [
+                    _small_kv("หุ้น Stage 2", f"{sec.stage2_count}/{sec.total} ({sec.stage2_pct}%)"),
+                    _small_kv("Breakout", str(sec.breakout_count)),
+                    _small_kv("Avg Score", str(sec.avg_strength)),
+                    _small_kv("ขึ้น/ลง", f"{sec.advancing}/{sec.declining}"),
+                ],
+                "paddingAll": "10px",
+            },
+        })
+    return {"type": "carousel", "contents": bubbles}
+
+
+def build_explain_card(metric: str, explanation: str) -> dict:
+    """Build a simple explanation bubble for a metric."""
+    METRIC_ICONS = {
+        "stage": "📊", "score": "💪", "vcp": "🔍",
+        "breakout": "🚀", "ath_breakout": "🏆",
+        "consolidating": "⚙️", "going_down": "📉",
+    }
+    icon = next((v for k, v in METRIC_ICONS.items() if k in metric), "ℹ️")
+    return {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": f"{icon} {metric.replace('_', ' ').title()}", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+            ],
+            "backgroundColor": "#1A237E",
+            "paddingAll": "16px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": explanation, "size": "sm", "wrap": True, "color": "#333333"},
+            ],
+            "paddingAll": "16px",
+        },
     }
 
 
@@ -482,10 +753,10 @@ def build_welcome_card(display_name: str) -> dict:
                     "spacing": "xs",
                     "contents": [
                         _cmd_row("ตลาด", "ภาพรวมตลาด"),
+                        _cmd_row("ดัชนี", "SET50/MAI/sSET"),
+                        _cmd_row("sector", "แนวโน้มกลุ่มหุ้น"),
                         _cmd_row("breakout", "หุ้น Breakout"),
-                        _cmd_row("vcp", "หุ้น VCP Pattern"),
-                        _cmd_row("stage2", "หุ้น Stage 2"),
-                        _cmd_row("PTT", "วิเคราะห์หุ้น PTT"),
+                        _cmd_row("watchlist", "รายการโปรด"),
                         _cmd_row("help", "ดูคำสั่งทั้งหมด"),
                     ],
                 },
@@ -516,6 +787,8 @@ def build_help_card() -> dict:
             "contents": [
                 {"type": "text", "text": "ภาพรวมตลาด", "weight": "bold", "size": "sm", "color": "#F39C12"},
                 _cmd_row("ตลาด / market", "Market Breadth"),
+                _cmd_row("ดัชนี / index", "SET50, SET100, MAI, sSET"),
+                _cmd_row("sector / เซกเตอร์", "แนวโน้มกลุ่มอุตสาหกรรม"),
                 {"type": "separator"},
                 {"type": "text", "text": "รายชื่อหุ้น", "weight": "bold", "size": "sm", "color": "#F39C12"},
                 _cmd_row("breakout", "Breakout stocks"),
@@ -523,6 +796,11 @@ def build_help_card() -> dict:
                 _cmd_row("vcp", "VCP Pattern stocks"),
                 _cmd_row("stage2", "Stage 2 stocks"),
                 _cmd_row("stage1", "Stage 1 stocks"),
+                {"type": "separator"},
+                {"type": "text", "text": "Watchlist", "weight": "bold", "size": "sm", "color": "#F39C12"},
+                _cmd_row("watchlist", "ดู Watchlist"),
+                _cmd_row("add PTT", "เพิ่ม PTT"),
+                _cmd_row("remove PTT", "ลบ PTT"),
                 {"type": "separator"},
                 {"type": "text", "text": "วิเคราะห์หุ้นรายตัว", "weight": "bold", "size": "sm", "color": "#F39C12"},
                 {"type": "text", "text": "พิมพ์ชื่อหุ้น เช่น PTT, ADVANC, KBANK", "size": "xs", "color": "#7F8C8D", "wrap": True},
@@ -580,6 +858,22 @@ def reply_text(reply_token: str, text: str) -> None:
         )
     except Exception as exc:
         logger.error("Failed to reply text: %s", exc)
+    finally:
+        client.close()
+
+
+def reply_flex_and_text(reply_token: str, alt_text: str, container: dict, extra_text: str) -> None:
+    """Reply with a Flex Message followed by a text message (2 messages in 1 reply)."""
+    api, client = _get_api()
+    try:
+        messages = [_flex_message(alt_text, container)]
+        if extra_text:
+            messages.append(TextMessage(text=extra_text))
+        api.reply_message(
+            ReplyMessageRequest(reply_token=reply_token, messages=messages)
+        )
+    except Exception as exc:
+        logger.error("Failed to reply flex+text: %s", exc)
     finally:
         client.close()
 

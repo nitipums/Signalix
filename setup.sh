@@ -138,10 +138,10 @@ create_job() {
   echo "      ✅ $NAME"
 }
 
-create_job "signalix-morning"   "30 3 * * 1-5"  "breakout"
-create_job "signalix-midday"    "0 5 * * 1-5"   "breadth"
-create_job "signalix-preclose"  "15 8 * * 1-5"  "vcp"
-create_job "signalix-postclose" "30 9 * * 1-5"  "full"
+create_job "signalix-morning"   "30 10 * * 1-5" "breakout"
+create_job "signalix-midday"    "0 12 * * 1-5"  "breadth"
+create_job "signalix-preclose"  "15 15 * * 1-5" "vcp"
+create_job "signalix-postclose" "30 16 * * 1-5" "full"
 
 # ── 7. Cloud Build Trigger (GitHub → auto-deploy) ─────────────────────────────
 echo ""

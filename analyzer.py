@@ -23,7 +23,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from data import fetch_all_stocks, get_stock_list, tradingview_url
+from data import SECTOR_MAP, fetch_all_stocks, get_stock_list, tradingview_url
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,23 @@ class MarketBreadth:
     breakout_count: int
     vcp_count: int
     stage2_pct: float
+    above_ma200: int = 0
+    below_ma200: int = 0
+    above_ma200_pct: float = 0.0
+    set_index_close: float = 0.0
+    set_index_change_pct: float = 0.0
+
+
+@dataclass
+class SectorSummary:
+    sector: str
+    total: int
+    stage2_count: int
+    stage2_pct: float
+    breakout_count: int
+    avg_strength: float
+    advancing: int
+    declining: int
 
 
 # ─── Indicator helpers ─────────────────────────────────────────────────────────
@@ -165,11 +182,12 @@ def classify_stage(df: pd.DataFrame) -> int:
 
 # ─── Pattern detection ─────────────────────────────────────────────────────────
 
-def detect_pattern(df: pd.DataFrame, stage: int) -> tuple[str, dict]:
+def detect_pattern(df: pd.DataFrame, stage: int, ath_override: Optional[float] = None) -> tuple[str, dict]:
     """
     Detect the most significant pattern for a stock.
 
     Returns (pattern_name, details_dict).
+    ath_override: true all-time high from Firestore cache; falls back to window max if None.
     """
     if len(df) < 60:
         return ("going_down" if stage == 4 else "consolidating"), {}
@@ -183,8 +201,8 @@ def detect_pattern(df: pd.DataFrame, stage: int) -> tuple[str, dict]:
     vol_avg_20 = float(_vol_avg(df).iloc[-1])
     volume_ratio = float(volume.iloc[-1]) / vol_avg_20 if vol_avg_20 > 0 else 1.0
 
-    # All-time high (within the data window)
-    ath = float(high.max())
+    # All-time high — use pre-synced cache if available, else fall back to window max
+    ath = ath_override if ath_override is not None else float(high.max())
 
     if stage == 4:
         return "going_down", {}
@@ -354,7 +372,7 @@ def _strength_score(df: pd.DataFrame, stage: int, pattern: str, volume_ratio: fl
 
 # ─── Full scan ─────────────────────────────────────────────────────────────────
 
-def scan_stock(symbol: str, df: pd.DataFrame) -> Optional[StockSignal]:
+def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = None) -> Optional[StockSignal]:
     """Analyse a single stock and return a StockSignal, or None if data is insufficient."""
     if df is None or len(df) < 60:
         return None
@@ -372,7 +390,7 @@ def scan_stock(symbol: str, df: pd.DataFrame) -> Optional[StockSignal]:
     volume_ratio = vol_now / vol_avg_20 if vol_avg_20 > 0 else 1.0
 
     stage = classify_stage(df)
-    pattern, bp_details = detect_pattern(df, stage)
+    pattern, bp_details = detect_pattern(df, stage, ath_override=ath_override)
 
     lookback = min(252, len(df))
     high_52w = float(high.iloc[-lookback:].max())
@@ -410,18 +428,22 @@ def scan_stock(symbol: str, df: pd.DataFrame) -> Optional[StockSignal]:
     )
 
 
-def run_full_scan(period: str = "1y") -> list[StockSignal]:
+def run_full_scan(
+    period: str = "1y",
+    ath_cache: Optional[dict[str, float]] = None,
+) -> tuple[list[StockSignal], dict[str, "pd.DataFrame"]]:
     """
     Fetch all stocks and run Minervini analysis on each.
 
-    Returns list of StockSignal sorted by strength_score descending.
+    Returns (signals sorted by strength_score desc, all_data dict for index extraction).
     """
     logger.info("Starting full scan...")
     all_data = fetch_all_stocks(period=period)
     signals: list[StockSignal] = []
 
     for symbol, df in all_data.items():
-        sig = scan_stock(symbol, df)
+        ath_override = ath_cache.get(symbol) if ath_cache else None
+        sig = scan_stock(symbol, df, ath_override=ath_override)
         if sig:
             signals.append(sig)
         else:
@@ -429,10 +451,13 @@ def run_full_scan(period: str = "1y") -> list[StockSignal]:
 
     signals.sort(key=lambda s: s.strength_score, reverse=True)
     logger.info("Scan complete: %d stocks analysed", len(signals))
-    return signals
+    return signals, all_data
 
 
-def compute_market_breadth(signals: list[StockSignal]) -> MarketBreadth:
+def compute_market_breadth(
+    signals: list[StockSignal],
+    index_df: Optional["pd.DataFrame"] = None,
+) -> MarketBreadth:
     """Aggregate market-wide breadth metrics from a list of StockSignals."""
     from datetime import datetime
     import pytz
@@ -444,6 +469,7 @@ def compute_market_breadth(signals: list[StockSignal]) -> MarketBreadth:
     advancing = declining = unchanged = 0
     new_highs = new_lows = 0
     breakout_count = vcp_count = 0
+    above_ma200 = below_ma200 = 0
 
     for s in signals:
         stage_counts[s.stage] = stage_counts.get(s.stage, 0) + 1
@@ -465,7 +491,25 @@ def compute_market_breadth(signals: list[StockSignal]) -> MarketBreadth:
         if s.pattern in ("vcp", "vcp_low_cheat"):
             vcp_count += 1
 
+        if s.sma200 > 0:
+            if s.close > s.sma200:
+                above_ma200 += 1
+            else:
+                below_ma200 += 1
+
     stage2_pct = round(stage_counts[2] / total * 100, 1) if total else 0.0
+    above_ma200_pct = round(above_ma200 / total * 100, 1) if total else 0.0
+
+    # Extract SET index level and daily change from provided DataFrame
+    set_close = 0.0
+    set_change_pct = 0.0
+    if index_df is not None and len(index_df) >= 2:
+        try:
+            set_close = round(float(index_df["Close"].iloc[-1]), 2)
+            prev = float(index_df["Close"].iloc[-2])
+            set_change_pct = round((set_close - prev) / prev * 100, 2) if prev else 0.0
+        except Exception:
+            pass
 
     return MarketBreadth(
         scanned_at=now_str,
@@ -482,6 +526,11 @@ def compute_market_breadth(signals: list[StockSignal]) -> MarketBreadth:
         breakout_count=breakout_count,
         vcp_count=vcp_count,
         stage2_pct=stage2_pct,
+        above_ma200=above_ma200,
+        below_ma200=below_ma200,
+        above_ma200_pct=above_ma200_pct,
+        set_index_close=set_close,
+        set_index_change_pct=set_change_pct,
     )
 
 
@@ -493,3 +542,33 @@ def filter_signals(signals: list[StockSignal], pattern: Optional[str] = None, st
     if pattern is not None:
         result = [s for s in result if s.pattern == pattern]
     return result
+
+
+def compute_sector_trends(signals: list[StockSignal]) -> list["SectorSummary"]:
+    """Group signals by SET sector and compute breadth stats per sector."""
+    sector_groups: dict[str, list[StockSignal]] = {}
+    for s in signals:
+        sec = SECTOR_MAP.get(s.symbol, "OTHER")
+        sector_groups.setdefault(sec, []).append(s)
+
+    summaries = []
+    for sector, sigs in sector_groups.items():
+        n = len(sigs)
+        s2 = sum(1 for s in sigs if s.stage == 2)
+        bk = sum(1 for s in sigs if s.pattern in ("breakout", "ath_breakout"))
+        avg_score = round(sum(s.strength_score for s in sigs) / n, 1) if n else 0.0
+        adv = sum(1 for s in sigs if s.change_pct > 0.1)
+        dec = sum(1 for s in sigs if s.change_pct < -0.1)
+        summaries.append(SectorSummary(
+            sector=sector,
+            total=n,
+            stage2_count=s2,
+            stage2_pct=round(s2 / n * 100, 1) if n else 0.0,
+            breakout_count=bk,
+            avg_strength=avg_score,
+            advancing=adv,
+            declining=dec,
+        ))
+
+    summaries.sort(key=lambda x: x.stage2_pct, reverse=True)
+    return summaries

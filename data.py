@@ -148,6 +148,111 @@ SYMBOL_ALIASES: dict[str, str] = {
 
 SET_INDEXES = ["^SET.BK"]  # SET Index
 
+# Major SET indexes for yfinance (keyed by display name)
+INDEX_SYMBOLS: dict[str, str] = {
+    "SET":    "^SET.BK",
+    "SET50":  "^SET50.BK",
+    "SET100": "^SET100.BK",
+    "MAI":    "^MAI.BK",
+    "sSET":   "^SSET.BK",
+}
+
+# TradingView URLs per index
+INDEX_TV_URLS: dict[str, str] = {
+    "SET":    "https://www.tradingview.com/chart/?symbol=SET%3ASET",
+    "SET50":  "https://www.tradingview.com/chart/?symbol=SET%3ASET50",
+    "SET100": "https://www.tradingview.com/chart/?symbol=SET%3ASET100",
+    "MAI":    "https://www.tradingview.com/chart/?symbol=SET%3AMAI",
+    "sSET":   "https://www.tradingview.com/chart/?symbol=SET%3ASSET",
+}
+
+# Official SET sector codes
+SECTORS: list[str] = ["AGRO", "CONSUMP", "FINCIAL", "INDUS", "PROPCON", "RESOURC", "SERVICE", "TECH"]
+
+# Sector mapping: symbol → SET sector code (unmapped stocks → "OTHER")
+SECTOR_MAP: dict[str, str] = {
+    # AGRO — Agriculture & Food Industry
+    "CPF": "AGRO", "GFPT": "AGRO", "TU": "AGRO", "MINT": "AGRO", "BR": "AGRO",
+    "MALEE": "AGRO", "SAPPE": "AGRO", "TFG": "AGRO", "KSL": "AGRO", "KTIS": "AGRO",
+    "CFRESH": "AGRO", "CHOTI": "AGRO", "KASET": "AGRO", "TFMAMA": "AGRO", "TIPCO": "AGRO",
+    "NRF": "AGRO", "STA": "AGRO", "PPM": "AGRO", "SUSCO": "AGRO", "CGD": "AGRO",
+
+    # CONSUMP — Consumer Products
+    "CPALL": "CONSUMP", "CRC": "CONSUMP", "DOHOME": "CONSUMP", "HMPRO": "CONSUMP",
+    "COM7": "CONSUMP", "BEAUTY": "CONSUMP", "JUBILE": "CONSUMP", "MC": "CONSUMP",
+    "MK": "CONSUMP", "S&P": "CONSUMP", "SABINA": "CONSUMP", "TBSP": "CONSUMP",
+    "OISHI": "CONSUMP", "OSP": "CONSUMP", "CBG": "CONSUMP", "MONO": "CONSUMP",
+    "SINGER": "CONSUMP", "WARRIX": "CONSUMP", "SAUCE": "CONSUMP", "MOONG": "CONSUMP",
+    "ZMICO": "CONSUMP", "IVF": "CONSUMP", "SYNEX": "CONSUMP", "SIS": "CONSUMP",
+
+    # FINCIAL — Financials
+    "BBL": "FINCIAL", "KBANK": "FINCIAL", "KTB": "FINCIAL", "SCB": "FINCIAL",
+    "BAY": "FINCIAL", "KKP": "FINCIAL", "TISCO": "FINCIAL", "LHFG": "FINCIAL",
+    "TCAP": "FINCIAL", "TMB": "FINCIAL", "CIMBT": "FINCIAL", "UOBKH": "FINCIAL",
+    "MTC": "FINCIAL", "SAWAD": "FINCIAL", "AEONTS": "FINCIAL", "KTC": "FINCIAL",
+    "TIDLOR": "FINCIAL", "MFC": "FINCIAL", "PHATRA": "FINCIAL", "ASK": "FINCIAL",
+    "CGH": "FINCIAL", "GGC": "FINCIAL", "BFIT": "FINCIAL", "AYUD": "FINCIAL",
+    "BLA": "FINCIAL", "TQM": "FINCIAL", "MTI": "FINCIAL", "MITSIB": "FINCIAL",
+    "NKI": "FINCIAL", "THRE": "FINCIAL", "THREL": "FINCIAL", "TLI": "FINCIAL",
+    "GPI": "FINCIAL", "MII": "FINCIAL", "KGI": "FINCIAL", "ASP": "FINCIAL",
+    "JMART": "FINCIAL", "JMT": "FINCIAL", "NCAP": "FINCIAL", "CHAYO": "FINCIAL",
+    "BAM": "FINCIAL", "JTS": "FINCIAL",
+
+    # INDUS — Industrials
+    "SCC": "INDUS", "SCGD": "INDUS", "SCGP": "INDUS", "PYLON": "INDUS",
+    "TTA": "INDUS", "HANA": "INDUS", "KCE": "INDUS", "DELTA": "INDUS",
+    "SVI": "INDUS", "BTNC": "INDUS", "SMT": "INDUS", "TRT": "INDUS",
+    "STEC": "INDUS", "ITD": "INDUS", "PREB": "INDUS", "SEAFCO": "INDUS",
+    "NWR": "INDUS", "SYNTEC": "INDUS", "STECON": "INDUS", "CK": "INDUS",
+    "ALUCON": "INDUS", "STANLY": "INDUS", "TKN": "INDUS", "SNC": "INDUS",
+    "IRPC": "INDUS", "TASCO": "INDUS", "TRUBB": "INDUS", "BSM": "INDUS",
+    "AJ": "INDUS", "TPI": "INDUS", "TPIPL": "INDUS", "DCON": "INDUS",
+    "ASIA": "INDUS", "MILL": "INDUS", "GEL": "INDUS",
+
+    # PROPCON — Property & Construction
+    "CPN": "PROPCON", "LH": "PROPCON", "AP": "PROPCON", "SPALI": "PROPCON",
+    "ORI": "PROPCON", "SIRI": "PROPCON", "PSH": "PROPCON", "QH": "PROPCON",
+    "LPN": "PROPCON", "NOBLE": "PROPCON", "MJD": "PROPCON", "SC": "PROPCON",
+    "LALIN": "PROPCON", "GRAND": "PROPCON", "ANAN": "PROPCON", "NWG": "PROPCON",
+    "CHEWA": "PROPCON", "PF": "PROPCON", "RICHY": "PROPCON", "SENA": "PROPCON",
+    "GLAND": "PROPCON", "PROUD": "PROPCON", "DHOUSE": "PROPCON", "SUTHA": "PROPCON",
+    "AMATA": "PROPCON", "WHA": "PROPCON", "ROJNA": "PROPCON", "EASTW": "PROPCON",
+    "TTW": "PROPCON", "BWG": "PROPCON", "TWPC": "PROPCON",
+    "CK": "PROPCON", "CPNREIT": "PROPCON", "WHART": "PROPCON", "FTREIT": "PROPCON",
+    "DREIT": "PROPCON", "DIF": "PROPCON", "BTSGIF": "PROPCON", "LHHOTEL": "PROPCON",
+
+    # RESOURC — Resources
+    "PTT": "RESOURC", "PTTEP": "RESOURC", "PTTGC": "RESOURC", "BANPU": "RESOURC",
+    "RATCH": "RESOURC", "BCPG": "RESOURC", "BCP": "RESOURC", "EGCO": "RESOURC",
+    "GPSC": "RESOURC", "GULF": "RESOURC", "GUNKUL": "RESOURC", "EA": "RESOURC",
+    "TOP": "RESOURC", "ESSO": "RESOURC", "SPRC": "RESOURC", "PTG": "RESOURC",
+    "OR": "RESOURC", "BBGI": "RESOURC", "TPIPP": "RESOURC", "TPCH": "RESOURC",
+    "DEMCO": "RESOURC", "SPCG": "RESOURC", "EPG": "RESOURC", "LANNA": "RESOURC",
+    "GC": "RESOURC", "PPP": "RESOURC", "ESSO": "RESOURC",
+
+    # SERVICE — Services (healthcare, media, tourism, transport)
+    "BDMS": "SERVICE", "BGH": "SERVICE", "BH": "SERVICE", "CHG": "SERVICE",
+    "BCH": "SERVICE", "RJH": "SERVICE", "VIH": "SERVICE", "PRINC": "SERVICE",
+    "VIBHA": "SERVICE", "EKH": "SERVICE", "NTV": "SERVICE", "LPH": "SERVICE",
+    "AOT": "SERVICE", "AAV": "SERVICE", "BA": "SERVICE", "NOK": "SERVICE",
+    "BTS": "SERVICE", "BEM": "SERVICE", "BMCL": "SERVICE", "TMILL": "SERVICE",
+    "PSL": "SERVICE", "RCL": "SERVICE", "TTA": "SERVICE", "NCL": "SERVICE",
+    "MAJOR": "SERVICE", "MCOT": "SERVICE", "BEC": "SERVICE", "WORK": "SERVICE",
+    "RS": "SERVICE", "GRAMMY": "SERVICE", "MONO": "SERVICE",
+    "DUSIT": "SERVICE", "MINT": "SERVICE", "ERW": "SERVICE", "AWC": "SERVICE",
+    "CEN": "SERVICE", "CENTEL": "SERVICE", "ONEE": "SERVICE", "NATION": "SERVICE",
+    "WICE": "SERVICE", "LEO": "SERVICE", "GLOBAL": "SERVICE", "MBK": "SERVICE",
+
+    # TECH — Technology & Communication
+    "ADVANC": "TECH", "TRUE": "TECH", "INTUCH": "TECH", "JAS": "TECH",
+    "ITEL": "TECH", "THCOM": "TECH", "INSET": "TECH", "NETBAY": "TECH",
+    "MFEC": "TECH", "SVOA": "TECH", "SIS": "TECH", "COM7": "TECH",
+    "BE8": "TECH", "SYMC": "TECH", "ADVICE": "TECH", "INET": "TECH",
+    "DIGIO": "TECH", "DITTO": "TECH", "EFORL": "TECH", "AI": "TECH",
+    "FORTH": "TECH", "JCT": "TECH", "CSP": "TECH", "DATA": "TECH",
+    "VGI": "TECH", "PLANB": "TECH",
+}
+
 _STOCK_SET = set(SET_STOCKS)
 
 
@@ -304,3 +409,94 @@ def tradingview_url(symbol: str) -> str:
     if symbol == "SET":
         return "https://www.tradingview.com/chart/?symbol=SET%3ASET"
     return f"https://www.tradingview.com/chart/?symbol=SET%3A{symbol}"
+
+
+def fetch_indexes(period: str = "5d") -> dict[str, dict]:
+    """
+    Fetch latest close and daily change% for all major SET indexes.
+    Returns {name: {close, change_pct, prev_close}}.
+    """
+    tickers = list(INDEX_SYMBOLS.values())
+    names = list(INDEX_SYMBOLS.keys())
+    result: dict[str, dict] = {}
+    try:
+        raw = yf.download(tickers, period=period, group_by="ticker", progress=False, auto_adjust=True)
+        for name, ticker in zip(names, tickers):
+            try:
+                if len(tickers) == 1:
+                    df = raw
+                else:
+                    df = raw[ticker] if ticker in raw.columns.get_level_values(0) else pd.DataFrame()
+                df = df.dropna(subset=["Close"])
+                if len(df) < 2:
+                    continue
+                close = round(float(df["Close"].iloc[-1]), 2)
+                prev = round(float(df["Close"].iloc[-2]), 2)
+                change_pct = round((close - prev) / prev * 100, 2) if prev else 0.0
+                result[name] = {"close": close, "change_pct": change_pct, "prev_close": prev}
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.error("fetch_indexes failed: %s", exc)
+    return result
+
+
+def fetch_ohlcv_max(symbol: str) -> Optional[pd.DataFrame]:
+    """Fetch maximum available history for a symbol via yfinance (for ATH calculation)."""
+    ticker = "^SET.BK" if symbol == "SET" else _to_yf_ticker(symbol)
+    try:
+        df = yf.download(ticker, period="max", progress=False, auto_adjust=True)
+        if df.empty:
+            return None
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+        df.index.name = "Date"
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.columns = [c.replace(" ", "_") for c in df.columns]
+        return df.dropna(subset=["Close"])
+    except Exception as exc:
+        logger.error("fetch_ohlcv_max(%s) failed: %s", symbol, exc)
+        return None
+
+
+def sync_ath_to_firestore(db, symbols: list[str], chunk: int = 0, chunk_size: int = 100) -> dict[str, float]:
+    """
+    Fetch max-period history and store ATH for each symbol in Firestore.
+    Processes one chunk at a time (chunk * chunk_size to (chunk+1) * chunk_size).
+    Returns {symbol: ath} for the processed chunk.
+    """
+    subset = symbols[chunk * chunk_size:(chunk + 1) * chunk_size]
+    synced: dict[str, float] = {}
+    now_str = datetime.now(BANGKOK_TZ).isoformat()
+
+    for symbol in subset:
+        df = fetch_ohlcv_max(symbol)
+        if df is None or df.empty:
+            logger.warning("sync_ath: no data for %s", symbol)
+            continue
+        try:
+            ath_val = round(float(df["High"].max()), 4)
+            ath_date = str(df["High"].idxmax().date())
+            if db:
+                db.collection("ath_cache").document(symbol).set(
+                    {"ath": ath_val, "ath_date": ath_date, "synced_at": now_str},
+                    merge=True,
+                )
+            synced[symbol] = ath_val
+        except Exception as exc:
+            logger.warning("sync_ath: error for %s: %s", symbol, exc)
+
+    logger.info("sync_ath: synced %d/%d symbols (chunk %d)", len(synced), len(subset), chunk)
+    return synced
+
+
+def load_ath_cache(db) -> dict[str, float]:
+    """Load all ATH values from Firestore ath_cache collection."""
+    if db is None:
+        return {}
+    try:
+        docs = db.collection("ath_cache").stream()
+        return {doc.id: doc.to_dict().get("ath", 0.0) for doc in docs}
+    except Exception as exc:
+        logger.error("load_ath_cache failed: %s", exc)
+        return {}
