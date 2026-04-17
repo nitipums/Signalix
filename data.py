@@ -514,6 +514,42 @@ def load_ath_cache(db) -> dict[str, float]:
         return {}
 
 
+def save_signals_to_firestore(signals: list, db) -> None:
+    """Batch-write latest scan signals to Firestore signals/{symbol}."""
+    if not signals or db is None:
+        return
+    try:
+        batch = db.batch()
+        for signal in signals:
+            doc_ref = db.collection("signals").document(signal.symbol)
+            batch.set(doc_ref, signal.__dict__)
+        batch.commit()
+        logger.info("Saved %d signals to Firestore", len(signals))
+    except Exception as exc:
+        logger.error("save_signals_to_firestore failed: %s", exc)
+
+
+def load_signals_from_firestore(db) -> list:
+    """Load latest signals snapshot from Firestore signals collection."""
+    if db is None:
+        return []
+    try:
+        from analyzer import StockSignal
+        docs = db.collection("signals").stream()
+        signals = []
+        for doc in docs:
+            try:
+                signals.append(StockSignal(**doc.to_dict()))
+            except Exception:
+                continue
+        signals.sort(key=lambda s: s.strength_score, reverse=True)
+        logger.info("Loaded %d signals from Firestore", len(signals))
+        return signals
+    except Exception as exc:
+        logger.error("load_signals_from_firestore failed: %s", exc)
+        return []
+
+
 def fetch_fundamentals(symbol: str) -> dict:
     """Fetch fundamental data via yfinance Ticker.info for a SET stock."""
     ticker = _to_yf_ticker(symbol)

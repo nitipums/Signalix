@@ -7,6 +7,7 @@ Endpoints:
   POST /scan              — internal scan + notify (called by Cloud Scheduler)
 """
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -30,7 +31,7 @@ from analyzer import (
     scan_stock,
 )
 from config import get_settings
-from data import SECTOR_MAP, fetch_indexes, fetch_ohlcv, fetch_ohlcv_settrade, get_fundamentals, get_stock_list, load_ath_cache, resolve_symbol, sync_ath_to_firestore, tradingview_url
+from data import SECTOR_MAP, fetch_indexes, fetch_ohlcv, fetch_ohlcv_settrade, get_fundamentals, get_stock_list, load_ath_cache, load_signals_from_firestore, resolve_symbol, save_signals_to_firestore, sync_ath_to_firestore, tradingview_url
 from notifier import (
     broadcast_flex,
     build_compact_stock_carousel,
@@ -185,7 +186,6 @@ async def startup_scan():
 
 
 async def _background_scan():
-    import asyncio
     await asyncio.sleep(5)  # let server finish booting first
     global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
     try:
@@ -193,6 +193,10 @@ async def _background_scan():
         if FIRESTORE_AVAILABLE and _db:
             _ath_cache = load_ath_cache(_db)
             logger.info("ATH cache loaded: %d entries", len(_ath_cache))
+            if not _last_signals:
+                pre_signals = load_signals_from_firestore(_db)
+                if pre_signals:
+                    _last_signals = pre_signals
         signals, all_data = run_full_scan(ath_cache=_ath_cache)
         _last_signals = signals
         _last_scan_time = datetime.now(BANGKOK_TZ)
@@ -201,6 +205,9 @@ async def _background_scan():
         _last_sector_trends = compute_sector_trends(signals)
         _last_indexes = fetch_indexes()
         logger.info("Startup scan complete: %d stocks", len(signals))
+        if FIRESTORE_AVAILABLE and _db:
+            loop = asyncio.get_event_loop()
+            loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
     except Exception as exc:
         logger.error("Startup scan failed: %s", exc)
 
@@ -297,6 +304,8 @@ async def scan(
     # Persist to Firestore if available
     if FIRESTORE_AVAILABLE and _db:
         _save_breadth_to_firestore(breadth)
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
 
     if not body.broadcast:
         return {"scanned": len(signals), "breadth": breadth.__dict__}
@@ -781,11 +790,20 @@ def _reply_single_stock(reply_token: str, symbol: str) -> None:
     # Cache stale or miss: try Settrade API only (no yfinance for on-demand)
     df = fetch_ohlcv_settrade(symbol)
     if df is None:
-        # Fall back to cached data even if stale rather than showing nothing
+        # Fall back to stale in-memory cache first, then Firestore, then error
         if cached:
             reply_flex(reply_token, f"วิเคราะห์ {symbol} (แคช)", build_single_stock_card(cached))
-        else:
-            reply_text(reply_token, f"ไม่พบข้อมูล {symbol} ขณะนี้\nลองพิมพ์ชื่อใหม่หลังจาก scan ถัดไปครับ")
+            return
+        if FIRESTORE_AVAILABLE and _db:
+            try:
+                doc = _db.collection("signals").document(symbol).get()
+                if doc.exists:
+                    fs_signal = StockSignal(**doc.to_dict())
+                    reply_flex(reply_token, f"วิเคราะห์ {symbol} (แคช)", build_single_stock_card(fs_signal))
+                    return
+            except Exception:
+                pass
+        reply_text(reply_token, f"ไม่พบข้อมูล {symbol} ขณะนี้\nลองพิมพ์ชื่อใหม่หลังจาก scan ถัดไปครับ")
         return
     signal = scan_stock(symbol, df, ath_override=_ath_cache.get(symbol))
     if signal is None:
