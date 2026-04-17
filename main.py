@@ -30,18 +30,22 @@ from analyzer import (
     scan_stock,
 )
 from config import get_settings
-from data import fetch_indexes, fetch_ohlcv, get_stock_list, load_ath_cache, resolve_symbol, sync_ath_to_firestore, tradingview_url
+from data import SECTOR_MAP, fetch_indexes, fetch_ohlcv, fetch_ohlcv_settrade, get_fundamentals, get_stock_list, load_ath_cache, resolve_symbol, sync_ath_to_firestore, tradingview_url
 from notifier import (
     broadcast_flex,
     build_compact_stock_carousel,
     build_explain_card,
+    build_guide_carousel,
     build_help_card,
     build_index_carousel,
     build_market_breadth_card,
     build_remaining_symbols_text,
     build_sector_carousel,
+    build_sector_overview_card,
     build_single_stock_card,
+    build_stage_picker_card,
     build_stock_list_carousel,
+    build_watchlist_stock_card,
     build_welcome_card,
     get_webhook_handler,
     reply_flex,
@@ -67,9 +71,17 @@ app = FastAPI(title="Signalix", version="1.0.0")
 # In-memory cache of last scan results (refreshed on each /scan call)
 _last_signals: list[StockSignal] = []
 _last_breadth: Optional[MarketBreadth] = None
+_last_breadth_card: Optional[dict] = None  # pre-built, invalidated when _last_breadth changes
+_last_scan_time: Optional[datetime] = None   # when _last_signals was last populated
 _last_indexes: dict[str, dict] = {}
 _last_sector_trends: list[SectorSummary] = []
 _ath_cache: dict[str, float] = {}
+
+# Static card caches (built once, never change between scans)
+_help_card_cache: Optional[dict] = None
+_guide_carousel_cache: Optional[dict] = None
+
+_CACHE_TTL_MINUTES = 15
 
 # Explanation texts for ⓘ buttons
 _EXPLANATIONS: dict[str, str] = {
@@ -154,6 +166,14 @@ _EXPLANATIONS: dict[str, str] = {
         "• Proximity to 52W High (max +20)\n\n"
         "คะแนนสูง = หุ้นแข็งแกร่งและมี setup ที่ดี"
     ),
+    "explain volume_ratio": (
+        "Volume Ratio\n\n"
+        "= ปริมาณการซื้อขายวันนี้ ÷ ค่าเฉลี่ย 20 วัน\n\n"
+        "1.0x = ปกติ\n"
+        "1.4x+ = Volume สูงกว่าปกติ (สัญญาณ breakout)\n"
+        "2.0x+ = Volume สูงมาก\n\n"
+        "ใช้ยืนยัน breakout — ราคาขึ้นพร้อม volume สูง = สัญญาณแข็งแกร่ง"
+    ),
 }
 
 
@@ -167,7 +187,7 @@ async def startup_scan():
 async def _background_scan():
     import asyncio
     await asyncio.sleep(5)  # let server finish booting first
-    global _last_signals, _last_breadth, _last_indexes, _last_sector_trends, _ath_cache
+    global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
     try:
         logger.info("Running startup scan...")
         if FIRESTORE_AVAILABLE and _db:
@@ -175,7 +195,9 @@ async def _background_scan():
             logger.info("ATH cache loaded: %d entries", len(_ath_cache))
         signals, all_data = run_full_scan(ath_cache=_ath_cache)
         _last_signals = signals
+        _last_scan_time = datetime.now(BANGKOK_TZ)
         _last_breadth = compute_market_breadth(signals, index_df=all_data.get("SET"))
+        _last_breadth_card = build_market_breadth_card(_last_breadth)
         _last_sector_trends = compute_sector_trends(signals)
         _last_indexes = fetch_indexes()
         logger.info("Startup scan complete: %d stocks", len(signals))
@@ -255,7 +277,7 @@ async def scan(
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
 
-    global _last_signals, _last_breadth, _last_indexes, _last_sector_trends, _ath_cache
+    global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
 
     logger.info("Running scan: type=%s broadcast=%s", body.scan_type, body.broadcast)
     if FIRESTORE_AVAILABLE and _db and not _ath_cache:
@@ -266,7 +288,9 @@ async def scan(
     indexes = fetch_indexes()
 
     _last_signals = signals
+    _last_scan_time = datetime.now(BANGKOK_TZ)
     _last_breadth = breadth
+    _last_breadth_card = build_market_breadth_card(breadth)
     _last_sector_trends = sector_trends
     _last_indexes = indexes
 
@@ -319,8 +343,105 @@ async def sync_ath_endpoint(
     return {"synced": len(synced), "chunk": chunk, "total_chunks": total_chunks, "next_chunk": chunk + 1 if chunk + 1 < total_chunks else None}
 
 
+@app.get("/admin/check")
+async def admin_check(x_scan_secret: Optional[str] = Header(default=None)):
+    """Admin data completeness + anomaly report. Protected by X-Scan-Secret header."""
+    settings = get_settings()
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
+
+    signals = _last_signals
+    breadth = _last_breadth
+
+    # ── Scan summary ──
+    stage_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+    pattern_counts: dict[str, int] = {}
+    for sig in signals:
+        stage_counts[sig.stage] = stage_counts.get(sig.stage, 0) + 1
+        pattern_counts[sig.pattern] = pattern_counts.get(sig.pattern, 0) + 1
+
+    scan_summary = {
+        "scanned_at": breadth.scanned_at if breadth else None,
+        "total": len(signals),
+        "stage_counts": stage_counts,
+        "pattern_counts": pattern_counts,
+    }
+
+    # ── Data completeness from ATH cache ──
+    ath_count = len(_ath_cache)
+    stocks_with_ath = list(_ath_cache.keys())
+    all_symbols = get_stock_list()
+    missing_ath = [s for s in all_symbols if s not in _ath_cache]
+
+    data_completeness = {
+        "ath_cache_entries": ath_count,
+        "total_symbols": len(all_symbols),
+        "stocks_with_full_history": ath_count,
+        "stocks_missing_ath": len(missing_ath),
+        "missing_ath_symbols": missing_ath[:50],
+    }
+
+    # ── Pattern verification (top 20 stage2 stocks) ──
+    stage2_signals = [s for s in signals if s.stage == 2][:20]
+    pattern_verification = [
+        {
+            "symbol": s.symbol,
+            "stage": s.stage,
+            "pattern": s.pattern,
+            "close": s.close,
+            "change_pct": round(s.change_pct, 2),
+            "volume_ratio": round(s.volume_ratio, 2),
+            "strength_score": int(s.strength_score),
+            "above_sma200": s.close > s.sma200 if s.sma200 else None,
+            "within_25pct_ath": ((s.close / _ath_cache[s.symbol]) >= 0.75) if s.symbol in _ath_cache else None,
+        }
+        for s in stage2_signals
+    ]
+
+    # ── Anomaly detection ──
+    anomalies = []
+    for s in signals:
+        issues = []
+        if s.stage == 2 and s.pattern == "going_down":
+            issues.append("stage2 but pattern=going_down")
+        if s.stage == 4 and s.pattern in ("breakout", "ath_breakout", "vcp"):
+            issues.append(f"stage4 but pattern={s.pattern}")
+        if s.volume_ratio < 0:
+            issues.append(f"negative volume_ratio={s.volume_ratio:.2f}")
+        if s.strength_score > 100 or s.strength_score < 0:
+            issues.append(f"out-of-range score={s.strength_score:.1f}")
+        if issues:
+            anomalies.append({"symbol": s.symbol, "stage": s.stage, "pattern": s.pattern, "issues": issues})
+
+    # ── Firestore stats ──
+    firestore_stats: dict = {}
+    if FIRESTORE_AVAILABLE and _db:
+        try:
+            users_count = len(list(_db.collection("users").stream()))
+            breadth_snaps = len(list(_db.collection("market_breadth").limit(1000).stream()))
+            ath_cache_count = len(list(_db.collection("ath_cache").stream()))
+            firestore_stats = {
+                "ath_cache_count": ath_cache_count,
+                "users_count": users_count,
+                "breadth_snapshots": breadth_snaps,
+            }
+        except Exception as exc:
+            firestore_stats = {"error": str(exc)}
+
+    return {
+        "scan_summary": scan_summary,
+        "data_completeness": data_completeness,
+        "pattern_verification": pattern_verification,
+        "anomalies": anomalies,
+        "firestore_stats": firestore_stats,
+        "stage_criteria": {
+            "stage2": "close>MA150>MA200, MA200 rising, price>=52w_low*1.25, price>=52w_high*0.75"
+        },
+    }
+
+
 def _broadcast_breadth(breadth: MarketBreadth) -> None:
-    card = build_market_breadth_card(breadth)
+    card = _last_breadth_card or build_market_breadth_card(breadth)
     broadcast_flex("ภาพรวมตลาด SET", card)
 
 
@@ -428,20 +549,22 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
 
     # ── Explain metric ⓘ ──
     if cmd.startswith("explain "):
-        explanation = _EXPLANATIONS.get(cmd)
+        # Normalize aliases
+        _aliases = {"explain volume": "explain volume_ratio", "explain vol": "explain volume_ratio"}
+        lookup = _aliases.get(cmd, cmd)
+        explanation = _EXPLANATIONS.get(lookup)
         if explanation:
-            metric_name = cmd.replace("explain ", "")
+            metric_name = lookup.replace("explain ", "")
             reply_flex(reply_token, f"ℹ️ {metric_name}", build_explain_card(metric_name, explanation))
         else:
             reply_text(reply_token, f'ไม่พบคำอธิบายสำหรับ "{cmd.replace("explain ", "")}"')
 
     # ── Market Breadth ──
     elif cmd in ("ตลาด", "market", "breadth"):
-        breadth = _last_breadth
-        if breadth is None:
+        if _last_breadth_card is None:
             reply_text(reply_token, "กำลังโหลดข้อมูล กรุณารอสักครู่...")
             return
-        reply_flex(reply_token, "ภาพรวมตลาด SET", build_market_breadth_card(breadth))
+        reply_flex(reply_token, "ภาพรวมตลาด SET", _last_breadth_card)
 
     # ── Key Indexes ──
     elif cmd in ("index", "indexes", "ดัชนี", "ดัชนีหุ้น"):
@@ -451,13 +574,37 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         carousel = build_index_carousel(_last_indexes)
         reply_flex(reply_token, "ดัชนีหุ้นไทย", carousel)
 
-    # ── Sector Trends ──
+    # ── Sector Trends: overview or drill-down ──
+    elif cmd.startswith("sector ") and len(cmd) > 7:
+        sector_name = cmd[7:].upper().strip()
+        sector_sigs = [s for s in _last_signals if SECTOR_MAP.get(s.symbol) == sector_name]
+        sector_sigs.sort(key=lambda s: s.strength_score, reverse=True)
+        if sector_sigs:
+            _reply_stock_list(reply_token, sector_sigs, f"🏭 {sector_name} — Leaders")
+        else:
+            reply_text(reply_token, f"ไม่พบหุ้นในกลุ่ม {sector_name}\nกลุ่มที่มี: AGRO, CONSUMP, FINCIAL, INDUS, PROPCON, RESOURC, SERVICE, TECH")
+
     elif cmd in ("sector", "sectors", "เซกเตอร์", "กลุ่มหุ้น"):
         if not _last_sector_trends:
             reply_text(reply_token, "กำลังโหลดข้อมูลกลุ่มหุ้น...")
             return
-        carousel = build_sector_carousel(_last_sector_trends)
-        reply_flex(reply_token, "แนวโน้มกลุ่มอุตสาหกรรม", carousel)
+        card = build_sector_overview_card(_last_sector_trends)
+        reply_flex(reply_token, "แนวโน้มกลุ่มอุตสาหกรรม", card)
+
+    # ── Guide ──
+    elif cmd in ("guide", "คู่มือ", "explain all", "all explain"):
+        global _guide_carousel_cache
+        if _guide_carousel_cache is None:
+            _guide_carousel_cache = build_guide_carousel()
+        reply_flex(reply_token, "คู่มือ Signalix", _guide_carousel_cache)
+
+    # ── Stage picker ──
+    elif cmd in ("stage", "stages", "สเตจ"):
+        reply_flex(reply_token, "เลือก Stage", build_stage_picker_card(_last_breadth))
+
+    # ── Subscribe stub ──
+    elif cmd in ("subscribe", "สมัคร", "membership"):
+        reply_text(reply_token, "🔔 ระบบ Membership กำลังจะมา!\nตอนนี้คุณรับแจ้งเตือนอัตโนมัติทุกวันอยู่แล้วครับ")
 
     # ── Watchlist: view ──
     elif cmd in ("watchlist", "รายการโปรด", "watch"):
@@ -480,7 +627,19 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         if not wl_signals:
             reply_text(reply_token, "ไม่มีข้อมูลหุ้นใน Watchlist ขณะนี้")
             return
-        _reply_stock_list(reply_token, wl_signals, f"📌 Watchlist ({len(wl_signals)} หุ้น)")
+        # ≤5 stocks: show deep insight cards with fundamentals
+        if len(wl_signals) <= 5:
+            bubbles = []
+            for sig in wl_signals:
+                fund = get_fundamentals(sig.symbol, _db if FIRESTORE_AVAILABLE else None)
+                bubbles.append(build_watchlist_stock_card(sig, fund))
+            if len(bubbles) == 1:
+                reply_flex(reply_token, f"📌 {wl_signals[0].symbol}", bubbles[0])
+            else:
+                carousel = {"type": "carousel", "contents": bubbles}
+                reply_flex(reply_token, f"📌 Watchlist ({len(bubbles)} หุ้น)", carousel)
+        else:
+            _reply_stock_list(reply_token, wl_signals, f"📌 Watchlist ({len(wl_signals)} หุ้น)")
 
     # ── Watchlist: add ──
     elif cmd.startswith("add ") or cmd.startswith("เพิ่ม "):
@@ -509,6 +668,20 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             return
         ok, msg = _remove_from_watchlist(user_id, symbol)
         reply_text(reply_token, msg)
+
+    # ── Refresh single stock (Settrade live) ──
+    elif cmd.startswith("refresh "):
+        raw = text[8:].strip()
+        symbol = resolve_symbol(raw)
+        if not symbol:
+            reply_text(reply_token, f'ไม่พบหุ้น "{raw.upper()}"')
+            return
+        if not user_id:
+            reply_text(reply_token, "ไม่สามารถระบุผู้ใช้ได้")
+            return
+        reply_text(reply_token, f"กำลังดึงข้อมูลสด {symbol} ผ่าน Settrade API...")
+        import asyncio
+        asyncio.create_task(asyncio.to_thread(_push_single_stock_settrade, user_id, symbol))
 
     # ── Stock lists by pattern/stage ──
     elif cmd in ("breakout", "break out", "บ้ระเอาท์"):
@@ -547,9 +720,21 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         signals = _get_signals_for(pattern="consolidating")
         _reply_stock_list(reply_token, signals, "⚙️ Consolidating Stocks")
 
+    # ── Detail: deep insight with fundamentals ──
+    elif cmd.startswith("detail "):
+        raw = text[7:].strip()
+        symbol = resolve_symbol(raw)
+        if not symbol:
+            reply_text(reply_token, f'ไม่พบหุ้น "{raw.upper()}"')
+            return
+        _reply_detailed_stock(reply_token, symbol)
+
     # ── Help ──
     elif cmd in ("help", "ช่วย", "คำสั่ง", "?"):
-        reply_flex(reply_token, "คำสั่ง Signalix", build_help_card())
+        global _help_card_cache
+        if _help_card_cache is None:
+            _help_card_cache = build_help_card()
+        reply_flex(reply_token, "คำสั่ง Signalix", _help_card_cache)
 
     # ── Single stock lookup ──
     else:
@@ -579,17 +764,65 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str) 
         reply_flex(reply_token, title, carousel)
 
 
+def _cache_is_fresh() -> bool:
+    """Return True if _last_signals was updated within CACHE_TTL_MINUTES."""
+    if _last_scan_time is None:
+        return False
+    age = (datetime.now(BANGKOK_TZ) - _last_scan_time).total_seconds() / 60
+    return age < _CACHE_TTL_MINUTES
+
+
 def _reply_single_stock(reply_token: str, symbol: str) -> None:
-    # Always fetch fresh data (Settrade API → yfinance fallback)
-    df = fetch_ohlcv(symbol)
+    # Cache-first: serve from last scan if cache is fresh (< 15 min old)
+    cached = next((s for s in _last_signals if s.symbol == symbol), None)
+    if cached and _cache_is_fresh():
+        reply_flex(reply_token, f"วิเคราะห์ {symbol}", build_single_stock_card(cached))
+        return
+    # Cache stale or miss: try Settrade API only (no yfinance for on-demand)
+    df = fetch_ohlcv_settrade(symbol)
     if df is None:
-        reply_text(reply_token, f"ไม่พบข้อมูล {symbol}")
+        # Fall back to cached data even if stale rather than showing nothing
+        if cached:
+            reply_flex(reply_token, f"วิเคราะห์ {symbol} (แคช)", build_single_stock_card(cached))
+        else:
+            reply_text(reply_token, f"ไม่พบข้อมูล {symbol} ขณะนี้\nลองพิมพ์ชื่อใหม่หลังจาก scan ถัดไปครับ")
         return
     signal = scan_stock(symbol, df, ath_override=_ath_cache.get(symbol))
     if signal is None:
         reply_text(reply_token, f"ข้อมูลไม่เพียงพอสำหรับ {symbol}")
         return
     reply_flex(reply_token, f"วิเคราะห์ {symbol}", build_single_stock_card(signal))
+
+
+def _reply_detailed_stock(reply_token: str, symbol: str) -> None:
+    """Serve deep insight card (technical + fundamentals) for a single stock."""
+    cached = next((s for s in _last_signals if s.symbol == symbol), None)
+    if cached:
+        signal = cached
+    else:
+        df = fetch_ohlcv_settrade(symbol) or fetch_ohlcv(symbol)
+        if df is None:
+            reply_text(reply_token, f"ไม่พบข้อมูล {symbol}")
+            return
+        signal = scan_stock(symbol, df, ath_override=_ath_cache.get(symbol))
+        if signal is None:
+            reply_text(reply_token, f"ข้อมูลไม่เพียงพอสำหรับ {symbol}")
+            return
+    fund = get_fundamentals(symbol, _db if FIRESTORE_AVAILABLE else None)
+    reply_flex(reply_token, f"📌 {symbol} Detail", build_watchlist_stock_card(signal, fund))
+
+
+def _push_single_stock_settrade(user_id: str, symbol: str) -> None:
+    """Fetch live data from Settrade API and push to a specific user."""
+    from notifier import send_to_user
+    df = fetch_ohlcv_settrade(symbol)
+    if df is None:
+        logger.warning("refresh %s: Settrade unavailable", symbol)
+        return
+    signal = scan_stock(symbol, df, ath_override=_ath_cache.get(symbol))
+    if signal is None:
+        return
+    send_to_user(user_id, f"🔄 {symbol} (สด)", build_single_stock_card(signal))
 
 
 # ─── Firestore helpers ─────────────────────────────────────────────────────────

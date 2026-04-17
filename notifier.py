@@ -499,6 +499,14 @@ def build_single_stock_card(signal: StockSignal) -> dict:
                         },
                     ],
                 },
+                {
+                    "type": "button",
+                    "action": {"type": "message", "label": "🔄 รีเฟรช (Settrade)", "text": f"refresh {signal.symbol}"},
+                    "style": "link",
+                    "height": "sm",
+                    "color": "#7F8C8D",
+                },
+                {"type": "text", "text": f"อัปเดต: {signal.scanned_at[:16].replace('T', ' ')}", "size": "xxs", "color": "#AAAAAA", "align": "center"},
             ],
             "paddingAll": "12px",
         },
@@ -561,6 +569,8 @@ def build_compact_stock_bubble(signal: StockSignal) -> dict:
                         {"type": "text", "text": f"{chg_sign}{signal.change_pct:.1f}%", "size": "xxs", "color": chg_color, "align": "end"},
                     ],
                 },
+                {"type": "text", "text": f"Vol: {signal.volume_ratio:.1f}x", "size": "xxs", "color": "#F39C12" if signal.volume_ratio >= 1.5 else "#7F8C8D"},
+                {"type": "text", "text": signal.scanned_at[11:16], "size": "xxs", "color": "#AAAAAA"},
             ],
             "paddingAll": "8px",
         },
@@ -693,6 +703,247 @@ def build_sector_carousel(sectors: list[SectorSummary]) -> dict:
     return {"type": "carousel", "contents": bubbles}
 
 
+def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
+    """Single mega bubble with all sectors as table rows + quick-tap buttons."""
+    SECTOR_COLORS = {
+        "AGRO": "#27AE60", "CONSUMP": "#F39C12", "FINCIAL": "#2980B9",
+        "INDUS": "#8E44AD", "PROPCON": "#E67E22", "RESOURC": "#E74C3C",
+        "SERVICE": "#1ABC9C", "TECH": "#3498DB",
+    }
+    rows = []
+    for sec in sectors:
+        color = SECTOR_COLORS.get(sec.sector, "#95A5A6")
+        trend = "▲" if sec.advancing > sec.declining else ("▼" if sec.declining > sec.advancing else "=")
+        trend_color = "#27AE60" if trend == "▲" else ("#E74C3C" if trend == "▼" else "#7F8C8D")
+        rows.append({
+            "type": "box",
+            "layout": "horizontal",
+            "contents": [
+                {"type": "text", "text": sec.sector, "size": "xs", "weight": "bold", "color": color, "flex": 3},
+                {"type": "text", "text": f"S2:{sec.stage2_pct}%", "size": "xxs", "color": "#27AE60" if sec.stage2_pct >= 20 else "#7F8C8D", "flex": 2, "align": "end"},
+                {"type": "text", "text": f"{trend}{sec.advancing}/{sec.declining}", "size": "xxs", "color": trend_color, "flex": 2, "align": "end"},
+            ],
+        })
+
+    # Top 4 by stage2_pct as tap buttons
+    top4 = sorted(sectors, key=lambda s: s.stage2_pct, reverse=True)[:4]
+    btn_row = [
+        {
+            "type": "button",
+            "action": {"type": "message", "label": s.sector, "text": f"sector {s.sector}"},
+            "style": "link",
+            "height": "sm",
+            "flex": 1,
+            "color": SECTOR_COLORS.get(s.sector, "#2980B9"),
+        }
+        for s in top4
+    ]
+
+    return {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "🏭 Sector Overview", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+                {"type": "text", "text": "กลุ่มอุตสาหกรรม SET — แตะกลุ่มเพื่อดูหุ้น", "size": "xxs", "color": "#CCCCCC"},
+            ],
+            "backgroundColor": "#0D0D1A",
+            "paddingAll": "14px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "xs",
+            "contents": [
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        {"type": "text", "text": "Sector", "size": "xxs", "color": "#AAAAAA", "flex": 3},
+                        {"type": "text", "text": "Stage2%", "size": "xxs", "color": "#AAAAAA", "flex": 2, "align": "end"},
+                        {"type": "text", "text": "▲/▼", "size": "xxs", "color": "#AAAAAA", "flex": 2, "align": "end"},
+                    ],
+                },
+                {"type": "separator"},
+                *rows,
+            ],
+            "paddingAll": "14px",
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "xs",
+            "contents": [
+                {"type": "text", "text": "ดูหุ้นใน Sector:", "size": "xxs", "color": "#7F8C8D"},
+                {"type": "box", "layout": "horizontal", "contents": btn_row[:2]},
+                {"type": "box", "layout": "horizontal", "contents": btn_row[2:4]} if len(btn_row) > 2 else {"type": "box", "layout": "vertical", "contents": []},
+            ],
+            "paddingAll": "10px",
+        },
+    }
+
+
+def build_stage_picker_card(breadth: Optional[MarketBreadth] = None) -> dict:
+    """4-bubble carousel for stage picker (Stage 1–4) with counts from breadth."""
+    STAGE_BG = {1: "#555555", 2: "#1B5E20", 3: "#E65100", 4: "#B71C1C"}
+    STAGE_DESC = {
+        1: "Basing — สะสมตัว\nรอ breakout",
+        2: "Uptrend ✅\nโซนซื้อที่ดีที่สุด",
+        3: "Topping ⚠️\nระวัง",
+        4: "Downtrend ❌\nหลีกเลี่ยง",
+    }
+    STAGE_ICON = {1: "⚪", 2: "🟢", 3: "🟡", 4: "🔴"}
+
+    stage_counts: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
+    if breadth:
+        stage_counts = {
+            1: getattr(breadth, "stage1_count", 0),
+            2: getattr(breadth, "stage2_count", 0),
+            3: getattr(breadth, "stage3_count", 0),
+            4: getattr(breadth, "stage4_count", 0),
+        }
+
+    bubbles = []
+    for s in range(1, 5):
+        count = stage_counts.get(s, 0)
+        bubbles.append({
+            "type": "bubble",
+            "size": "kilo",
+            "header": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": f"{STAGE_ICON[s]} Stage {s}", "weight": "bold", "size": "md", "color": "#FFFFFF"},
+                ],
+                "backgroundColor": STAGE_BG[s],
+                "paddingAll": "12px",
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "xs",
+                "contents": [
+                    {"type": "text", "text": STAGE_DESC[s], "size": "xxs", "color": "#555555", "wrap": True},
+                    {"type": "text", "text": f"{count} หุ้น", "size": "sm", "weight": "bold", "color": STAGE_COLOR.get(s, "#333333")},
+                ],
+                "paddingAll": "10px",
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "button", "action": {"type": "message", "label": f"ดู Stage {s}", "text": f"stage{s}"}, "style": "primary", "color": STAGE_BG[s], "height": "sm"},
+                ],
+                "paddingAll": "6px",
+            },
+        })
+    return {"type": "carousel", "contents": bubbles}
+
+
+def build_watchlist_stock_card(signal: StockSignal, fundamentals: dict) -> dict:
+    """Deep insight card: Technical + Fundamental data for watchlist view."""
+    pcolor = PATTERN_COLOR.get(signal.pattern, "#7F8C8D")
+    pattern_label = PATTERN_LABEL.get(signal.pattern, signal.pattern)
+    stage_label = STAGE_LABEL.get(signal.stage, f"Stage {signal.stage}")
+    chg_color = _pct_color(signal.change_pct)
+    chg_sign = "+" if signal.change_pct > 0 else ""
+
+    ma_rows = []
+    if signal.sma50:
+        gap50 = (signal.close - signal.sma50) / signal.sma50 * 100
+        ma_rows.append(_detail_row("SMA50", f"฿{signal.sma50:,.2f}", f"{gap50:+.1f}%", _pct_color(gap50)))
+    if signal.sma200:
+        gap200 = (signal.close - signal.sma200) / signal.sma200 * 100
+        ma_rows.append(_detail_row("SMA200", f"฿{signal.sma200:,.2f}", f"{gap200:+.1f}%", _pct_color(gap200)))
+
+    # Fundamental rows
+    fund_rows = []
+    pe = fundamentals.get("pe_ratio")
+    if pe:
+        fund_rows.append(_detail_row("P/E", f"{pe:.1f}x", "", "#7F8C8D"))
+    pb = fundamentals.get("pb_ratio")
+    if pb:
+        fund_rows.append(_detail_row("P/B", f"{pb:.2f}x", "", "#7F8C8D"))
+    div = fundamentals.get("dividend_yield")
+    if div:
+        fund_rows.append(_detail_row("Dividend", f"{div:.2f}%", "", "#27AE60"))
+    mcap = fundamentals.get("market_cap_bn")
+    if mcap:
+        fund_rows.append(_detail_row("Mkt Cap", f"฿{mcap:.1f}Bn", "", "#7F8C8D"))
+    eps = fundamentals.get("eps")
+    if eps:
+        fund_rows.append(_detail_row("EPS", f"฿{eps:.2f}", "", "#7F8C8D"))
+
+    body_contents = [
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "ราคา", "size": "sm", "color": "#7F8C8D", "flex": 1},
+            {"type": "text", "text": f"฿{signal.close:,.2f}", "size": "sm", "weight": "bold", "align": "end"},
+        ]},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "Volume Ratio", "size": "sm", "color": "#7F8C8D", "flex": 1},
+            {"type": "text", "text": f"{signal.volume_ratio:.2f}x", "size": "sm", "weight": "bold", "align": "end",
+             "color": "#F39C12" if signal.volume_ratio >= 1.5 else "#FFFFFF"},
+        ]},
+        {"type": "separator"},
+        *ma_rows,
+        {"type": "separator"},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "Strength Score", "size": "sm", "color": "#7F8C8D", "flex": 1},
+            {"type": "text", "text": f"{int(signal.strength_score)}/100", "size": "sm", "weight": "bold", "color": "#F39C12", "align": "end"},
+        ]},
+    ]
+
+    if fund_rows:
+        body_contents += [
+            {"type": "separator"},
+            {"type": "text", "text": "Fundamentals", "size": "xs", "color": "#F39C12", "weight": "bold"},
+            *fund_rows,
+        ]
+
+    return {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text", "text": f"📌 {signal.symbol}", "weight": "bold", "size": "xl", "color": "#FFFFFF", "flex": 1},
+                    {"type": "text", "text": f"{chg_sign}{signal.change_pct:.2f}%", "size": "md", "color": chg_color, "align": "end", "weight": "bold"},
+                ]},
+                {"type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text", "text": stage_label, "size": "xs", "color": "#AAAAAA", "flex": 1},
+                    {"type": "text", "text": pattern_label, "size": "xs", "color": pcolor, "weight": "bold", "align": "end"},
+                ]},
+            ],
+            "backgroundColor": "#0D0D1A",
+            "paddingAll": "16px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": body_contents,
+            "paddingAll": "16px",
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {"type": "button", "action": {"type": "uri", "label": "🔗 TradingView", "uri": signal.tradingview_url}, "style": "primary", "color": "#1565C0"},
+                {"type": "box", "layout": "horizontal", "spacing": "sm", "contents": [
+                    {"type": "button", "action": {"type": "message", "label": f"ⓘ {STAGE_LABEL.get(signal.stage, 'Stage')}", "text": f"explain stage{signal.stage}"}, "style": "secondary", "height": "sm", "flex": 1},
+                    {"type": "button", "action": {"type": "message", "label": f"ⓘ {PATTERN_LABEL.get(signal.pattern, signal.pattern)}", "text": f"explain {signal.pattern}"}, "style": "secondary", "height": "sm", "flex": 1},
+                ]},
+            ],
+            "paddingAll": "12px",
+        },
+    }
+
+
 def build_explain_card(metric: str, explanation: str) -> dict:
     """Build a simple explanation bubble for a metric."""
     METRIC_ICONS = {
@@ -721,6 +972,137 @@ def build_explain_card(metric: str, explanation: str) -> dict:
             ],
             "paddingAll": "16px",
         },
+    }
+
+
+def build_guide_carousel() -> dict:
+    """4-bubble carousel: Stage / Pattern / Score+Volume / Quick Reference."""
+    stage_bubble = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [{"type": "text", "text": "📊 Stage Analysis", "weight": "bold", "size": "lg", "color": "#FFFFFF"}],
+            "backgroundColor": "#1A237E",
+            "paddingAll": "16px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": "Minervini Stage วิเคราะห์ตาม MA50/150/200", "size": "xs", "color": "#7F8C8D", "wrap": True},
+                {"type": "separator"},
+                _guide_row("⚪ Stage 1", "Basing — สะสมตัว รอ breakout", "#95A5A6"),
+                _guide_row("🟢 Stage 2", "Uptrend ✅ — โซนซื้อที่ดีที่สุด", "#27AE60"),
+                _guide_row("🟡 Stage 3", "Topping ⚠️ — ระวัง smart money ขาย", "#E67E22"),
+                _guide_row("🔴 Stage 4", "Downtrend ❌ — หลีกเลี่ยง", "#E74C3C"),
+                {"type": "separator"},
+                {"type": "text", "text": "Stage 2 เงื่อนไข:", "weight": "bold", "size": "xs", "color": "#27AE60"},
+                {"type": "text", "text": "ราคา > MA150 > MA200\nMA200 กำลังขึ้น\nราคา ≥ 52W low × 1.25\nราคา ≥ 52W high × 0.75", "size": "xxs", "color": "#555555", "wrap": True},
+            ],
+            "paddingAll": "16px",
+        },
+    }
+
+    pattern_bubble = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [{"type": "text", "text": "📈 Pattern Guide", "weight": "bold", "size": "lg", "color": "#FFFFFF"}],
+            "backgroundColor": "#0D47A1",
+            "paddingAll": "16px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                _guide_row("🚀 Breakout", "ราคา > 52W high + Vol ≥ 1.4x avg", "#27AE60"),
+                _guide_row("🏆 ATH Breakout", "Breakout + ใกล้/สูงกว่า All-Time High", "#F39C12"),
+                _guide_row("🔍 VCP", "ความผันผวนหดตัว 3+ ครั้ง + Vol แห้ง", "#2980B9"),
+                _guide_row("🎯 VCP Low Cheat", "Entry ที่ low ของ VCP contraction สุดท้าย", "#1ABC9C"),
+                _guide_row("⚙️ Consolidating", "Base หดตัว รอ breakout", "#95A5A6"),
+                _guide_row("📉 Going Down", "Stage 4 downtrend ชัดเจน", "#E74C3C"),
+                {"type": "separator"},
+                {"type": "text", "text": "Strategy: ซื้อ Breakout/VCP ใน Stage 2 เท่านั้น", "size": "xxs", "color": "#7F8C8D", "wrap": True},
+            ],
+            "paddingAll": "16px",
+        },
+    }
+
+    score_vol_bubble = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [{"type": "text", "text": "💪 Score & Volume", "weight": "bold", "size": "lg", "color": "#FFFFFF"}],
+            "backgroundColor": "#1B5E20",
+            "paddingAll": "16px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": "Strength Score (0–100)", "weight": "bold", "size": "sm", "color": "#F39C12"},
+                _guide_row("Stage 2", "+40 คะแนน", "#27AE60"),
+                _guide_row("ATH Breakout", "+25 คะแนน", "#F39C12"),
+                _guide_row("Breakout", "+20 คะแนน", "#27AE60"),
+                _guide_row("VCP", "+15 คะแนน", "#2980B9"),
+                _guide_row("Volume bonus", "สูงสุด +15 คะแนน", "#E67E22"),
+                _guide_row("52W proximity", "สูงสุด +20 คะแนน", "#9B59B6"),
+                {"type": "separator"},
+                {"type": "text", "text": "Volume Ratio", "weight": "bold", "size": "sm", "color": "#F39C12"},
+                {"type": "text", "text": "= Volume วันนี้ ÷ ค่าเฉลี่ย 20 วัน\n1.0x ปกติ  |  1.4x+ สูง  |  2.0x+ สูงมาก", "size": "xxs", "color": "#555555", "wrap": True},
+            ],
+            "paddingAll": "16px",
+        },
+    }
+
+    quickref_bubble = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [{"type": "text", "text": "⚡ Quick Reference", "weight": "bold", "size": "lg", "color": "#FFFFFF"}],
+            "backgroundColor": "#4A148C",
+            "paddingAll": "16px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "xs",
+            "contents": [
+                _cmd_button("ตลาด", "Market Breadth"),
+                _cmd_button("ดัชนี", "SET50/MAI/sSET"),
+                _cmd_button("sector", "กลุ่มอุตสาหกรรม"),
+                _cmd_button("breakout", "หุ้น Breakout"),
+                _cmd_button("vcp", "VCP Setups"),
+                _cmd_button("stage2", "Stage 2 Stocks"),
+                _cmd_button("watchlist", "Watchlist ของคุณ"),
+                _cmd_button("guide", "คู่มือ (การ์ดนี้)"),
+            ],
+            "paddingAll": "16px",
+        },
+    }
+
+    return {"type": "carousel", "contents": [stage_bubble, pattern_bubble, score_vol_bubble, quickref_bubble]}
+
+
+def _guide_row(label: str, desc: str, color: str = "#333333") -> dict:
+    return {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+            {"type": "text", "text": label, "size": "xs", "color": color, "weight": "bold", "flex": 2},
+            {"type": "text", "text": desc, "size": "xs", "color": "#555555", "flex": 3, "wrap": True},
+        ],
     }
 
 
@@ -783,24 +1165,26 @@ def build_help_card() -> dict:
         "body": {
             "type": "box",
             "layout": "vertical",
-            "spacing": "md",
+            "spacing": "sm",
             "contents": [
                 {"type": "text", "text": "ภาพรวมตลาด", "weight": "bold", "size": "sm", "color": "#F39C12"},
-                _cmd_row("ตลาด / market", "Market Breadth"),
-                _cmd_row("ดัชนี / index", "SET50, SET100, MAI, sSET"),
-                _cmd_row("sector / เซกเตอร์", "แนวโน้มกลุ่มอุตสาหกรรม"),
+                _cmd_button("ตลาด", "Market Breadth"),
+                _cmd_button("ดัชนี", "SET50, SET100, MAI, sSET"),
+                _cmd_button("sector", "แนวโน้มกลุ่มอุตสาหกรรม"),
                 {"type": "separator"},
                 {"type": "text", "text": "รายชื่อหุ้น", "weight": "bold", "size": "sm", "color": "#F39C12"},
-                _cmd_row("breakout", "Breakout stocks"),
-                _cmd_row("ath", "ATH Breakout stocks"),
-                _cmd_row("vcp", "VCP Pattern stocks"),
-                _cmd_row("stage2", "Stage 2 stocks"),
-                _cmd_row("stage1", "Stage 1 stocks"),
+                _cmd_button("breakout", "Breakout stocks"),
+                _cmd_button("ath", "ATH Breakout stocks"),
+                _cmd_button("vcp", "VCP Pattern stocks"),
+                _cmd_button("stage2", "Stage 2 stocks"),
+                _cmd_button("stage1", "Stage 1 stocks"),
                 {"type": "separator"},
                 {"type": "text", "text": "Watchlist", "weight": "bold", "size": "sm", "color": "#F39C12"},
-                _cmd_row("watchlist", "ดู Watchlist"),
-                _cmd_row("add PTT", "เพิ่ม PTT"),
-                _cmd_row("remove PTT", "ลบ PTT"),
+                _cmd_button("watchlist", "ดู Watchlist"),
+                {"type": "separator"},
+                {"type": "text", "text": "คู่มือ & อธิบาย", "weight": "bold", "size": "sm", "color": "#F39C12"},
+                _cmd_button("guide", "คู่มือ Stage/Pattern/Score"),
+                _cmd_button("stage", "เลือก Stage"),
                 {"type": "separator"},
                 {"type": "text", "text": "วิเคราะห์หุ้นรายตัว", "weight": "bold", "size": "sm", "color": "#F39C12"},
                 {"type": "text", "text": "พิมพ์ชื่อหุ้น เช่น PTT, ADVANC, KBANK", "size": "xs", "color": "#7F8C8D", "wrap": True},
@@ -818,6 +1202,21 @@ def _cmd_row(cmd: str, desc: str) -> dict:
             {"type": "text", "text": cmd, "size": "xs", "weight": "bold", "color": "#2980B9", "flex": 2},
             {"type": "text", "text": desc, "size": "xs", "color": "#7F8C8D", "flex": 3},
         ],
+    }
+
+
+def _cmd_button(cmd: str, desc: str) -> dict:
+    """Tappable command button — sends cmd text as a message when tapped."""
+    send_text = cmd.split(" / ")[0].strip()
+    label = f"{send_text}  —  {desc}"
+    if len(label) > 40:
+        label = label[:39] + "…"
+    return {
+        "type": "button",
+        "action": {"type": "message", "label": label, "text": send_text},
+        "style": "link",
+        "height": "sm",
+        "color": "#2980B9",
     }
 
 
