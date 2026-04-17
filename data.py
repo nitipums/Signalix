@@ -523,10 +523,11 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
             if all_dates:
                 latest = max(all_dates)
                 staleness_days = (pd.Timestamp.now() - latest).days
-                if staleness_days <= 5:
-                    logger.info("fetch_all_stocks: BQ hit (%d symbols, latest=%s)", len(bq_data), latest.date())
+                symbol_count = len(bq_data)
+                if staleness_days <= 5 and symbol_count >= 500:
+                    logger.info("fetch_all_stocks: BQ hit (%d symbols, latest=%s)", symbol_count, latest.date())
                     return bq_data
-                logger.info("BQ stale (%d days old) — falling back to yfinance", staleness_days)
+                logger.info("BQ not ready (symbols=%d, staleness=%dd) — falling back to yfinance", symbol_count, staleness_days)
 
     results: dict[str, pd.DataFrame] = {}
     all_symbols = GET_ALL_SYMBOLS_WITH_INDEX()
