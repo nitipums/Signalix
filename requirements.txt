@@ -6,6 +6,7 @@ pandas>=2.0.0
 numpy>=1.26.0
 line-bot-sdk>=3.0.0,<3.11.0
 google-cloud-firestore>=2.11.0
+google-cloud-bigquery[pandas]>=3.11.0
 google-cloud-secret-manager>=2.16.0
 httpx>=0.24.0
 python-dotenv>=1.0.0

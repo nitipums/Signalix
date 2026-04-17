@@ -17,6 +17,22 @@ logger = logging.getLogger(__name__)
 
 BANGKOK_TZ = pytz.timezone("Asia/Bangkok")
 
+# ─── BigQuery (optional) ──────────────────────────────────────────────────────
+_bq_client = None
+_bq_project = ""
+_bq_dataset = "signalix"
+BQ_AVAILABLE = False
+
+_BQ_SCHEMA = [
+    ("symbol", "STRING"),
+    ("date",   "DATE"),
+    ("open",   "FLOAT64"),
+    ("high",   "FLOAT64"),
+    ("low",    "FLOAT64"),
+    ("close",  "FLOAT64"),
+    ("volume", "INT64"),
+]
+
 # ─── Symbol list ─────────────────────────────────────────────────────────────
 # Major SET stocks covering key sectors + all SET indexes.
 # Expand this list or replace with a live fetch from SET Trade API.
@@ -339,14 +355,179 @@ def fetch_ohlcv(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
         return None
 
 
+# ─── BigQuery helpers ────────────────────────────────────────────────────────
+
+def init_bq(project_id: str, dataset: str = "signalix") -> None:
+    """Initialize BigQuery client and ensure ohlcv table exists."""
+    global _bq_client, _bq_project, _bq_dataset, BQ_AVAILABLE
+    try:
+        from google.cloud import bigquery
+        _bq_client = bigquery.Client(project=project_id)
+        _bq_project = project_id
+        _bq_dataset = dataset
+        _ensure_bq_table()
+        BQ_AVAILABLE = True
+        logger.info("BigQuery initialized: %s.%s.ohlcv", project_id, dataset)
+    except Exception as exc:
+        logger.warning("BigQuery init failed (continuing without BQ): %s", exc)
+        BQ_AVAILABLE = False
+
+
+def _bq_table() -> str:
+    return f"`{_bq_project}.{_bq_dataset}.ohlcv`"
+
+
+def _ensure_bq_table() -> None:
+    from google.cloud import bigquery
+    schema = [bigquery.SchemaField(n, t) for n, t in _BQ_SCHEMA]
+    table_id = f"{_bq_project}.{_bq_dataset}.ohlcv"
+    table = bigquery.Table(table_id, schema=schema)
+    table.time_partitioning = bigquery.TimePartitioning(
+        type_=bigquery.TimePartitioningType.DAY, field="date"
+    )
+    table.clustering_fields = ["symbol"]
+    _bq_client.create_table(table, exists_ok=True)
+    logger.info("BQ table ready: %s", table_id)
+
+
+def _df_to_bq(symbol: str, df: pd.DataFrame) -> "pd.DataFrame":
+    """Convert OHLCV DataFrame to BQ-ready DataFrame."""
+    bq = df.reset_index()[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
+    bq.columns = ["date", "open", "high", "low", "close", "volume"]
+    bq["symbol"] = symbol
+    bq["date"] = pd.to_datetime(bq["date"]).dt.date
+    bq = bq.dropna(subset=["close"])
+    bq["volume"] = bq["volume"].fillna(0).astype("int64")
+    return bq[["symbol", "date", "open", "high", "low", "close", "volume"]]
+
+
+def save_ohlcv_to_bq(symbol: str, df: pd.DataFrame) -> None:
+    """Append full OHLCV history for one symbol to BigQuery (used during sync)."""
+    if _bq_client is None or df is None or df.empty:
+        return
+    try:
+        from google.cloud import bigquery
+        bq_df = _df_to_bq(symbol, df)
+        table_id = f"{_bq_project}.{_bq_dataset}.ohlcv"
+        job = _bq_client.load_table_from_dataframe(
+            bq_df, table_id,
+            job_config=bigquery.LoadJobConfig(
+                write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+                schema=[bigquery.SchemaField(n, t) for n, t in _BQ_SCHEMA],
+            ),
+        )
+        job.result()
+        logger.info("BQ: saved %d rows for %s", len(bq_df), symbol)
+    except Exception as exc:
+        logger.error("save_ohlcv_to_bq(%s) failed: %s", symbol, exc)
+
+
+def load_all_ohlcv_from_bq(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
+    """Load last N days of OHLCV for all symbols from BQ. Returns dict[symbol, df]."""
+    if _bq_client is None:
+        return {}
+    try:
+        query = f"""
+        SELECT symbol, date, open, high, low, close, volume
+        FROM {_bq_table()}
+        WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL {lookback_days} DAY)
+        ORDER BY symbol, date
+        """
+        df = _bq_client.query(query).to_dataframe()
+        if df.empty:
+            return {}
+        df["date"] = pd.to_datetime(df["date"])
+        result: dict[str, pd.DataFrame] = {}
+        for symbol, grp in df.groupby("symbol"):
+            g = grp.set_index("date").drop(columns=["symbol"])
+            g.index.name = "Date"
+            g.columns = ["Open", "High", "Low", "Close", "Volume"]
+            result[symbol] = g
+        logger.info("BQ: loaded %d symbols (%d rows, %d-day window)", len(result), len(df), lookback_days)
+        return result
+    except Exception as exc:
+        logger.error("load_all_ohlcv_from_bq failed: %s", exc)
+        return {}
+
+
+def load_ath_from_bq() -> dict[str, float]:
+    """Compute ATH for every symbol from full BQ history. Returns {symbol: ath}."""
+    if _bq_client is None:
+        return {}
+    try:
+        query = f"SELECT symbol, MAX(high) AS ath FROM {_bq_table()} GROUP BY symbol"
+        df = _bq_client.query(query).to_dataframe()
+        return {row.symbol: round(float(row.ath), 4) for row in df.itertuples()}
+    except Exception as exc:
+        logger.error("load_ath_from_bq failed: %s", exc)
+        return {}
+
+
+def append_new_candles_to_bq(all_data: dict[str, pd.DataFrame]) -> None:
+    """After a scan, append any candles newer than what's already in BQ."""
+    if _bq_client is None or not all_data:
+        return
+    try:
+        from google.cloud import bigquery
+        symbols_csv = ", ".join(f"'{s}'" for s in all_data if s != "SET")
+        max_df = _bq_client.query(f"""
+            SELECT symbol, MAX(date) AS max_date
+            FROM {_bq_table()}
+            WHERE symbol IN ({symbols_csv})
+            GROUP BY symbol
+        """).to_dataframe()
+        max_dates = dict(zip(max_df["symbol"], max_df["max_date"]))
+
+        new_rows = []
+        for symbol, df in all_data.items():
+            if symbol == "SET" or df is None or df.empty:
+                continue
+            bq_df = _df_to_bq(symbol, df)
+            last = max_dates.get(symbol)
+            if last is not None:
+                bq_df = bq_df[bq_df["date"] > last]
+            if not bq_df.empty:
+                new_rows.append(bq_df)
+
+        if not new_rows:
+            logger.info("BQ: no new candles to append")
+            return
+        combined = pd.concat(new_rows, ignore_index=True)
+        table_id = f"{_bq_project}.{_bq_dataset}.ohlcv"
+        job = _bq_client.load_table_from_dataframe(
+            combined, table_id,
+            job_config=bigquery.LoadJobConfig(
+                write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+                schema=[bigquery.SchemaField(n, t) for n, t in _BQ_SCHEMA],
+            ),
+        )
+        job.result()
+        logger.info("BQ: appended %d new candles across %d symbols", len(combined), len(new_rows))
+    except Exception as exc:
+        logger.error("append_new_candles_to_bq failed: %s", exc)
+
+
 def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
     """
     Fetch OHLCV for all SET_STOCKS + SET index.
+    Uses BigQuery cache when available (fast), falls back to yfinance.
 
     Returns:
         Dict mapping clean symbol → DataFrame.
         Symbols that failed are omitted.
     """
+    if BQ_AVAILABLE:
+        bq_data = load_all_ohlcv_from_bq(lookback_days=400)
+        if bq_data:
+            all_dates = [df.index.max() for df in bq_data.values() if not df.empty]
+            if all_dates:
+                latest = max(all_dates)
+                staleness_days = (pd.Timestamp.now() - latest).days
+                if staleness_days <= 5:
+                    logger.info("fetch_all_stocks: BQ hit (%d symbols, latest=%s)", len(bq_data), latest.date())
+                    return bq_data
+                logger.info("BQ stale (%d days old) — falling back to yfinance", staleness_days)
+
     results: dict[str, pd.DataFrame] = {}
     all_symbols = GET_ALL_SYMBOLS_WITH_INDEX()
 
@@ -495,6 +676,9 @@ def sync_ath_to_firestore(db, symbols: list[str], chunk: int = 0, chunk_size: in
                     merge=True,
                 )
             synced[symbol] = ath_val
+            # Save full OHLCV history to BigQuery while we have the data
+            if BQ_AVAILABLE:
+                save_ohlcv_to_bq(symbol, df)
         except Exception as exc:
             logger.warning("sync_ath: error for %s: %s", symbol, exc)
 

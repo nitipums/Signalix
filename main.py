@@ -31,7 +31,12 @@ from analyzer import (
     scan_stock,
 )
 from config import get_settings
-from data import SECTOR_MAP, fetch_indexes, fetch_ohlcv, fetch_ohlcv_settrade, get_fundamentals, get_stock_list, load_ath_cache, load_signals_from_firestore, resolve_symbol, save_signals_to_firestore, sync_ath_to_firestore, tradingview_url
+from data import (
+    SECTOR_MAP, append_new_candles_to_bq, BQ_AVAILABLE, fetch_indexes,
+    fetch_ohlcv, fetch_ohlcv_settrade, get_fundamentals, get_stock_list,
+    init_bq, load_ath_cache, load_ath_from_bq, load_signals_from_firestore,
+    resolve_symbol, save_signals_to_firestore, sync_ath_to_firestore, tradingview_url,
+)
 from notifier import (
     broadcast_flex,
     build_compact_stock_carousel,
@@ -62,6 +67,11 @@ try:
 except Exception:
     _db = None
     FIRESTORE_AVAILABLE = False
+
+# ─── BigQuery (optional) ───────────────────────────────────────────────────────
+_bq_settings = get_settings()
+if _bq_settings.gcp_project_id:
+    init_bq(_bq_settings.gcp_project_id, _bq_settings.bq_dataset)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("signalix")
@@ -190,13 +200,17 @@ async def _background_scan():
     global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
     try:
         logger.info("Running startup scan...")
-        if FIRESTORE_AVAILABLE and _db:
+        # Load ATH: prefer BQ (computed from full history), fall back to Firestore
+        if BQ_AVAILABLE:
+            _ath_cache = load_ath_from_bq()
+            logger.info("ATH cache loaded from BQ: %d entries", len(_ath_cache))
+        elif FIRESTORE_AVAILABLE and _db:
             _ath_cache = load_ath_cache(_db)
-            logger.info("ATH cache loaded: %d entries", len(_ath_cache))
-            if not _last_signals:
-                pre_signals = load_signals_from_firestore(_db)
-                if pre_signals:
-                    _last_signals = pre_signals
+            logger.info("ATH cache loaded from Firestore: %d entries", len(_ath_cache))
+        if FIRESTORE_AVAILABLE and _db and not _last_signals:
+            pre_signals = load_signals_from_firestore(_db)
+            if pre_signals:
+                _last_signals = pre_signals
         signals, all_data = run_full_scan(ath_cache=_ath_cache)
         _last_signals = signals
         _last_scan_time = datetime.now(BANGKOK_TZ)
@@ -205,9 +219,11 @@ async def _background_scan():
         _last_sector_trends = compute_sector_trends(signals)
         _last_indexes = fetch_indexes()
         logger.info("Startup scan complete: %d stocks", len(signals))
+        loop = asyncio.get_event_loop()
         if FIRESTORE_AVAILABLE and _db:
-            loop = asyncio.get_event_loop()
             loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
+        if BQ_AVAILABLE:
+            loop.run_in_executor(None, append_new_candles_to_bq, all_data)
     except Exception as exc:
         logger.error("Startup scan failed: %s", exc)
 
@@ -287,8 +303,11 @@ async def scan(
     global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
 
     logger.info("Running scan: type=%s broadcast=%s", body.scan_type, body.broadcast)
-    if FIRESTORE_AVAILABLE and _db and not _ath_cache:
-        _ath_cache = load_ath_cache(_db)
+    if not _ath_cache:
+        if BQ_AVAILABLE:
+            _ath_cache = load_ath_from_bq()
+        elif FIRESTORE_AVAILABLE and _db:
+            _ath_cache = load_ath_cache(_db)
     signals, all_data = run_full_scan(ath_cache=_ath_cache)
     breadth = compute_market_breadth(signals, index_df=all_data.get("SET"))
     sector_trends = compute_sector_trends(signals)
@@ -301,11 +320,13 @@ async def scan(
     _last_sector_trends = sector_trends
     _last_indexes = indexes
 
-    # Persist to Firestore if available
+    # Persist to Firestore + BigQuery
+    loop = asyncio.get_event_loop()
     if FIRESTORE_AVAILABLE and _db:
         _save_breadth_to_firestore(breadth)
-        loop = asyncio.get_event_loop()
         loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
+    if BQ_AVAILABLE:
+        loop.run_in_executor(None, append_new_candles_to_bq, all_data)
 
     if not body.broadcast:
         return {"scanned": len(signals), "breadth": breadth.__dict__}
