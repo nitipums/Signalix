@@ -290,6 +290,18 @@ def get_all_symbols() -> list[str]:
     return SET_STOCKS + ["SET"]  # "SET" maps to ^SET.BK
 
 
+def fetch_ohlcv_settrade(symbol: str, period: str = "1Y") -> Optional[pd.DataFrame]:
+    """Fetch OHLCV via Settrade Open API only — no yfinance fallback."""
+    try:
+        from settrade_client import get_ohlcv, is_api_available
+        if not is_api_available():
+            return None
+        return get_ohlcv(symbol, period=period)
+    except Exception as exc:
+        logger.error("fetch_ohlcv_settrade(%s) failed: %s", symbol, exc)
+        return None
+
+
 def fetch_ohlcv(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
     """
     Fetch OHLCV for a single symbol.
@@ -500,3 +512,86 @@ def load_ath_cache(db) -> dict[str, float]:
     except Exception as exc:
         logger.error("load_ath_cache failed: %s", exc)
         return {}
+
+
+def save_signals_to_firestore(signals: list, db) -> None:
+    """Batch-write latest scan signals to Firestore signals/{symbol}."""
+    if not signals or db is None:
+        return
+    try:
+        batch = db.batch()
+        for signal in signals:
+            doc_ref = db.collection("signals").document(signal.symbol)
+            batch.set(doc_ref, signal.__dict__)
+        batch.commit()
+        logger.info("Saved %d signals to Firestore", len(signals))
+    except Exception as exc:
+        logger.error("save_signals_to_firestore failed: %s", exc)
+
+
+def load_signals_from_firestore(db) -> list:
+    """Load latest signals snapshot from Firestore signals collection."""
+    if db is None:
+        return []
+    try:
+        from analyzer import StockSignal
+        docs = db.collection("signals").stream()
+        signals = []
+        for doc in docs:
+            try:
+                signals.append(StockSignal(**doc.to_dict()))
+            except Exception:
+                continue
+        signals.sort(key=lambda s: s.strength_score, reverse=True)
+        logger.info("Loaded %d signals from Firestore", len(signals))
+        return signals
+    except Exception as exc:
+        logger.error("load_signals_from_firestore failed: %s", exc)
+        return []
+
+
+def fetch_fundamentals(symbol: str) -> dict:
+    """Fetch fundamental data via yfinance Ticker.info for a SET stock."""
+    ticker = _to_yf_ticker(symbol)
+    try:
+        info = yf.Ticker(ticker).info
+        market_cap = info.get("marketCap")
+        return {
+            "pe_ratio":       info.get("trailingPE"),
+            "forward_pe":     info.get("forwardPE"),
+            "pb_ratio":       info.get("priceToBook"),
+            "dividend_yield": round(info.get("dividendYield", 0) * 100, 2) if info.get("dividendYield") else None,
+            "market_cap":     market_cap,
+            "market_cap_bn":  round(market_cap / 1e9, 1) if market_cap else None,
+            "eps":            info.get("trailingEps"),
+            "sector":         info.get("sector"),
+            "fetched_at":     datetime.now(BANGKOK_TZ).isoformat(),
+        }
+    except Exception as exc:
+        logger.error("fetch_fundamentals(%s) failed: %s", symbol, exc)
+        return {}
+
+
+def get_fundamentals(symbol: str, db=None) -> dict:
+    """Return cached fundamentals from Firestore or fetch fresh if >24h old."""
+    if db is not None:
+        try:
+            doc = db.collection("fundamentals_cache").document(symbol).get()
+            if doc.exists:
+                data = doc.to_dict()
+                fetched_at_str = data.get("fetched_at", "")
+                if fetched_at_str:
+                    fetched_at = datetime.fromisoformat(fetched_at_str)
+                    age_hours = (datetime.now(BANGKOK_TZ) - fetched_at).total_seconds() / 3600
+                    if age_hours < 24:
+                        return data
+        except Exception:
+            pass
+
+    fund = fetch_fundamentals(symbol)
+    if fund and db is not None:
+        try:
+            db.collection("fundamentals_cache").document(symbol).set(fund)
+        except Exception:
+            pass
+    return fund
