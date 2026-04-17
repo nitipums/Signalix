@@ -404,6 +404,7 @@ def _df_to_bq(symbol: str, df: pd.DataFrame) -> "pd.DataFrame":
 def save_ohlcv_to_bq(symbol: str, df: pd.DataFrame) -> None:
     """Append full OHLCV history for one symbol to BigQuery (used during sync)."""
     if _bq_client is None or df is None or df.empty:
+        logger.warning("save_ohlcv_to_bq(%s): skipped — client=%s, df_empty=%s", symbol, _bq_client is None, df is None or df.empty)
         return
     try:
         from google.cloud import bigquery

@@ -232,10 +232,12 @@ async def _background_scan():
 
 @app.get("/health")
 async def health():
+    from data import BQ_AVAILABLE as _bq_avail
     return {
         "status": "ok",
         "time": datetime.now(BANGKOK_TZ).isoformat(),
         "firestore": FIRESTORE_AVAILABLE,
+        "bigquery": _bq_avail,
         "cached_stocks": len(_last_signals),
     }
 
