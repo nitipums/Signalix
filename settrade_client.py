@@ -53,10 +53,10 @@ def get_ohlcv(symbol: str, period: str = "1Y") -> Optional[pd.DataFrame]:
     """
     Fetch historical daily OHLCV via settrade_v2 SDK.
 
-    get_candlestick returns a list with one dict where each key holds a list:
-    [{"close": [...], "high": [...], "low": [...], "open": [...],
-      "time": [...],  "volume": [...]}]
-    time values are Unix timestamps (seconds).
+    Response is a plain dict with array values:
+    {"time": [...], "open": [...], "high": [...], "low": [...],
+     "close": [...], "volume": [...]}
+    time values are Unix timestamps in seconds.
     """
     period_to_limit = {"1M": 30, "3M": 90, "6M": 180, "1Y": 365, "3Y": 1095, "5Y": 1825}
     limit = period_to_limit.get(period, 365)
@@ -66,16 +66,15 @@ def get_ohlcv(symbol: str, period: str = "1Y") -> Optional[pd.DataFrame]:
         if not investor:
             return None
         market = investor.MarketData()
-        res = market.get_candlestick(
+        data = market.get_candlestick(
             symbol=symbol,
             interval="1d",
             limit=limit,
             normalized=True,
         )
-        if not res:
+        if not data or "close" not in data:
             return None
 
-        data = res[0]  # single dict with list values
         df = pd.DataFrame({
             "Date":   pd.to_datetime(data["time"], unit="s"),
             "Open":   data["open"],
@@ -86,7 +85,9 @@ def get_ohlcv(symbol: str, period: str = "1Y") -> Optional[pd.DataFrame]:
         })
         df = df.set_index("Date").sort_index()
         df.index = df.index.tz_localize(None)
-        return df
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df.dropna(subset=["Close"])
 
     except Exception as exc:
         logger.error("get_ohlcv(%s) failed: %s", symbol, exc)
@@ -94,27 +95,8 @@ def get_ohlcv(symbol: str, period: str = "1Y") -> Optional[pd.DataFrame]:
 
 
 def get_stock_list_from_api() -> list[dict]:
-    """Fetch all SET-listed securities."""
-    try:
-        investor = _get_investor()
-        if not investor:
-            return []
-        market = investor.MarketData()
-        securities = market.get_security_list(market="SET")
-        result = []
-        for s in securities:
-            result.append({
-                "symbol":   s.get("symbol", ""),
-                "name_th":  s.get("nameTH") or s.get("securityNameTH", ""),
-                "name_en":  s.get("nameEN") or s.get("securityNameEN", ""),
-                "sector":   s.get("industryName") or s.get("sector", ""),
-                "market":   s.get("market", "SET"),
-            })
-        logger.info("Fetched %d securities from Settrade API", len(result))
-        return result
-    except Exception as exc:
-        logger.error("get_stock_list_from_api failed: %s", exc)
-        return []
+    """Settrade API has no security list endpoint — returns empty list."""
+    return []
 
 
 def get_quote(symbol: str) -> Optional[dict]:

@@ -116,15 +116,21 @@ async def test_settrade():
     except Exception as e:
         result["quote_error"] = str(e)
 
-    # ── Candlestick ──
+    # ── Candlestick (parsed) ──
     try:
-        res = market.get_candlestick(symbol="PTT", interval="1d", limit=5, normalized=True)
-        result["candlestick_raw"] = res
+        from settrade_client import get_ohlcv
+        df = get_ohlcv("PTT", period="1M")
+        if df is not None:
+            result["ohlcv_PTT"] = {
+                "rows": len(df),
+                "latest_date": str(df.index[-1].date()),
+                "latest_close": round(float(df["Close"].iloc[-1]), 2),
+                "sample": df.tail(3).reset_index().to_dict(orient="records"),
+            }
+        else:
+            result["ohlcv_PTT"] = None
     except Exception as e:
-        result["candlestick_error"] = str(e)
-
-    # ── Available methods ──
-    result["available_methods"] = [m for m in dir(market) if not m.startswith("_")]
+        result["ohlcv_error"] = str(e)
 
     return result
 
