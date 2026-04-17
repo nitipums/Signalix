@@ -1,0 +1,18 @@
+steps:
+  # Build and deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    args:
+      - gcloud
+      - run
+      - deploy
+      - signalix
+      - --source=.
+      - --region=asia-southeast1
+      - --allow-unauthenticated
+      - --memory=512Mi
+      - --timeout=60
+      - --update-secrets=LINE_CHANNEL_ACCESS_TOKEN=LINE_CHANNEL_ACCESS_TOKEN:latest,LINE_CHANNEL_SECRET=LINE_CHANNEL_SECRET:latest,SCAN_SECRET=SCAN_SECRET:latest
+      - --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,ENVIRONMENT=production
+
+options:
+  logging: CLOUD_LOGGING_ONLY
