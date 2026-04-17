@@ -357,8 +357,9 @@ async def scan(
 async def sync_ath_endpoint(
     x_scan_secret: Optional[str] = Header(default=None),
     chunk: int = 0,
+    chunk_size: int = 20,
 ):
-    """One-time ATH sync endpoint. Call with ?chunk=0, ?chunk=1, ... until synced=0."""
+    """One-time ATH sync endpoint. Call with ?chunk=0&chunk_size=20, increment chunk until next_chunk=null."""
     settings = get_settings()
     if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
@@ -367,10 +368,16 @@ async def sync_ath_endpoint(
 
     global _ath_cache
     symbols = get_stock_list()
-    synced = sync_ath_to_firestore(_db, symbols, chunk=chunk)
+    synced = sync_ath_to_firestore(_db, symbols, chunk=chunk, chunk_size=chunk_size)
     _ath_cache.update(synced)
-    total_chunks = (len(symbols) + 99) // 100
-    return {"synced": len(synced), "chunk": chunk, "total_chunks": total_chunks, "next_chunk": chunk + 1 if chunk + 1 < total_chunks else None}
+    total_chunks = (len(symbols) + chunk_size - 1) // chunk_size
+    return {
+        "synced": len(synced),
+        "chunk": chunk,
+        "chunk_size": chunk_size,
+        "total_chunks": total_chunks,
+        "next_chunk": chunk + 1 if chunk + 1 < total_chunks else None,
+    }
 
 
 @app.get("/admin/check")
