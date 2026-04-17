@@ -382,10 +382,9 @@ def _ensure_bq_table() -> None:
     schema = [bigquery.SchemaField(n, t) for n, t in _BQ_SCHEMA]
     table_id = f"{_bq_project}.{_bq_dataset}.ohlcv"
     table = bigquery.Table(table_id, schema=schema)
-    table.time_partitioning = bigquery.TimePartitioning(
-        type_=bigquery.TimePartitioningType.DAY, field="date"
-    )
-    table.clustering_fields = ["symbol"]
+    # No time partitioning — avoids 5,000 partition-modification/day quota.
+    # Clustering by symbol keeps per-symbol queries fast.
+    table.clustering_fields = ["symbol", "date"]
     _bq_client.create_table(table, exists_ok=True)
     logger.info("BQ table ready: %s", table_id)
 
