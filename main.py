@@ -38,7 +38,7 @@ from data import (
     fetch_indexes_with_history, fetch_latest_candles, fetch_ohlcv,
     fetch_ohlcv_settrade, get_cached_fundamentals, get_fundamentals,
     get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
-    load_scan_state, load_signals_from_firestore, resolve_symbol,
+    load_scan_state, load_signal_from_firestore, load_signals_from_firestore, resolve_symbol,
     save_scan_state, save_signals_to_firestore,
     sync_ath_to_firestore, tradingview_url,
 )
@@ -373,6 +373,7 @@ async def scan(
     # Always fetch full index history for MACD/RSI on all scan types
     index_dfs = await loop.run_in_executor(None, fetch_indexes_with_history)
     indexes = _analyze_index_dfs(index_dfs)
+    del index_dfs
 
     _last_signals = signals
     _last_scan_time = datetime.now(BANGKOK_TZ)
@@ -551,29 +552,29 @@ def _broadcast_full_report(breadth: MarketBreadth, signals: list[StockSignal]) -
     # 1. Market breadth bubble
     _broadcast_breadth(breadth)
 
-    # 2. Top Stage 2 stocks — compact carousel for notifications
-    stage2 = filter_signals(signals, stage=2)[:10]
+    # 2. Top Stage 2 stocks — ranked list card
+    stage2 = filter_signals(signals, stage=2)[:30]
     if stage2:
-        carousel = build_compact_stock_carousel(stage2, "🟢 Stage 2 Stocks")
-        broadcast_flex("Stage 2 Stocks", carousel)
+        bubble = build_ranked_stock_list_bubble(stage2, "🟢 Stage 2 Stocks")
+        broadcast_flex("Stage 2 Stocks", bubble)
 
-    # 3. Breakout + ATH breakout
+    # 3. Breakout + ATH breakout — ranked list card
     breakouts = (
         filter_signals(signals, pattern="breakout")
         + filter_signals(signals, pattern="ath_breakout")
-    )[:10]
+    )[:30]
     if breakouts:
-        carousel = build_compact_stock_carousel(breakouts, "🚀 Breakout Stocks")
-        broadcast_flex("Breakout Stocks", carousel)
+        bubble = build_ranked_stock_list_bubble(breakouts, "🚀 Breakout Stocks")
+        broadcast_flex("Breakout Stocks", bubble)
 
-    # 4. VCP setups
+    # 4. VCP setups — ranked list card
     vcps = (
         filter_signals(signals, pattern="vcp")
         + filter_signals(signals, pattern="vcp_low_cheat")
-    )[:10]
+    )[:30]
     if vcps:
-        carousel = build_compact_stock_carousel(vcps, "🔍 VCP Setups")
-        broadcast_flex("VCP Setups", carousel)
+        bubble = build_ranked_stock_list_bubble(vcps, "🔍 VCP Setups")
+        broadcast_flex("VCP Setups", bubble)
 
 
 # ─── LINE Webhook ──────────────────────────────────────────────────────────────
@@ -728,10 +729,17 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         cached = {s.symbol: s for s in _last_signals}
         wl_signals = [cached[sym] for sym in wl if sym in cached]
         uncached = [sym for sym in wl if sym not in cached]
-        for sym in uncached[:5]:
+        for sym in uncached:
+            # Try Firestore signals collection before live yfinance fetch
+            if FIRESTORE_AVAILABLE and _db:
+                sig = load_signal_from_firestore(_db, sym)
+                if sig:
+                    wl_signals.append(sig)
+                    continue
             df = fetch_ohlcv(sym)
             if df is not None:
                 sig = scan_stock(sym, df, ath_override=_ath_cache.get(sym))
+                del df
                 if sig:
                     wl_signals.append(sig)
         if not wl_signals:

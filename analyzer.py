@@ -34,24 +34,27 @@ MIN_ROWS = 200  # Minimum trading days of data required for analysis
 
 @dataclass
 class StockSignal:
-    symbol: str
-    name: str
-    stage: int                     # 1, 2, 3, or 4
-    pattern: str                   # see module docstring
-    close: float
-    change_pct: float
-    volume: int
-    volume_ratio: float            # today's vol / 20-day avg vol
-    sma50: float
-    sma150: float
-    sma200: float
-    high_52w: float
-    low_52w: float
-    strength_score: float          # 0–100 composite ranking
-    tradingview_url: str
-    scanned_at: str                # ISO timestamp
+    # All fields have defaults for Firestore backward compatibility —
+    # null values in old docs are filtered out before construction,
+    # so missing fields fall back to these safe defaults.
+    symbol: str = ""
+    name: str = ""
+    stage: int = 1                  # 1, 2, 3, or 4
+    pattern: str = "consolidating"  # see module docstring
+    close: float = 0.0
+    change_pct: float = 0.0
+    volume: int = 0
+    volume_ratio: float = 0.0       # today's vol / 20-day avg vol
+    sma50: float = 0.0
+    sma150: float = 0.0
+    sma200: float = 0.0
+    high_52w: float = 0.0
+    low_52w: float = 0.0
+    strength_score: float = 0.0     # 0–100 composite ranking
+    tradingview_url: str = ""
+    scanned_at: str = ""            # ISO timestamp
     breakout_details: dict = field(default_factory=dict)
-    # Risk/reward fields (all default 0 for backward compat with old Firestore docs)
+    # Risk/reward fields
     atr: float = 0.0               # 14-day Average True Range
     trade_value_m: float = 0.0     # Trade value in THB millions (volume * close / 1M)
     pct_from_52w_high: float = 0.0 # (close / high_52w - 1) * 100, negative when below ATH

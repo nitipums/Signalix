@@ -305,9 +305,6 @@ def get_stock_list() -> list[str]:
     return SET_STOCKS.copy()
 
 
-def get_all_symbols() -> list[str]:
-    """Return stocks + index symbols."""
-    return SET_STOCKS + ["SET"]  # "SET" maps to ^SET.BK
 
 
 def fetch_ohlcv_settrade(symbol: str, period: str = "1Y") -> Optional[pd.DataFrame]:
@@ -716,34 +713,6 @@ def tradingview_url(symbol: str) -> str:
     return f"https://www.tradingview.com/chart/?symbol=SET%3A{symbol}"
 
 
-def fetch_indexes(period: str = "5d") -> dict[str, dict]:
-    """
-    Fetch latest close and daily change% for all major SET indexes.
-    Returns {name: {close, change_pct, prev_close}}.
-    """
-    tickers = list(INDEX_SYMBOLS.values())
-    names = list(INDEX_SYMBOLS.keys())
-    result: dict[str, dict] = {}
-    try:
-        raw = yf.download(tickers, period=period, group_by="ticker", progress=False, auto_adjust=True)
-        for name, ticker in zip(names, tickers):
-            try:
-                if len(tickers) == 1:
-                    df = raw
-                else:
-                    df = raw[ticker] if ticker in raw.columns.get_level_values(0) else pd.DataFrame()
-                df = df.dropna(subset=["Close"])
-                if len(df) < 2:
-                    continue
-                close = round(float(df["Close"].iloc[-1]), 2)
-                prev = round(float(df["Close"].iloc[-2]), 2)
-                change_pct = round((close - prev) / prev * 100, 2) if prev else 0.0
-                result[name] = {"close": close, "change_pct": change_pct, "prev_close": prev}
-            except Exception:
-                pass
-    except Exception as exc:
-        logger.error("fetch_indexes failed: %s", exc)
-    return result
 
 
 def fetch_ohlcv_max(symbol: str) -> Optional[pd.DataFrame]:
@@ -896,7 +865,9 @@ def load_signals_from_firestore(db) -> list:
         for doc in docs:
             try:
                 data = {k: v for k, v in doc.to_dict().items() if k in valid_fields and v is not None}
-                signals.append(StockSignal(**data))
+                sig = StockSignal(**data)
+                if sig.symbol:  # skip truly corrupt docs with no symbol
+                    signals.append(sig)
             except Exception:
                 continue
         signals.sort(key=lambda s: s.strength_score, reverse=True)
@@ -905,6 +876,25 @@ def load_signals_from_firestore(db) -> list:
     except Exception as exc:
         logger.error("load_signals_from_firestore failed: %s", exc)
         return []
+
+
+def load_signal_from_firestore(db, symbol: str):
+    """Load a single signal from Firestore signals/{symbol}. Returns StockSignal or None."""
+    if db is None or not symbol:
+        return None
+    try:
+        import dataclasses
+        from analyzer import StockSignal
+        valid_fields = {f.name for f in dataclasses.fields(StockSignal)}
+        doc = db.collection("signals").document(symbol).get()
+        if not doc.exists:
+            return None
+        data = {k: v for k, v in doc.to_dict().items() if k in valid_fields and v is not None}
+        sig = StockSignal(**data)
+        return sig if sig.symbol else None
+    except Exception as exc:
+        logger.warning("load_signal_from_firestore(%s) failed: %s", symbol, exc)
+        return None
 
 
 def fetch_fundamentals(symbol: str) -> dict:
