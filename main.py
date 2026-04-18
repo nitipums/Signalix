@@ -11,6 +11,7 @@ import asyncio
 import functools
 import hashlib
 import hmac
+import json as _json
 import logging
 import secrets
 from datetime import datetime
@@ -908,6 +909,13 @@ def _get_signals_for(pattern: Optional[str] = None, stage: Optional[int] = None)
     return filter_signals(_last_signals, pattern=pattern, stage=stage)
 
 
+
+# Confirmed: 2 bubbles × 20 rows ≈ 38KB works. 12 bubbles × 20 rows ≈ 228KB fails.
+# LINE reply tokens are consumed even on a failed API call, so we must size-check
+# BEFORE sending — a failed attempt + retry = two silent failures.
+_FLEX_BYTE_LIMIT = 130_000  # 130KB: safely above 38KB confirmed, well below 228KB failed
+
+
 def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str, text_only: bool = False) -> None:
     if not signals:
         reply_text(reply_token, f"ไม่มีหุ้นใน {title} ขณะนี้")
@@ -917,12 +925,14 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str, 
         reply_flex(reply_token, title, bubble)
         return
     bubble = build_ranked_stock_list_bubble(signals, title)
-    if not reply_flex(reply_token, title, bubble):
-        # LINE rejected the message (payload likely too large for their limit)
-        # Fall back to proven-safe 40-stock / 2-bubble payload
-        logger.warning("reply_flex failed for '%s' (%d stocks) — retrying with top 40", title, len(signals))
-        fallback = build_ranked_stock_list_bubble(signals[:40], f"{title} · Top 40")
-        reply_flex(reply_token, title, fallback)
+    if len(_json.dumps(bubble, ensure_ascii=False)) > _FLEX_BYTE_LIMIT:
+        # Payload too large — reduce stock count until it fits the safe limit
+        for cap in (120, 80, 60, 40):
+            bubble = build_ranked_stock_list_bubble(signals[:cap], title)
+            if len(_json.dumps(bubble, ensure_ascii=False)) <= _FLEX_BYTE_LIMIT:
+                logger.info("Flex capped at %d stocks for '%s' (limit %d bytes)", cap, title, _FLEX_BYTE_LIMIT)
+                break
+    reply_flex(reply_token, title, bubble)
 
 
 async def _reply_single_stock(reply_token: str, symbol: str, user_id: str = "") -> None:
