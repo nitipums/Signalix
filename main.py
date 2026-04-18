@@ -242,8 +242,11 @@ async def _warm_from_firestore():
         if state:
             _last_breadth = state["breadth"]
             _last_indexes = state["indexes"]
-            _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends, _last_indexes)
-            _last_sector_trends = state["sector_trends"]
+            _last_sector_trends = state["sector_trends"]  # set BEFORE building card
+            try:
+                _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends, _last_indexes)
+            except Exception as exc:
+                logger.error("build_market_breadth_card failed in warmup: %s", exc)
             try:
                 _last_scan_time = datetime.fromisoformat(state["scanned_at"]).replace(tzinfo=BANGKOK_TZ)
             except Exception:
@@ -252,12 +255,19 @@ async def _warm_from_firestore():
             _last_signals = signals
             # Fallback: compute derived caches from signals when scan_state is missing/incomplete
             if not _last_breadth:
-                _last_breadth = compute_market_breadth(signals)
-                _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends, _last_indexes)
-                logger.info("Computed breadth from %d signals (scan_state missing)", len(signals))
-            if not _last_sector_trends:
-                _last_sector_trends = compute_sector_trends(signals)
-                logger.info("Computed sector_trends from signals (scan_state missing)")
+                try:
+                    _last_breadth = compute_market_breadth(signals)
+                    if not _last_sector_trends:
+                        _last_sector_trends = compute_sector_trends(signals)
+                    _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends, _last_indexes)
+                    logger.info("Computed breadth from %d signals (scan_state missing)", len(signals))
+                except Exception as exc:
+                    logger.error("compute breadth fallback failed: %s", exc)
+            elif not _last_sector_trends:
+                try:
+                    _last_sector_trends = compute_sector_trends(signals)
+                except Exception as exc:
+                    logger.error("compute sector_trends fallback failed: %s", exc)
 
         logger.info("Warmed from Firestore: %d signals, breadth=%s, indexes=%d, sectors=%d",
                     len(_last_signals), "ok" if _last_breadth else "missing",
@@ -674,6 +684,7 @@ async def _handle_follow(user_id: Optional[str], reply_token: Optional[str]) -> 
 
 
 async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Optional[str]) -> None:
+    global _last_breadth, _last_breadth_card, _last_indexes, _last_sector_trends
     if not reply_token:
         return
 
@@ -702,17 +713,35 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
 
     # ── Market Breadth ──
     elif cmd in ("ตลาด", "market", "breadth"):
-        if _last_breadth_card is None:
-            reply_text(reply_token, "ยังไม่มีข้อมูล กรุณารอการสแกนตามกำหนด (10:15 / 12:15 / 15:15 / 16:45 น.)")
+        card = _last_breadth_card
+        if card is None and FIRESTORE_AVAILABLE and _db:
+            state = await loop.run_in_executor(None, load_scan_state, _db)
+            if state:
+                _last_breadth = state["breadth"]
+                _last_sector_trends = state.get("sector_trends", [])
+                _last_indexes = state.get("indexes", {})
+                try:
+                    _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends, _last_indexes)
+                    card = _last_breadth_card
+                except Exception as exc:
+                    logger.error("build_market_breadth_card on-demand failed: %s", exc)
+        if card is None:
+            reply_text(reply_token, "ยังไม่มีข้อมูลตลาด กรุณารอการสแกนครั้งถัดไป")
             return
-        reply_flex(reply_token, "ภาพรวมตลาด SET", _last_breadth_card)
+        reply_flex(reply_token, "ภาพรวมตลาด SET", card)
 
     # ── Key Indexes ──
     elif cmd in ("index", "indexes", "ดัชนี", "ดัชนีหุ้น"):
-        if not _last_indexes:
-            reply_text(reply_token, "ยังไม่มีข้อมูล กรุณารอการสแกนตามกำหนด (10:15 / 12:15 / 15:15 / 16:45 น.)")
+        indexes = _last_indexes
+        if not indexes and FIRESTORE_AVAILABLE and _db:
+            state = await loop.run_in_executor(None, load_scan_state, _db)
+            if state:
+                indexes = state.get("indexes", {})
+                _last_indexes = indexes
+        if not indexes:
+            reply_text(reply_token, "ยังไม่มีข้อมูลดัชนี กรุณารอการสแกนครั้งถัดไป")
             return
-        carousel = build_index_carousel(_last_indexes)
+        carousel = build_index_carousel(indexes)
         reply_flex(reply_token, "ดัชนีหุ้นไทย", carousel)
 
     # ── Sector Trends: overview or drill-down ──
@@ -726,10 +755,22 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             reply_text(reply_token, f"ไม่พบหุ้นในกลุ่ม {sector_name}\nกลุ่มที่มี: AGRO, CONSUMP, FINCIAL, INDUS, PROPCON, RESOURC, SERVICE, TECH")
 
     elif cmd in ("sector", "sectors", "เซกเตอร์", "กลุ่มหุ้น"):
-        if not _last_sector_trends:
-            reply_text(reply_token, "ยังไม่มีข้อมูล กรุณารอการสแกนตามกำหนด (10:15 / 12:15 / 15:15 / 16:45 น.)")
+        sector_trends = _last_sector_trends
+        if not sector_trends and FIRESTORE_AVAILABLE and _db:
+            state = await loop.run_in_executor(None, load_scan_state, _db)
+            if state:
+                sector_trends = state.get("sector_trends", [])
+                _last_sector_trends = sector_trends
+        if not sector_trends and _last_signals:
+            try:
+                sector_trends = compute_sector_trends(_last_signals)
+                _last_sector_trends = sector_trends
+            except Exception as exc:
+                logger.error("compute_sector_trends on-demand failed: %s", exc)
+        if not sector_trends:
+            reply_text(reply_token, "ยังไม่มีข้อมูลกลุ่มหุ้น กรุณารอการสแกนครั้งถัดไป")
             return
-        card = build_sector_overview_card(_last_sector_trends)
+        card = build_sector_overview_card(sector_trends)
         reply_flex(reply_token, "แนวโน้มกลุ่มอุตสาหกรรม", card)
 
     # ── Guide ──
@@ -888,10 +929,7 @@ def _get_signals_for(pattern: Optional[str] = None, stage: Optional[int] = None)
 
 def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str, text_only: bool = False) -> None:
     if not signals:
-        if not _last_signals:
-            reply_text(reply_token, "ยังไม่มีข้อมูล กรุณารอการสแกนตามกำหนด (10:15 / 12:15 / 15:15 / 16:45 น.)")
-        else:
-            reply_text(reply_token, f"ไม่มีหุ้นใน {title} ขณะนี้")
+        reply_text(reply_token, f"ไม่มีหุ้นใน {title} ขณะนี้")
         return
     if text_only:
         bubble = build_simple_tappable_list(signals, title)
