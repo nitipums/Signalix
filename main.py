@@ -34,11 +34,12 @@ from analyzer import (
 )
 from config import get_settings
 from data import (
-    SECTOR_MAP, append_new_candles_to_bq, BQ_AVAILABLE, fetch_indexes,
+    SECTOR_MAP, append_new_candles_to_bq, BQ_AVAILABLE,
     fetch_indexes_with_history, fetch_latest_candles, fetch_ohlcv,
     fetch_ohlcv_settrade, get_cached_fundamentals, get_fundamentals,
     get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
-    load_signals_from_firestore, resolve_symbol, save_signals_to_firestore,
+    load_scan_state, load_signals_from_firestore, resolve_symbol,
+    save_scan_state, save_signals_to_firestore,
     sync_ath_to_firestore, tradingview_url,
 )
 from notifier import (
@@ -204,22 +205,21 @@ _EXPLANATIONS: dict[str, str] = {
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize singletons then kick off the background scan."""
+    """Initialize singletons then warm in-memory cache from Firestore (no scan on startup)."""
     loop = asyncio.get_running_loop()
     settings = get_settings()
     if settings.gcp_project_id:
         await loop.run_in_executor(None, init_bq, settings.gcp_project_id, settings.bq_dataset)
     init_notifier(settings.line_channel_access_token)
-    asyncio.create_task(_background_scan())
+    asyncio.create_task(_warm_from_firestore())
 
 
-async def _background_scan():
-    await asyncio.sleep(5)  # let server finish booting first
+async def _warm_from_firestore():
+    """Load all cached state from Firestore. No scan is run — data comes from last scheduled scan."""
+    await asyncio.sleep(2)  # let server finish booting first
     global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
+    loop = asyncio.get_running_loop()
     try:
-        logger.info("Running startup scan...")
-        loop = asyncio.get_running_loop()
-
         # Load ATH non-blocking: prefer BQ, fall back to Firestore
         if BQ_AVAILABLE:
             _ath_cache = await loop.run_in_executor(None, load_ath_from_bq)
@@ -228,43 +228,31 @@ async def _background_scan():
             _ath_cache = await loop.run_in_executor(None, load_ath_cache, _db)
             logger.info("ATH cache loaded from Firestore: %d entries", len(_ath_cache))
 
-        # Pre-load last signals from Firestore for warm responses before scan finishes
-        if FIRESTORE_AVAILABLE and _db and not _last_signals:
-            pre_signals = await loop.run_in_executor(None, load_signals_from_firestore, _db)
-            if pre_signals:
-                _last_signals = pre_signals
-                # Build derived caches from pre-loaded data so UI works immediately
-                _last_breadth = compute_market_breadth(pre_signals)
-                _last_breadth_card = build_market_breadth_card(_last_breadth)
-                _last_sector_trends = compute_sector_trends(pre_signals)
-                logger.info("Pre-loaded %d signals from Firestore; breadth/sector ready", len(pre_signals))
+        if not FIRESTORE_AVAILABLE or not _db:
+            logger.warning("Firestore unavailable — cache will be empty until first /scan")
+            return
 
-        # Fetch indexes with full history so ดัชนี shows MACD/RSI before scan finishes
-        if not _last_indexes:
-            index_dfs = await loop.run_in_executor(None, fetch_indexes_with_history)
-            _last_indexes = _analyze_index_dfs(index_dfs)
+        # Load scan_state (breadth + indexes + sector_trends) and signals in parallel
+        state_fut = loop.run_in_executor(None, load_scan_state, _db)
+        sigs_fut = loop.run_in_executor(None, load_signals_from_firestore, _db)
+        state, signals = await asyncio.gather(state_fut, sigs_fut)
 
-        # Run full scan — most expensive call, ~30-60s, must not block event loop
-        signals, all_data = await loop.run_in_executor(
-            None, functools.partial(run_full_scan, ath_cache=_ath_cache)
-        )
-        _last_signals = signals
-        _last_scan_time = datetime.now(BANGKOK_TZ)
-        _last_breadth = compute_market_breadth(signals, index_df=all_data.get("SET"))
-        _last_breadth_card = build_market_breadth_card(_last_breadth)
-        _last_sector_trends = compute_sector_trends(signals)
-        index_dfs = await loop.run_in_executor(None, fetch_indexes_with_history)
-        _last_indexes = _analyze_index_dfs(index_dfs)
-        logger.info("Startup scan complete: %d stocks", len(signals))
+        if state:
+            _last_breadth = state["breadth"]
+            _last_breadth_card = build_market_breadth_card(_last_breadth)
+            _last_indexes = state["indexes"]
+            _last_sector_trends = state["sector_trends"]
+            try:
+                _last_scan_time = datetime.fromisoformat(state["scanned_at"]).replace(tzinfo=BANGKOK_TZ)
+            except Exception:
+                pass
+        if signals:
+            _last_signals = signals
 
-        # Persist to Firestore + BQ (fire-and-forget)
-        if FIRESTORE_AVAILABLE and _db:
-            loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
-        if BQ_AVAILABLE:
-            loop.run_in_executor(None, append_new_candles_to_bq, all_data)
-        del all_data  # release 900+ DataFrames; BQ executor holds its own ref
+        logger.info("Warmed from Firestore: %d signals, breadth=%s, indexes=%d",
+                    len(_last_signals), "ok" if _last_breadth else "missing", len(_last_indexes))
     except Exception as exc:
-        logger.error("Startup scan failed: %s", exc)
+        logger.error("_warm_from_firestore failed: %s", exc)
 
 
 # ─── Health ────────────────────────────────────────────────────────────────────
@@ -385,7 +373,7 @@ async def scan(
 
     # Persist to Firestore (always); BigQuery only on full mode
     if FIRESTORE_AVAILABLE and _db:
-        loop.run_in_executor(None, _save_breadth_to_firestore, breadth)
+        loop.run_in_executor(None, save_scan_state, _db, breadth, indexes, sector_trends, body.scan_type, body.mode)
         loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
     if BQ_AVAILABLE and body.mode == "full":
         loop.run_in_executor(None, append_new_candles_to_bq, all_data)
@@ -670,14 +658,14 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     # ── Market Breadth ──
     elif cmd in ("ตลาด", "market", "breadth"):
         if _last_breadth_card is None:
-            reply_text(reply_token, "⏳ ระบบกำลังเริ่มต้น กรุณาลองใหม่ใน 1-2 นาที")
+            reply_text(reply_token, "ยังไม่มีข้อมูล กรุณารอการสแกนตามกำหนด (10:15 / 12:15 / 15:15 / 16:45 น.)")
             return
         reply_flex(reply_token, "ภาพรวมตลาด SET", _last_breadth_card)
 
     # ── Key Indexes ──
     elif cmd in ("index", "indexes", "ดัชนี", "ดัชนีหุ้น"):
         if not _last_indexes:
-            reply_text(reply_token, "⏳ ระบบกำลังเริ่มต้น กรุณาลองใหม่ใน 1-2 นาที")
+            reply_text(reply_token, "ยังไม่มีข้อมูล กรุณารอการสแกนตามกำหนด (10:15 / 12:15 / 15:15 / 16:45 น.)")
             return
         carousel = build_index_carousel(_last_indexes)
         reply_flex(reply_token, "ดัชนีหุ้นไทย", carousel)
@@ -694,7 +682,7 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
 
     elif cmd in ("sector", "sectors", "เซกเตอร์", "กลุ่มหุ้น"):
         if not _last_sector_trends:
-            reply_text(reply_token, "⏳ ระบบกำลังเริ่มต้น กรุณาลองใหม่ใน 1-2 นาที")
+            reply_text(reply_token, "ยังไม่มีข้อมูล กรุณารอการสแกนตามกำหนด (10:15 / 12:15 / 15:15 / 16:45 น.)")
             return
         card = build_sector_overview_card(_last_sector_trends)
         reply_flex(reply_token, "แนวโน้มกลุ่มอุตสาหกรรม", card)
@@ -849,7 +837,7 @@ def _get_signals_for(pattern: Optional[str] = None, stage: Optional[int] = None)
 def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str) -> None:
     if not signals:
         if not _last_signals:
-            reply_text(reply_token, "⏳ ระบบกำลังเริ่มต้น กรุณาลองใหม่ใน 1-2 นาที")
+            reply_text(reply_token, "ยังไม่มีข้อมูล กรุณารอการสแกนตามกำหนด (10:15 / 12:15 / 15:15 / 16:45 น.)")
         else:
             reply_text(reply_token, f"ไม่มีหุ้นใน {title} ขณะนี้")
         return
@@ -942,11 +930,6 @@ def _get_all_subscriber_ids() -> list[str]:
     docs = _db.collection("users").where("subscribed", "==", True).stream()
     return [doc.id for doc in docs]
 
-
-def _save_breadth_to_firestore(breadth: MarketBreadth) -> None:
-    if not FIRESTORE_AVAILABLE or not _db:
-        return
-    _db.collection("market_breadth").add(breadth.__dict__)
 
 
 def _get_line_display_name(user_id: str) -> Optional[str]:

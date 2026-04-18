@@ -806,6 +806,64 @@ def load_ath_cache(db) -> dict[str, float]:
         return {}
 
 
+def save_scan_state(db, breadth, indexes: dict, sector_trends: list, scan_type: str, mode: str) -> None:
+    """Persist full scan state to scan_state/latest for warm startup."""
+    if db is None:
+        return
+    try:
+        scanned_at = getattr(breadth, "scanned_at", "")
+        stamped_indexes = {name: {**data, "scanned_at": scanned_at} for name, data in indexes.items()}
+        doc = {
+            "scanned_at": scanned_at,
+            "scan_type": scan_type,
+            "mode": mode,
+            "total_stocks": getattr(breadth, "total_stocks", 0),
+            "breadth": breadth.__dict__,
+            "indexes": stamped_indexes,
+            "sector_trends": [s.__dict__ for s in sector_trends],
+        }
+        db.collection("scan_state").document("latest").set(doc)
+        logger.info("Saved scan_state/latest (type=%s, mode=%s)", scan_type, mode)
+    except Exception as exc:
+        logger.error("save_scan_state failed: %s", exc)
+
+
+def load_scan_state(db) -> "dict | None":
+    """Load full scan state from Firestore scan_state/latest."""
+    if db is None:
+        return None
+    try:
+        import dataclasses
+        from analyzer import MarketBreadth, SectorSummary
+        doc_ref = db.collection("scan_state").document("latest").get()
+        if not doc_ref.exists:
+            return None
+        data = doc_ref.to_dict()
+
+        valid_breadth = {f.name for f in dataclasses.fields(MarketBreadth)}
+        breadth = MarketBreadth(**{k: v for k, v in data.get("breadth", {}).items() if k in valid_breadth})
+
+        valid_sector = {f.name for f in dataclasses.fields(SectorSummary)}
+        sector_trends = []
+        for s in data.get("sector_trends", []):
+            try:
+                sector_trends.append(SectorSummary(**{k: v for k, v in s.items() if k in valid_sector}))
+            except Exception:
+                continue
+
+        logger.info("Loaded scan_state/latest (type=%s, scanned_at=%s)", data.get("scan_type"), data.get("scanned_at", "")[:16])
+        return {
+            "breadth": breadth,
+            "indexes": data.get("indexes", {}),
+            "sector_trends": sector_trends,
+            "scanned_at": data.get("scanned_at", ""),
+            "scan_type": data.get("scan_type", ""),
+        }
+    except Exception as exc:
+        logger.error("load_scan_state failed: %s", exc)
+        return None
+
+
 def save_signals_to_firestore(signals: list, db) -> None:
     """Batch-write latest scan signals to Firestore signals/{symbol}."""
     if not signals or db is None:

@@ -10,7 +10,11 @@ Card types:
 """
 
 import logging
+from datetime import datetime
 from typing import Optional
+import pytz
+
+_BANGKOK_TZ = pytz.timezone("Asia/Bangkok")
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import (
@@ -92,6 +96,21 @@ def get_webhook_handler() -> WebhookHandler:
 
 
 # ─── Flex Message builders ────────────────────────────────────────────────────
+
+def _fmt_scan_time(scanned_at: str) -> str:
+    """Format ISO scanned_at string to Thai-friendly display."""
+    if not scanned_at:
+        return ""
+    try:
+        dt = datetime.fromisoformat(scanned_at)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_BANGKOK_TZ)
+        else:
+            dt = dt.astimezone(_BANGKOK_TZ)
+        return dt.strftime("สแกนล่าสุด %H:%M น. %d/%m/%y")
+    except Exception:
+        return ""
+
 
 def _pct_color(pct: float) -> str:
     if pct > 0:
@@ -908,7 +927,17 @@ def build_index_carousel(indexes: dict[str, dict]) -> dict:
                 body_contents.append({"type": "text", "text": implication,
                                        "size": "xxs", "color": "#7F8C8D", "wrap": True})
 
+        # Format scan timestamp for footer
+        scanned_at_str = data.get("scanned_at", "")
+        ts_text = _fmt_scan_time(scanned_at_str)
+
         bubble_size = "mega" if has_analysis else "kilo"
+        footer_contents = []
+        if ts_text:
+            footer_contents.append({"type": "text", "text": ts_text, "size": "xxs", "color": "#95A5A6", "align": "center"})
+        footer_contents.append({"type": "button", "action": {"type": "uri", "label": "ดูชาร์ต", "uri": tv_url},
+                                 "style": "primary", "color": "#1565C0", "height": "sm"})
+
         bubbles.append({
             "type": "bubble",
             "size": bubble_size,
@@ -931,10 +960,8 @@ def build_index_carousel(indexes: dict[str, dict]) -> dict:
             "footer": {
                 "type": "box",
                 "layout": "vertical",
-                "contents": [
-                    {"type": "button", "action": {"type": "uri", "label": "ดูชาร์ต", "uri": tv_url},
-                     "style": "primary", "color": "#1565C0", "height": "sm"},
-                ],
+                "spacing": "xs",
+                "contents": footer_contents,
                 "paddingAll": "8px",
             },
         })
