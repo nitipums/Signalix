@@ -629,7 +629,7 @@ def compute_market_breadth(
     above_ma200 = below_ma200 = 0
 
     for s in signals:
-        stage_counts[s.stage] = stage_counts.get(s.stage, 0) + 1
+        stage_counts[int(s.stage)] = stage_counts.get(int(s.stage), 0) + 1
 
         if s.change_pct > 0.1:
             advancing += 1
@@ -695,7 +695,7 @@ def filter_signals(signals: list[StockSignal], pattern: Optional[str] = None, st
     """Filter signals by pattern name or stage number."""
     result = signals
     if stage is not None:
-        result = [s for s in result if s.stage == stage]
+        result = [s for s in result if int(s.stage) == stage]
     if pattern is not None:
         result = [s for s in result if s.pattern == pattern]
     return result

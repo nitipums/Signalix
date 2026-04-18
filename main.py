@@ -248,9 +248,18 @@ async def _warm_from_firestore():
                 pass
         if signals:
             _last_signals = signals
+            # Fallback: compute derived caches from signals when scan_state is missing/incomplete
+            if not _last_breadth:
+                _last_breadth = compute_market_breadth(signals)
+                _last_breadth_card = build_market_breadth_card(_last_breadth)
+                logger.info("Computed breadth from %d signals (scan_state missing)", len(signals))
+            if not _last_sector_trends:
+                _last_sector_trends = compute_sector_trends(signals)
+                logger.info("Computed sector_trends from signals (scan_state missing)")
 
-        logger.info("Warmed from Firestore: %d signals, breadth=%s, indexes=%d",
-                    len(_last_signals), "ok" if _last_breadth else "missing", len(_last_indexes))
+        logger.info("Warmed from Firestore: %d signals, breadth=%s, indexes=%d, sectors=%d",
+                    len(_last_signals), "ok" if _last_breadth else "missing",
+                    len(_last_indexes), len(_last_sector_trends))
     except Exception as exc:
         logger.error("_warm_from_firestore failed: %s", exc)
 
