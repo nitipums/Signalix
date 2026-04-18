@@ -25,6 +25,7 @@ from analyzer import (
     MarketBreadth,
     SectorSummary,
     StockSignal,
+    analyze_index,
     compute_market_breadth,
     compute_sector_trends,
     filter_signals,
@@ -34,7 +35,8 @@ from analyzer import (
 from config import get_settings
 from data import (
     SECTOR_MAP, append_new_candles_to_bq, BQ_AVAILABLE, fetch_indexes,
-    fetch_ohlcv, fetch_ohlcv_settrade, get_cached_fundamentals, get_fundamentals,
+    fetch_indexes_with_history, fetch_latest_candles, fetch_ohlcv,
+    fetch_ohlcv_settrade, get_cached_fundamentals, get_fundamentals,
     get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
     load_signals_from_firestore, resolve_symbol, save_signals_to_firestore,
     sync_ath_to_firestore, tradingview_url,
@@ -47,18 +49,18 @@ from notifier import (
     build_help_card,
     build_index_carousel,
     build_market_breadth_card,
-    build_remaining_symbols_text,
+    build_pattern_detail_card,
+    build_ranked_stock_list_bubble,
     build_sector_carousel,
     build_sector_overview_card,
     build_single_stock_card,
+    build_stage_cycle_card,
     build_stage_picker_card,
-    build_stock_list_carousel,
     build_watchlist_stock_card,
     build_welcome_card,
     get_webhook_handler,
     init_notifier,
     reply_flex,
-    reply_flex_and_text,
     reply_text,
 )
 
@@ -304,6 +306,7 @@ async def test_settrade():
 class ScanRequest(BaseModel):
     scan_type: str = "full"    # "full" | "breadth" | "breakout" | "vcp"
     broadcast: bool = True
+    mode: str = "full"         # "full" (fetch all + BQ write) | "intraday" (BQ history + latest candle only)
 
 
 @app.post("/scan")
@@ -320,7 +323,7 @@ async def scan(
 
     global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
 
-    logger.info("Running scan: type=%s broadcast=%s", body.scan_type, body.broadcast)
+    logger.info("Running scan: type=%s mode=%s broadcast=%s", body.scan_type, body.mode, body.broadcast)
     loop = asyncio.get_running_loop()
 
     if not _ath_cache:
@@ -329,12 +332,37 @@ async def scan(
         elif FIRESTORE_AVAILABLE and _db:
             _ath_cache = await loop.run_in_executor(None, load_ath_cache, _db)
 
-    signals, all_data = await loop.run_in_executor(
-        None, functools.partial(run_full_scan, ath_cache=_ath_cache)
-    )
+    # Intraday mode: use BQ history + latest candle (fast). Full mode: standard fetch.
+    if body.mode == "intraday":
+        all_data = await loop.run_in_executor(None, fetch_latest_candles)
+        signals = []
+        for symbol, df in all_data.items():
+            if symbol == "SET":
+                continue
+            sig = scan_stock(symbol, df, ath_override=_ath_cache.get(symbol))
+            if sig:
+                signals.append(sig)
+        signals.sort(key=lambda s: s.strength_score, reverse=True)
+    else:
+        signals, all_data = await loop.run_in_executor(
+            None, functools.partial(run_full_scan, ath_cache=_ath_cache)
+        )
+
     breadth = compute_market_breadth(signals, index_df=all_data.get("SET"))
     sector_trends = compute_sector_trends(signals)
-    indexes = await loop.run_in_executor(None, fetch_indexes)
+
+    # For full scans, fetch index history for MACD/RSI analysis; intraday uses lightweight fetch
+    if body.mode == "full":
+        index_dfs = await loop.run_in_executor(None, fetch_indexes_with_history)
+        indexes = {
+            name: analyze_index(df, name)
+            for name, df in index_dfs.items()
+            if df is not None and len(df) >= 30
+        }
+        if not indexes:
+            indexes = await loop.run_in_executor(None, fetch_indexes)
+    else:
+        indexes = await loop.run_in_executor(None, fetch_indexes)
 
     _last_signals = signals
     _last_scan_time = datetime.now(BANGKOK_TZ)
@@ -343,15 +371,15 @@ async def scan(
     _last_sector_trends = sector_trends
     _last_indexes = indexes
 
-    # Persist to Firestore + BigQuery (fire-and-forget)
+    # Persist to Firestore (always); BigQuery only on full mode
     if FIRESTORE_AVAILABLE and _db:
         loop.run_in_executor(None, _save_breadth_to_firestore, breadth)
         loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
-    if BQ_AVAILABLE:
+    if BQ_AVAILABLE and body.mode == "full":
         loop.run_in_executor(None, append_new_candles_to_bq, all_data)
 
     if not body.broadcast:
-        return {"scanned": len(signals), "breadth": breadth.__dict__}
+        return {"scanned": len(signals), "mode": body.mode, "breadth": breadth.__dict__}
 
     # Choose what to broadcast based on scan_type
     if body.scan_type == "breadth":
@@ -372,7 +400,7 @@ async def scan(
     else:  # "full" — post-close full report
         _broadcast_full_report(breadth, signals)
 
-    return {"scanned": len(signals), "broadcast": body.scan_type}
+    return {"scanned": len(signals), "mode": body.mode, "broadcast": body.scan_type}
 
 
 @app.post("/sync_ath")
@@ -611,12 +639,20 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         # Normalize aliases
         _aliases = {"explain volume": "explain volume_ratio", "explain vol": "explain volume_ratio"}
         lookup = _aliases.get(cmd, cmd)
-        explanation = _EXPLANATIONS.get(lookup)
-        if explanation:
-            metric_name = lookup.replace("explain ", "")
-            reply_flex(reply_token, f"ℹ️ {metric_name}", build_explain_card(metric_name, explanation))
+        metric_name = lookup.replace("explain ", "")
+
+        # Route stage queries to the comprehensive stage cycle card
+        if metric_name in ("stage", "stage1", "stage2", "stage3", "stage4"):
+            reply_flex(reply_token, "📊 Stage Analysis Guide", build_stage_cycle_card())
+        # Route pattern queries to rich pattern cards
+        elif metric_name in ("breakout", "ath_breakout", "vcp", "vcp_low_cheat", "consolidating", "going_down"):
+            reply_flex(reply_token, f"📈 {metric_name.replace('_', ' ').title()}", build_pattern_detail_card(metric_name))
         else:
-            reply_text(reply_token, f'ไม่พบคำอธิบายสำหรับ "{cmd.replace("explain ", "")}"')
+            explanation = _EXPLANATIONS.get(lookup)
+            if explanation:
+                reply_flex(reply_token, f"ℹ️ {metric_name}", build_explain_card(metric_name, explanation))
+            else:
+                reply_text(reply_token, f'ไม่พบคำอธิบายสำหรับ "{metric_name}"')
 
     # ── Market Breadth ──
     elif cmd in ("ตลาด", "market", "breadth"):
@@ -728,20 +764,6 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         ok, msg = _remove_from_watchlist(user_id, symbol)
         reply_text(reply_token, msg)
 
-    # ── Refresh single stock (Settrade live) ──
-    elif cmd.startswith("refresh "):
-        raw = text[8:].strip()
-        symbol = resolve_symbol(raw)
-        if not symbol:
-            reply_text(reply_token, f'ไม่พบหุ้น "{raw.upper()}"')
-            return
-        if not user_id:
-            reply_text(reply_token, "ไม่สามารถระบุผู้ใช้ได้")
-            return
-        reply_text(reply_token, f"กำลังดึงข้อมูลสด {symbol} ผ่าน Settrade API...")
-        import asyncio
-        asyncio.create_task(asyncio.to_thread(_push_single_stock_settrade, user_id, symbol))
-
     # ── Stock lists by pattern/stage ──
     elif cmd in ("breakout", "break out", "บ้ระเอาท์"):
         signals = _get_signals_for(pattern="breakout") + _get_signals_for(pattern="ath_breakout")
@@ -815,12 +837,8 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str) 
     if not signals:
         reply_text(reply_token, f"ไม่มีหุ้นใน {title} ขณะนี้")
         return
-    carousel = build_stock_list_carousel(signals[:10], title)
-    if len(signals) > 10:
-        extra = build_remaining_symbols_text(signals, title)
-        reply_flex_and_text(reply_token, title, carousel, extra)
-    else:
-        reply_flex(reply_token, title, carousel)
+    bubble = build_ranked_stock_list_bubble(signals, title)
+    reply_flex(reply_token, title, bubble)
 
 
 def _cache_is_fresh() -> bool:
@@ -878,19 +896,6 @@ def _reply_detailed_stock(reply_token: str, symbol: str) -> None:
             return
     fund = get_fundamentals(symbol, _db if FIRESTORE_AVAILABLE else None)
     reply_flex(reply_token, f"📌 {symbol} Detail", build_watchlist_stock_card(signal, fund))
-
-
-def _push_single_stock_settrade(user_id: str, symbol: str) -> None:
-    """Fetch live data from Settrade API and push to a specific user."""
-    from notifier import send_to_user
-    df = fetch_ohlcv_settrade(symbol)
-    if df is None:
-        logger.warning("refresh %s: Settrade unavailable", symbol)
-        return
-    signal = scan_stock(symbol, df, ath_override=_ath_cache.get(symbol))
-    if signal is None:
-        return
-    send_to_user(user_id, f"🔄 {symbol} (สด)", build_single_stock_card(signal))
 
 
 # ─── Firestore helpers ─────────────────────────────────────────────────────────
