@@ -839,19 +839,19 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
 
     elif cmd in ("stage2", "stage 2"):
         all_sigs = _get_signals_for(stage=2)
-        _reply_stock_list(reply_token, all_sigs[:40], f"🟢 Stage 2 — Top 40 ({len(all_sigs)} total)")
+        _reply_stock_list(reply_token, all_sigs, f"🟢 Stage 2 ({len(all_sigs)} stocks)")
 
     elif cmd in ("stage1", "stage 1"):
         all_sigs = _get_signals_for(stage=1)
-        _reply_stock_list(reply_token, all_sigs[:40], f"⚪ Stage 1 — Top 40 ({len(all_sigs)} total)")
+        _reply_stock_list(reply_token, all_sigs, f"⚪ Stage 1 ({len(all_sigs)} stocks)")
 
     elif cmd in ("stage3", "stage 3"):
         all_sigs = _get_signals_for(stage=3)
-        _reply_stock_list(reply_token, all_sigs[:40], f"🟡 Stage 3 — Top 40 ({len(all_sigs)} total)")
+        _reply_stock_list(reply_token, all_sigs, f"🟡 Stage 3 ({len(all_sigs)} stocks)")
 
     elif cmd in ("stage4", "stage 4"):
         all_sigs = _get_signals_for(stage=4)
-        _reply_stock_list(reply_token, all_sigs[:40], f"🔴 Stage 4 — Top 40 ({len(all_sigs)} total)")
+        _reply_stock_list(reply_token, all_sigs, f"🔴 Stage 4 ({len(all_sigs)} stocks)")
 
     elif cmd in ("consolidating", "consolidate", "coil"):
         signals = _get_signals_for(pattern="consolidating")
@@ -917,7 +917,12 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str, 
         reply_flex(reply_token, title, bubble)
         return
     bubble = build_ranked_stock_list_bubble(signals, title)
-    reply_flex(reply_token, title, bubble)
+    if not reply_flex(reply_token, title, bubble):
+        # LINE rejected the message (payload likely too large for their limit)
+        # Fall back to proven-safe 40-stock / 2-bubble payload
+        logger.warning("reply_flex failed for '%s' (%d stocks) — retrying with top 40", title, len(signals))
+        fallback = build_ranked_stock_list_bubble(signals[:40], f"{title} · Top 40")
+        reply_flex(reply_token, title, fallback)
 
 
 async def _reply_single_stock(reply_token: str, symbol: str, user_id: str = "") -> None:

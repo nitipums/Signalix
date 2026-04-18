@@ -834,9 +834,9 @@ def build_ranked_stock_list_bubble(signals: list[StockSignal], title: str, max_p
     if total <= max_per_bubble:
         return _make_bubble(signals, 0, total)
 
-    # Split into carousel of bubbles (LINE allows max 12 per carousel)
+    # Split into carousel of bubbles (LINE hard limit: 12 per carousel)
     bubbles = []
-    for i in range(0, min(total, max_per_bubble * 6), max_per_bubble):
+    for i in range(0, min(total, max_per_bubble * 12), max_per_bubble):
         chunk = signals[i:i + max_per_bubble]
         bubbles.append(_make_bubble(chunk, i, total))
     return {"type": "carousel", "contents": bubbles}
@@ -1953,8 +1953,8 @@ def _flex_message(alt_text: str, container: dict) -> FlexMessage:
     )
 
 
-def reply_flex(reply_token: str, alt_text: str, container: dict) -> None:
-    """Reply to a LINE message with a Flex Message."""
+def reply_flex(reply_token: str, alt_text: str, container: dict) -> bool:
+    """Reply to a LINE message with a Flex Message. Returns True on success."""
     api = _get_api()
     try:
         api.reply_message(
@@ -1963,8 +1963,10 @@ def reply_flex(reply_token: str, alt_text: str, container: dict) -> None:
                 messages=[_flex_message(alt_text, container)],
             )
         )
+        return True
     except Exception as exc:
         logger.error("Failed to reply flex: %s", exc)
+        return False
 
 
 def reply_text(reply_token: str, text: str) -> None:
