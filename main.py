@@ -84,6 +84,15 @@ logger = logging.getLogger("signalix")
 BANGKOK_TZ = pytz.timezone("Asia/Bangkok")
 app = FastAPI(title="Signalix", version="1.0.0")
 
+
+def _analyze_index_dfs(index_dfs: dict) -> dict:
+    """Run analyze_index on each fetched DataFrame; fall back to fetch_indexes for missing ones."""
+    result = {}
+    for name, df in index_dfs.items():
+        if df is not None and len(df) >= 30:
+            result[name] = analyze_index(df, name)
+    return result
+
 # In-memory cache of last scan results (refreshed on each /scan call)
 _last_signals: list[StockSignal] = []
 _last_breadth: Optional[MarketBreadth] = None
@@ -230,9 +239,10 @@ async def _background_scan():
                 _last_sector_trends = compute_sector_trends(pre_signals)
                 logger.info("Pre-loaded %d signals from Firestore; breadth/sector ready", len(pre_signals))
 
-        # Fetch indexes immediately so /ดัชนี works before full scan completes
+        # Fetch indexes with full history so ดัชนี shows MACD/RSI before scan finishes
         if not _last_indexes:
-            _last_indexes = await loop.run_in_executor(None, fetch_indexes)
+            index_dfs = await loop.run_in_executor(None, fetch_indexes_with_history)
+            _last_indexes = _analyze_index_dfs(index_dfs)
 
         # Run full scan — most expensive call, ~30-60s, must not block event loop
         signals, all_data = await loop.run_in_executor(
@@ -243,7 +253,8 @@ async def _background_scan():
         _last_breadth = compute_market_breadth(signals, index_df=all_data.get("SET"))
         _last_breadth_card = build_market_breadth_card(_last_breadth)
         _last_sector_trends = compute_sector_trends(signals)
-        _last_indexes = await loop.run_in_executor(None, fetch_indexes)
+        index_dfs = await loop.run_in_executor(None, fetch_indexes_with_history)
+        _last_indexes = _analyze_index_dfs(index_dfs)
         logger.info("Startup scan complete: %d stocks", len(signals))
 
         # Persist to Firestore + BQ (fire-and-forget)
@@ -361,18 +372,9 @@ async def scan(
     breadth = compute_market_breadth(signals, index_df=all_data.get("SET"))
     sector_trends = compute_sector_trends(signals)
 
-    # For full scans, fetch index history for MACD/RSI analysis; intraday uses lightweight fetch
-    if body.mode == "full":
-        index_dfs = await loop.run_in_executor(None, fetch_indexes_with_history)
-        indexes = {
-            name: analyze_index(df, name)
-            for name, df in index_dfs.items()
-            if df is not None and len(df) >= 30
-        }
-        if not indexes:
-            indexes = await loop.run_in_executor(None, fetch_indexes)
-    else:
-        indexes = await loop.run_in_executor(None, fetch_indexes)
+    # Always fetch full index history for MACD/RSI on all scan types
+    index_dfs = await loop.run_in_executor(None, fetch_indexes_with_history)
+    indexes = _analyze_index_dfs(index_dfs)
 
     _last_signals = signals
     _last_scan_time = datetime.now(BANGKOK_TZ)

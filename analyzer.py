@@ -468,82 +468,119 @@ def count_breakouts_1y(df: pd.DataFrame) -> int:
 
 def analyze_index(df: pd.DataFrame, name: str) -> dict:
     """
-    Compute MACD (12/26/9 EMA), RSI (14), trend vs MA200, and Thai implication text.
+    Stock-like analysis for an index: MACD, RSI, MA50/150/200, stage, 52W range.
     Returns an enriched dict compatible with the existing {close, change_pct} schema.
     """
-    close = df["Close"].dropna()
+    close = df["Close"].astype(float).dropna()
     if len(close) < 30:
         return {"name": name, "close": 0.0, "change_pct": 0.0}
 
-    # MACD
+    # Moving averages
+    ma50 = close.rolling(50, min_periods=20).mean()
+    ma150 = close.rolling(150, min_periods=50).mean()
+    ma200 = close.rolling(200, min_periods=50).mean()
+
+    # MACD (12/26/9)
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
     macd_line = ema12 - ema26
     macd_signal_line = macd_line.ewm(span=9, adjust=False).mean()
     macd_hist = macd_line - macd_signal_line
 
-    # RSI (Wilder smoothing via ewm)
+    # RSI (14, Wilder)
     delta = close.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
-    rs = gain / loss.replace(0, np.nan)
-    rsi_series = 100 - (100 / (1 + rs))
+    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    rsi_series = 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
 
-    # Trend vs MA200
-    ma200 = close.rolling(200, min_periods=50).mean()
+    # 52-week high / low (use up to 252 bars)
+    window_52w = min(252, len(close))
+    high_52w = float(close.iloc[-window_52w:].max())
+    low_52w = float(close.iloc[-window_52w:].min())
 
     # Latest values
     cur_close = float(close.iloc[-1])
     prev_close = float(close.iloc[-2]) if len(close) > 1 else cur_close
     change_pct = round((cur_close - prev_close) / prev_close * 100, 2) if prev_close else 0.0
 
-    cur_macd = float(macd_line.iloc[-1])
-    cur_signal = float(macd_signal_line.iloc[-1])
-    cur_hist = float(macd_hist.iloc[-1])
-    prev_hist = float(macd_hist.iloc[-2]) if len(macd_hist) > 1 else 0.0
-    cur_rsi = float(rsi_series.iloc[-1]) if not np.isnan(rsi_series.iloc[-1]) else 50.0
-    cur_ma200 = float(ma200.iloc[-1]) if not np.isnan(ma200.iloc[-1]) else 0.0
-    above_ma200 = cur_close > cur_ma200 if cur_ma200 > 0 else None
+    def _last(series):
+        v = series.iloc[-1]
+        return float(v) if not np.isnan(v) else 0.0
 
-    # Crossover signals
+    cur_ma50 = _last(ma50)
+    cur_ma150 = _last(ma150)
+    cur_ma200 = _last(ma200)
+    cur_macd = _last(macd_line)
+    cur_signal = _last(macd_signal_line)
+    cur_hist = _last(macd_hist)
+    prev_hist = float(macd_hist.iloc[-2]) if len(macd_hist) > 1 else 0.0
+    cur_rsi = _last(rsi_series) or 50.0
+
+    above_ma50 = cur_close > cur_ma50 if cur_ma50 else None
+    above_ma150 = cur_close > cur_ma150 if cur_ma150 else None
+    above_ma200 = cur_close > cur_ma200 if cur_ma200 else None
+
+    # MA200 rising (compare last 20 bars)
+    ma200_rising = bool(cur_ma200 > float(ma200.iloc[-20])) if len(ma200) >= 20 and cur_ma200 else False
+
+    # Minervini stage for the index
+    stage = classify_stage(df) if len(close) >= 200 else None
+
+    pct_from_52w_high = round((cur_close / high_52w - 1) * 100, 1) if high_52w else 0.0
+
     macd_bullish_cross = cur_hist > 0 and prev_hist <= 0
     macd_bearish_cross = cur_hist < 0 and prev_hist >= 0
 
-    # Build Thai implication text
+    # Thai implication text
     parts = []
+    if stage is not None:
+        stage_thai = {1: "Stage 1 (Basing)", 2: "Stage 2 (Uptrend)", 3: "Stage 3 (Topping)", 4: "Stage 4 (Downtrend)"}
+        parts.append(stage_thai.get(stage, f"Stage {stage}"))
     if above_ma200 is True:
-        parts.append("เหนือ MA200 (uptrend)")
+        parts.append("เหนือ MA200 ✓")
     elif above_ma200 is False:
-        parts.append("ต่ำกว่า MA200 (downtrend)")
+        parts.append("ต่ำกว่า MA200 ✗")
     if macd_bullish_cross:
-        parts.append("🟢 MACD cross up")
+        parts.append("🟢 MACD Cross Up")
     elif macd_bearish_cross:
-        parts.append("🔴 MACD cross down")
+        parts.append("🔴 MACD Cross Down")
     elif cur_macd > cur_signal:
         parts.append("MACD เป็นบวก")
     else:
         parts.append("MACD เป็นลบ")
     if cur_rsi > 70:
-        parts.append(f"⚠️ RSI overbought ({cur_rsi:.0f})")
+        parts.append(f"⚠️ RSI Overbought ({cur_rsi:.0f})")
     elif cur_rsi < 30:
-        parts.append(f"🟢 RSI oversold ({cur_rsi:.0f})")
-    else:
-        parts.append(f"RSI {cur_rsi:.0f} (ปกติ)")
+        parts.append(f"🟢 RSI Oversold ({cur_rsi:.0f})")
 
     return {
         "name": name,
         "close": round(cur_close, 2),
         "change_pct": change_pct,
         "prev_close": round(prev_close, 2),
+        # MAs
+        "ma50": round(cur_ma50, 2),
+        "ma150": round(cur_ma150, 2),
+        "ma200": round(cur_ma200, 2),
+        "above_ma50": above_ma50,
+        "above_ma150": above_ma150,
+        "above_ma200": above_ma200,
+        "ma200_rising": ma200_rising,
+        # Stage
+        "stage": stage,
+        # 52W range
+        "high_52w": round(high_52w, 2),
+        "low_52w": round(low_52w, 2),
+        "pct_from_52w_high": pct_from_52w_high,
+        # MACD
         "macd_line": round(cur_macd, 4),
         "macd_signal": round(cur_signal, 4),
         "macd_hist": round(cur_hist, 4),
-        "rsi": round(cur_rsi, 1),
-        "above_ma200": above_ma200,
-        "ma200": round(cur_ma200, 2),
-        "trend": "uptrend" if above_ma200 else ("downtrend" if above_ma200 is False else "unknown"),
         "macd_bullish_cross": macd_bullish_cross,
         "macd_bearish_cross": macd_bearish_cross,
+        # RSI
+        "rsi": round(cur_rsi, 1),
+        "trend": "uptrend" if above_ma200 else ("downtrend" if above_ma200 is False else "unknown"),
         "implication": " | ".join(parts),
     }
 

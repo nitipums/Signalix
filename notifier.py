@@ -786,12 +786,28 @@ def build_remaining_symbols_text(signals: list[StockSignal], title: str) -> str:
     return "\n".join(lines)
 
 
+def _ma_row(label: str, value: float, close: float) -> dict:
+    """One horizontal row: label | value | above/below badge."""
+    if value <= 0:
+        return {}
+    above = close >= value
+    badge_text = "✓" if above else "✗"
+    badge_color = "#27AE60" if above else "#E74C3C"
+    return {"type": "box", "layout": "horizontal", "contents": [
+        {"type": "text", "text": label, "size": "xxs", "color": "#7F8C8D", "flex": 2},
+        {"type": "text", "text": f"{value:,.2f}", "size": "xxs", "color": "#2C3E50", "align": "center", "flex": 3},
+        {"type": "text", "text": badge_text, "size": "xxs", "color": badge_color, "weight": "bold", "align": "end", "flex": 1},
+    ]}
+
+
 def build_index_carousel(indexes: dict[str, dict]) -> dict:
-    """Build a carousel of index bubbles (SET, SET50, SET100, MAI, sSET) with MACD/RSI for SET."""
+    """Build a carousel of index bubbles with full stock-like analysis for all indexes."""
     INDEX_COLORS = {
         "SET": "#1A237E", "SET50": "#0D47A1", "SET100": "#1565C0",
         "MAI": "#4A148C", "sSET": "#006064",
     }
+    STAGE_COLORS = {1: "#7F8C8D", 2: "#27AE60", 3: "#F39C12", 4: "#E74C3C"}
+
     bubbles = []
     for name, data in indexes.items():
         close = data.get("close", 0.0)
@@ -799,72 +815,100 @@ def build_index_carousel(indexes: dict[str, dict]) -> dict:
         chg_sign = "+" if chg > 0 else ""
         chg_color = _pct_color(chg)
         tv_url = INDEX_TV_URLS.get(name, "https://www.tradingview.com")
+        rsi = data.get("rsi")
+        has_analysis = rsi is not None
 
-        # Dynamic header bg based on price direction
-        if chg > 0:
-            bg = "#1B5E20" if name == "SET" else INDEX_COLORS.get(name, "#1A237E")
-        elif chg < 0:
-            bg = "#B71C1C" if name == "SET" else INDEX_COLORS.get(name, "#1A237E")
+        # Header background: green/red if changed, else index colour
+        if chg > 0.3:
+            bg = "#1B5E20"
+        elif chg < -0.3:
+            bg = "#B71C1C"
         else:
             bg = INDEX_COLORS.get(name, "#1A237E")
 
-        # Build body contents — enriched for SET, minimal for others
         body_contents = [
-            {"type": "text", "text": f"{close:,.2f}", "weight": "bold", "size": "xxl" if name == "SET" else "xl"},
-            {"type": "text", "text": f"{chg_sign}{chg:.2f}%", "size": "md", "color": chg_color, "weight": "bold"},
+            # Price row
+            {"type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": f"{close:,.2f}", "weight": "bold",
+                 "size": "xxl" if name == "SET" else "xl", "flex": 3},
+                {"type": "text", "text": f"{chg_sign}{chg:.2f}%", "size": "sm",
+                 "color": chg_color, "weight": "bold", "align": "end", "flex": 2},
+            ]},
         ]
 
-        # Add MACD/RSI/trend for any index that has the enriched analysis data
-        rsi = data.get("rsi")
-        macd_hist = data.get("macd_hist")
-        implication = data.get("implication", "")
-        above_ma200 = data.get("above_ma200")
-        macd_bullish = data.get("macd_bullish_cross", False)
-        macd_bearish = data.get("macd_bearish_cross", False)
+        if has_analysis:
+            stage = data.get("stage")
+            ma50 = data.get("ma50", 0.0)
+            ma150 = data.get("ma150", 0.0)
+            ma200 = data.get("ma200", 0.0)
+            ma200_rising = data.get("ma200_rising", False)
+            above_ma200 = data.get("above_ma200")
+            macd_hist = data.get("macd_hist", 0.0)
+            macd_bullish = data.get("macd_bullish_cross", False)
+            macd_bearish = data.get("macd_bearish_cross", False)
+            high_52w = data.get("high_52w", 0.0)
+            low_52w = data.get("low_52w", 0.0)
+            pct_from_high = data.get("pct_from_52w_high", 0.0)
+            implication = data.get("implication", "")
 
-        if rsi is not None:
+            # Stage badge
+            if stage:
+                stage_color = STAGE_COLORS.get(stage, "#7F8C8D")
+                body_contents.append({"type": "text", "text": f"Stage {stage}",
+                                       "size": "xs", "color": stage_color, "weight": "bold"})
+
             body_contents.append({"type": "separator"})
-            # Trend
-            if above_ma200 is True:
-                trend_text = "▲ อยู่เหนือ MA200 (Uptrend)"
-                trend_color = "#27AE60"
-            elif above_ma200 is False:
-                trend_text = "▼ ต่ำกว่า MA200 (Downtrend)"
-                trend_color = "#E74C3C"
-            else:
-                trend_text = "— Trend ไม่ชัดเจน"
-                trend_color = "#7F8C8D"
-            body_contents.append({"type": "text", "text": trend_text, "size": "xs", "color": trend_color, "weight": "bold"})
+
+            # MA table
+            for row in [_ma_row("MA50", ma50, close), _ma_row("MA150", ma150, close), _ma_row("MA200", ma200, close)]:
+                if row:
+                    body_contents.append(row)
+            if ma200_rising:
+                body_contents.append({"type": "text", "text": "MA200 กำลังขึ้น ↑", "size": "xxs", "color": "#27AE60"})
+
+            body_contents.append({"type": "separator"})
 
             # RSI
             rsi_color = "#E74C3C" if rsi > 70 else ("#27AE60" if rsi < 30 else "#F39C12")
+            rsi_label = "Overbought" if rsi > 70 else ("Oversold" if rsi < 30 else "ปกติ")
             body_contents.append({"type": "box", "layout": "horizontal", "contents": [
-                {"type": "text", "text": "RSI (14)", "size": "xs", "color": "#7F8C8D", "flex": 1},
-                {"type": "text", "text": f"{rsi:.0f}", "size": "xs", "color": rsi_color, "weight": "bold", "align": "end"},
+                {"type": "text", "text": "RSI (14)", "size": "xxs", "color": "#7F8C8D", "flex": 2},
+                {"type": "text", "text": f"{rsi:.0f} {rsi_label}", "size": "xxs",
+                 "color": rsi_color, "weight": "bold", "align": "end", "flex": 3},
             ]})
 
-            # MACD signal
-            if macd_hist is not None:
-                if macd_bullish:
-                    macd_label = "🟢 MACD Cross Up"
-                    macd_color = "#27AE60"
-                elif macd_bearish:
-                    macd_label = "🔴 MACD Cross Down"
-                    macd_color = "#E74C3C"
-                elif macd_hist > 0:
-                    macd_label = "MACD เป็นบวก ↑"
-                    macd_color = "#27AE60"
-                else:
-                    macd_label = "MACD เป็นลบ ↓"
-                    macd_color = "#E74C3C"
-                body_contents.append({"type": "text", "text": macd_label, "size": "xs", "color": macd_color})
+            # MACD
+            if macd_bullish:
+                macd_label, macd_color = "🟢 MACD Cross Up", "#27AE60"
+            elif macd_bearish:
+                macd_label, macd_color = "🔴 MACD Cross Down", "#E74C3C"
+            elif macd_hist > 0:
+                macd_label, macd_color = "MACD เป็นบวก ↑", "#27AE60"
+            else:
+                macd_label, macd_color = "MACD เป็นลบ ↓", "#E74C3C"
+            body_contents.append({"type": "text", "text": macd_label, "size": "xxs", "color": macd_color})
 
-            # Implication
+            body_contents.append({"type": "separator"})
+
+            # 52W range
+            body_contents.append({"type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": "52W High", "size": "xxs", "color": "#7F8C8D", "flex": 2},
+                {"type": "text", "text": f"{high_52w:,.2f} ({pct_from_high:+.1f}%)",
+                 "size": "xxs", "color": "#E74C3C" if pct_from_high < -20 else "#2C3E50",
+                 "align": "end", "flex": 3},
+            ]})
+            body_contents.append({"type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": "52W Low", "size": "xxs", "color": "#7F8C8D", "flex": 2},
+                {"type": "text", "text": f"{low_52w:,.2f}", "size": "xxs", "color": "#2C3E50", "align": "end", "flex": 3},
+            ]})
+
+            # Implication summary
             if implication:
                 body_contents.append({"type": "separator"})
-                body_contents.append({"type": "text", "text": implication, "size": "xxs", "color": "#7F8C8D", "wrap": True})
+                body_contents.append({"type": "text", "text": implication,
+                                       "size": "xxs", "color": "#7F8C8D", "wrap": True})
 
-        bubble_size = "mega" if rsi is not None else "kilo"
+        bubble_size = "mega" if has_analysis else "kilo"
         bubbles.append({
             "type": "bubble",
             "size": bubble_size,
@@ -888,7 +932,8 @@ def build_index_carousel(indexes: dict[str, dict]) -> dict:
                 "type": "box",
                 "layout": "vertical",
                 "contents": [
-                    {"type": "button", "action": {"type": "uri", "label": "ดูชาร์ต", "uri": tv_url}, "style": "primary", "color": "#1565C0", "height": "sm"},
+                    {"type": "button", "action": {"type": "uri", "label": "ดูชาร์ต", "uri": tv_url},
+                     "style": "primary", "color": "#1565C0", "height": "sm"},
                 ],
                 "paddingAll": "8px",
             },
