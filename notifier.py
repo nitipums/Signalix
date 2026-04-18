@@ -456,6 +456,28 @@ def _kv_box(label: str, value: str, color: str) -> dict:
     }
 
 
+def _tappable_stage_box(label: str, count: int, color: str, cmd: str) -> dict:
+    return {
+        "type": "box", "layout": "vertical", "flex": 1, "alignItems": "center",
+        "action": {"type": "message", "label": label[:20], "text": cmd},
+        "contents": [
+            {"type": "text", "text": str(count), "weight": "bold", "size": "xl", "color": color, "align": "center"},
+            {"type": "text", "text": label, "size": "xxs", "color": "#7F8C8D", "align": "center"},
+        ],
+    }
+
+
+def _tappable_kv_box(label: str, value: str, color: str, cmd: str) -> dict:
+    return {
+        "type": "box", "layout": "vertical", "flex": 1, "alignItems": "center",
+        "action": {"type": "message", "label": label[:20], "text": cmd},
+        "contents": [
+            {"type": "text", "text": value, "weight": "bold", "size": "lg", "color": color, "align": "center"},
+            {"type": "text", "text": label, "size": "xxs", "color": "#7F8C8D", "align": "center"},
+        ],
+    }
+
+
 def build_stock_bubble(signal: StockSignal) -> dict:
     """Build a Flex Bubble card for a single stock in the carousel."""
     pcolor = PATTERN_COLOR.get(signal.pattern, "#7F8C8D")
