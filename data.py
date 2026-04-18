@@ -433,7 +433,7 @@ def save_ohlcv_to_bq(symbol: str, df: pd.DataFrame) -> None:
 
 _PRICE_COLS = ["Open", "High", "Low", "Close"]
 
-def load_all_ohlcv_from_bq(lookback_days: int = 300) -> dict[str, pd.DataFrame]:
+def load_all_ohlcv_from_bq(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
     """Load last N days of OHLCV for all symbols from BQ. Returns dict[symbol, df]."""
     if _bq_client is None:
         return {}
@@ -530,7 +530,7 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
         Symbols that failed are omitted.
     """
     if BQ_AVAILABLE:
-        bq_data = load_all_ohlcv_from_bq(lookback_days=300)
+        bq_data = load_all_ohlcv_from_bq(lookback_days=400)
         if bq_data:
             all_dates = [df.index.max() for df in bq_data.values() if not df.empty]
             if all_dates:
@@ -596,7 +596,7 @@ def GET_ALL_SYMBOLS_WITH_INDEX() -> list[str]:
     return SET_STOCKS + ["SET"]
 
 
-def fetch_latest_candles(lookback_days: int = 300) -> dict[str, pd.DataFrame]:
+def fetch_latest_candles(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
     """
     Intraday scan data fetch: load BQ history + merge with a small yfinance
     batch download (5d) to get today's candle.  Much faster than a full 1y download.
