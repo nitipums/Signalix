@@ -572,6 +572,17 @@ def fetch_fundamentals(symbol: str) -> dict:
         return {}
 
 
+def get_cached_fundamentals(symbol: str, db) -> dict:
+    """Return Firestore-cached fundamentals only — never fetches fresh from yfinance."""
+    if db is None:
+        return {}
+    try:
+        doc = db.collection("fundamentals_cache").document(symbol).get()
+        return doc.to_dict() if doc.exists else {}
+    except Exception:
+        return {}
+
+
 def get_fundamentals(symbol: str, db=None) -> dict:
     """Return cached fundamentals from Firestore or fetch fresh if >24h old."""
     if db is not None:

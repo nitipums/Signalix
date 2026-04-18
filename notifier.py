@@ -32,6 +32,23 @@ from data import INDEX_TV_URLS
 
 logger = logging.getLogger(__name__)
 
+# ─── LINE API singleton ───────────────────────────────────────────────────────
+
+_messaging_api: Optional[MessagingApi] = None
+_api_client: Optional[ApiClient] = None
+_webhook_handler: Optional[WebhookHandler] = None
+
+
+def init_notifier(token: str) -> None:
+    """Initialize the LINE API singleton. Call once at startup."""
+    global _messaging_api, _api_client
+    if not token:
+        return
+    config = Configuration(access_token=token)
+    _api_client = ApiClient(configuration=config)
+    _messaging_api = MessagingApi(_api_client)
+
+
 # ─── Pattern display config ───────────────────────────────────────────────────
 
 PATTERN_LABEL = {
@@ -58,16 +75,20 @@ STAGE_LABEL = {1: "Stage 1 – Basing", 2: "Stage 2 – Uptrend", 3: "Stage 3 �
 
 # ─── LINE client helpers ───────────────────────────────────────────────────────
 
-def _get_api() -> tuple[MessagingApi, ApiClient]:
+def _get_api() -> MessagingApi:
+    if _messaging_api is not None:
+        return _messaging_api
+    # Fallback: ad-hoc client for dev / before init_notifier is called
     settings = get_settings()
     config = Configuration(access_token=settings.line_channel_access_token)
-    client = ApiClient(configuration=config)
-    return MessagingApi(client), client
+    return MessagingApi(ApiClient(configuration=config))
 
 
 def get_webhook_handler() -> WebhookHandler:
-    settings = get_settings()
-    return WebhookHandler(settings.line_channel_secret)
+    global _webhook_handler
+    if _webhook_handler is None:
+        _webhook_handler = WebhookHandler(get_settings().line_channel_secret)
+    return _webhook_handler
 
 
 # ─── Flex Message builders ────────────────────────────────────────────────────
@@ -1231,7 +1252,7 @@ def _flex_message(alt_text: str, container: dict) -> FlexMessage:
 
 def reply_flex(reply_token: str, alt_text: str, container: dict) -> None:
     """Reply to a LINE message with a Flex Message."""
-    api, client = _get_api()
+    api = _get_api()
     try:
         api.reply_message(
             ReplyMessageRequest(
@@ -1241,13 +1262,11 @@ def reply_flex(reply_token: str, alt_text: str, container: dict) -> None:
         )
     except Exception as exc:
         logger.error("Failed to reply flex: %s", exc)
-    finally:
-        client.close()
 
 
 def reply_text(reply_token: str, text: str) -> None:
     """Reply to a LINE message with plain text."""
-    api, client = _get_api()
+    api = _get_api()
     try:
         api.reply_message(
             ReplyMessageRequest(
@@ -1257,13 +1276,11 @@ def reply_text(reply_token: str, text: str) -> None:
         )
     except Exception as exc:
         logger.error("Failed to reply text: %s", exc)
-    finally:
-        client.close()
 
 
 def reply_flex_and_text(reply_token: str, alt_text: str, container: dict, extra_text: str) -> None:
     """Reply with a Flex Message followed by a text message (2 messages in 1 reply)."""
-    api, client = _get_api()
+    api = _get_api()
     try:
         messages = [_flex_message(alt_text, container)]
         if extra_text:
@@ -1273,13 +1290,11 @@ def reply_flex_and_text(reply_token: str, alt_text: str, container: dict, extra_
         )
     except Exception as exc:
         logger.error("Failed to reply flex+text: %s", exc)
-    finally:
-        client.close()
 
 
 def send_to_user(user_id: str, alt_text: str, container: dict) -> None:
     """Push a Flex Message to a specific user."""
-    api, client = _get_api()
+    api = _get_api()
     try:
         api.multicast(
             MulticastRequest(
@@ -1289,28 +1304,24 @@ def send_to_user(user_id: str, alt_text: str, container: dict) -> None:
         )
     except Exception as exc:
         logger.error("Failed to push to %s: %s", user_id, exc)
-    finally:
-        client.close()
 
 
 def broadcast_flex(alt_text: str, container: dict) -> None:
     """Broadcast a Flex Message to all followers of the LINE Official Account."""
-    api, client = _get_api()
+    api = _get_api()
     try:
         api.broadcast(
             BroadcastRequest(messages=[_flex_message(alt_text, container)])
         )
     except Exception as exc:
         logger.error("Failed to broadcast: %s", exc)
-    finally:
-        client.close()
 
 
 def multicast_flex(user_ids: list[str], alt_text: str, container: dict) -> None:
     """Send Flex Message to a list of user IDs (up to 500 at a time)."""
     if not user_ids:
         return
-    api, client = _get_api()
+    api = _get_api()
     try:
         # LINE multicast accepts max 500 per call
         for i in range(0, len(user_ids), 500):
@@ -1323,5 +1334,3 @@ def multicast_flex(user_ids: list[str], alt_text: str, container: dict) -> None:
             )
     except Exception as exc:
         logger.error("Failed to multicast: %s", exc)
-    finally:
-        client.close()
