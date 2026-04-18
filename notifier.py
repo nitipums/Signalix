@@ -1604,35 +1604,7 @@ def build_guide_carousel() -> dict:
         },
     }
 
-    quickref_bubble = {
-        "type": "bubble",
-        "size": "mega",
-        "header": {
-            "type": "box",
-            "layout": "vertical",
-            "contents": [{"type": "text", "text": "⚡ Quick Reference", "weight": "bold", "size": "lg", "color": "#FFFFFF"}],
-            "backgroundColor": "#4A148C",
-            "paddingAll": "16px",
-        },
-        "body": {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "xs",
-            "contents": [
-                _cmd_button("ตลาด", "Market Breadth"),
-                _cmd_button("ดัชนี", "SET50/MAI/sSET"),
-                _cmd_button("sector", "กลุ่มอุตสาหกรรม"),
-                _cmd_button("breakout", "หุ้น Breakout"),
-                _cmd_button("vcp", "VCP Setups"),
-                _cmd_button("stage2", "Stage 2 Stocks"),
-                _cmd_button("watchlist", "Watchlist ของคุณ"),
-                _cmd_button("guide", "คู่มือ (การ์ดนี้)"),
-            ],
-            "paddingAll": "16px",
-        },
-    }
-
-    return {"type": "carousel", "contents": [stage_bubble, pattern_bubble, score_vol_bubble, quickref_bubble]}
+    return {"type": "carousel", "contents": [quickref_bubble, stage_bubble, pattern_bubble, score_vol_bubble]}
 
 
 def build_stage_cycle_card() -> dict:
