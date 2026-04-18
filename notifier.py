@@ -762,21 +762,24 @@ def _stock_row(rank: int, signal: StockSignal) -> dict:
 def build_ranked_stock_list_bubble(
     signals: list[StockSignal],
     title: str,
-    max_per_bubble: int = 40,
+    max_per_bubble: int = 10,
     next_cmd: str = "",
     rank_offset: int = 0,
     subtitle: str = "Sorted by Strength Score",
 ) -> dict:
     """
-    Single tappable stock list bubble. Columns: # | Stock | Price | Chg% | Vol | Pat
-    40 rows ≈ 35KB < LINE's 50KB limit. Pass next_cmd for 'ดูเพิ่มเติม ▼' pagination button.
-    Pass rank_offset so page 2 shows ranks 41, 42, ... instead of restarting at 1.
+    5-bubble carousel × 10 rows = 50 stocks ≈ 42KB < LINE's 50KB carousel limit.
+    Each bubble shows its card number and continuous rank numbers.
+    Last bubble gets 'ดูเพิ่มเติม ▼' button when next_cmd is set.
     """
     if not signals:
         return {"type": "bubble", "size": "mega", "body": {"type": "box", "layout": "vertical",
                 "contents": [{"type": "text", "text": "ไม่มีหุ้น", "color": "#7F8C8D"}]}}
 
-    chunk = signals[:max_per_bubble]
+    MAX_BUBBLES = 5
+    cap = min(len(signals), max_per_bubble * MAX_BUBBLES)
+    chunks = [signals[i:i + max_per_bubble] for i in range(0, cap, max_per_bubble)]
+    n = len(chunks)
 
     col_header = {
         "type": "box", "layout": "horizontal", "spacing": "sm", "paddingBottom": "4px",
@@ -789,44 +792,58 @@ def build_ranked_stock_list_bubble(
             {"type": "text", "text": "Pat", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
         ],
     }
-    rows = [col_header, {"type": "separator"}]
-    for i, sig in enumerate(chunk):
-        rows.append(_stock_row(rank_offset + i + 1, sig))
-        if (i + 1) % 10 == 0 and i + 1 < len(chunk):
-            rows.append({"type": "separator", "margin": "none"})
 
-    scan_ts = _fmt_scan_time(chunk[0].scanned_at) if chunk else ""
-    footer_contents = [
-        {"type": "text", "text": "Tap any stock for full analysis", "size": "xxs", "color": "#7F8C8D", "align": "center"},
-    ]
-    if scan_ts:
-        footer_contents.insert(0, {"type": "text", "text": scan_ts, "size": "xxs", "color": "#95A5A6", "align": "center"})
-    if next_cmd:
-        footer_contents.append({
-            "type": "button",
-            "action": {"type": "message", "label": "ดูเพิ่มเติม ▼", "text": next_cmd},
-            "style": "primary", "color": "#1A237E", "height": "sm", "margin": "sm",
-        })
+    scan_ts = _fmt_scan_time(signals[0].scanned_at) if signals else ""
 
-    return {
-        "type": "bubble", "size": "mega",
-        "header": {
-            "type": "box", "layout": "vertical",
-            "contents": [
-                {"type": "text", "text": title, "weight": "bold", "size": "md", "color": "#FFFFFF"},
-                {"type": "text", "text": subtitle, "size": "xxs", "color": "#BBDDFF"},
-            ],
-            "backgroundColor": "#1A237E", "paddingAll": "12px",
-        },
-        "body": {
-            "type": "box", "layout": "vertical", "spacing": "none",
-            "contents": rows, "paddingAll": "12px",
-        },
-        "footer": {
-            "type": "box", "layout": "vertical", "spacing": "xs",
-            "contents": footer_contents, "paddingAll": "8px",
-        },
-    }
+    def _make_bubble(chunk, card_idx, start_rank, is_last):
+        end_rank = start_rank + len(chunk) - 1
+        card_subtitle = f"Card {card_idx + 1}/{n}  ·  #{start_rank}–{end_rank}  ·  {subtitle}"
+        rows = [col_header, {"type": "separator"}]
+        for i, sig in enumerate(chunk):
+            rows.append(_stock_row(start_rank + i, sig))
+
+        footer_contents = []
+        if scan_ts:
+            footer_contents.append({"type": "text", "text": scan_ts, "size": "xxs", "color": "#95A5A6", "align": "center"})
+        footer_contents.append(
+            {"type": "text", "text": "Tap any stock for full analysis", "size": "xxs", "color": "#7F8C8D", "align": "center"}
+        )
+        if is_last and next_cmd:
+            footer_contents.append({
+                "type": "button",
+                "action": {"type": "message", "label": "ดูเพิ่มเติม ▼", "text": next_cmd},
+                "style": "primary", "color": "#1A237E", "height": "sm", "margin": "sm",
+            })
+
+        return {
+            "type": "bubble", "size": "mega",
+            "header": {
+                "type": "box", "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": title, "weight": "bold", "size": "md", "color": "#FFFFFF"},
+                    {"type": "text", "text": card_subtitle, "size": "xxs", "color": "#BBDDFF"},
+                ],
+                "backgroundColor": "#1A237E", "paddingAll": "12px",
+            },
+            "body": {
+                "type": "box", "layout": "vertical", "spacing": "none",
+                "contents": rows, "paddingAll": "12px",
+            },
+            "footer": {
+                "type": "box", "layout": "vertical", "spacing": "xs",
+                "contents": footer_contents, "paddingAll": "8px",
+            },
+        }
+
+    bubbles = []
+    for idx, chunk in enumerate(chunks):
+        start_rank = rank_offset + idx * max_per_bubble + 1
+        is_last = (idx == n - 1)
+        bubbles.append(_make_bubble(chunk, idx, start_rank, is_last))
+
+    if len(bubbles) == 1:
+        return bubbles[0]
+    return {"type": "carousel", "contents": bubbles}
 
 
 def build_compact_stock_bubble(signal: StockSignal) -> dict:

@@ -945,9 +945,9 @@ def _get_signals_for(pattern: Optional[str] = None, stage: Optional[int] = None)
 
 
 
-# LINE carousel hard limit: 50KB (confirmed). 2 bubbles × 20 rows ≈ 38KB per page.
-# Pagination: each page shows 40 stocks; "ดูเพิ่มเติม ▼" button sends "stage4 p2" etc.
-_STAGE_PAGE_SIZE = 40
+# LINE carousel hard limit: 50KB (confirmed). 5 bubbles × 10 rows ≈ 42KB per page.
+# Pagination: each page shows 50 stocks; "ดูเพิ่มเติม ▼" button sends "stage4 p2" etc.
+_STAGE_PAGE_SIZE = 50
 
 
 def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str,
