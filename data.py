@@ -401,13 +401,22 @@ def _df_to_bq(symbol: str, df: pd.DataFrame) -> "pd.DataFrame":
 
 
 def save_ohlcv_to_bq(symbol: str, df: pd.DataFrame) -> None:
-    """Append full OHLCV history for one symbol to BigQuery (used during sync)."""
+    """Append OHLCV history for one symbol to BQ, skipping already-stored rows."""
     if _bq_client is None or df is None or df.empty:
-        logger.warning("save_ohlcv_to_bq(%s): skipped — client=%s, df_empty=%s", symbol, _bq_client is None, df is None or df.empty)
         return
     try:
         from google.cloud import bigquery
         bq_df = _df_to_bq(symbol, df)
+        # Only insert rows newer than what's already in BQ for this symbol
+        max_df = _bq_client.query(
+            f"SELECT MAX(date) AS max_date FROM {_bq_table()} WHERE symbol = '{symbol}'"
+        ).to_dataframe()
+        last = max_df["max_date"].iloc[0] if not max_df.empty else None
+        if last is not None:
+            bq_df = bq_df[bq_df["date"] > last]
+        if bq_df.empty:
+            logger.debug("BQ: %s already up to date", symbol)
+            return
         table_id = f"{_bq_project}.{_bq_dataset}.ohlcv"
         job = _bq_client.load_table_from_dataframe(
             bq_df, table_id,
@@ -417,7 +426,7 @@ def save_ohlcv_to_bq(symbol: str, df: pd.DataFrame) -> None:
             ),
         )
         job.result()
-        logger.info("BQ: saved %d rows for %s", len(bq_df), symbol)
+        logger.info("BQ: saved %d new rows for %s", len(bq_df), symbol)
     except Exception as exc:
         logger.error("save_ohlcv_to_bq(%s) failed: %s", symbol, exc)
 
