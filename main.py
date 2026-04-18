@@ -54,6 +54,7 @@ from notifier import (
     build_market_breadth_card,
     build_pattern_detail_card,
     build_ranked_stock_list_bubble,
+    build_simple_tappable_list,
     build_sector_carousel,
     build_sector_overview_card,
     build_single_stock_card,
@@ -244,8 +245,8 @@ async def _warm_from_firestore():
 
         if state:
             _last_breadth = state["breadth"]
-            _last_breadth_card = build_market_breadth_card(_last_breadth, state["sector_trends"])
             _last_indexes = state["indexes"]
+            _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends, _last_indexes)
             _last_sector_trends = state["sector_trends"]
             try:
                 _last_scan_time = datetime.fromisoformat(state["scanned_at"]).replace(tzinfo=BANGKOK_TZ)
@@ -256,11 +257,10 @@ async def _warm_from_firestore():
             # Fallback: compute derived caches from signals when scan_state is missing/incomplete
             if not _last_breadth:
                 _last_breadth = compute_market_breadth(signals)
-                _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends)
+                _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends, _last_indexes)
                 logger.info("Computed breadth from %d signals (scan_state missing)", len(signals))
             if not _last_sector_trends:
                 _last_sector_trends = compute_sector_trends(signals)
-                _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends)
                 logger.info("Computed sector_trends from signals (scan_state missing)")
 
         logger.info("Warmed from Firestore: %d signals, breadth=%s, indexes=%d, sectors=%d",
@@ -383,8 +383,8 @@ async def scan(
     _last_signals = signals
     _last_scan_time = datetime.now(BANGKOK_TZ)
     _last_breadth = breadth
-    _last_breadth_card = build_market_breadth_card(breadth, sector_trends)
     _last_sector_trends = sector_trends
+    _last_breadth_card = build_market_breadth_card(breadth, sector_trends, indexes)
     _last_indexes = indexes
 
     # Persist to Firestore (always); BigQuery only on full mode
@@ -681,6 +681,7 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     if not reply_token:
         return
 
+    loop = asyncio.get_running_loop()
     cmd = text.lower().strip()
 
     # ── Explain metric ⓘ ──
@@ -721,7 +722,7 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     # ── Sector Trends: overview or drill-down ──
     elif cmd.startswith("sector ") and len(cmd) > 7:
         sector_name = cmd[7:].upper().strip()
-        sector_sigs = [s for s in _last_signals if SECTOR_MAP.get(s.symbol) == sector_name and s.stage in (1, 2)]
+        sector_sigs = [s for s in _last_signals if SECTOR_MAP.get(s.symbol) == sector_name]
         sector_sigs.sort(key=lambda s: s.strength_score, reverse=True)
         if sector_sigs:
             _reply_stock_list(reply_token, sector_sigs, f"🏭 {sector_name} — Leaders")
@@ -905,17 +906,8 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str, 
             reply_text(reply_token, f"ไม่มีหุ้นใน {title} ขณะนี้")
         return
     if text_only:
-        PAT_ABBR = {"breakout": "BO", "ath_breakout": "ATH", "vcp": "VCP",
-                    "vcp_low_cheat": "VCPl", "consolidating": "CON"}
-        lines = [f"{title} — {len(signals)} หุ้น\n"]
-        for i, s in enumerate(signals[:30], 1):
-            sign = "+" if s.change_pct >= 0 else ""
-            pat = PAT_ABBR.get(s.pattern, s.pattern[:3].upper())
-            lines.append(f"{i}. {s.symbol}  ฿{s.close:,.2f}  {sign}{s.change_pct:.1f}%  [{pat}]")
-        if len(signals) > 30:
-            lines.append(f"\n... และอีก {len(signals) - 30} หุ้น")
-        lines.append("\nพิมพ์ชื่อหุ้น เช่น ADVANC เพื่อดูรายละเอียด")
-        reply_text(reply_token, "\n".join(lines))
+        bubble = build_simple_tappable_list(signals, title)
+        reply_flex(reply_token, title, bubble)
         return
     bubble = build_ranked_stock_list_bubble(signals, title)
     reply_flex(reply_token, title, bubble)
