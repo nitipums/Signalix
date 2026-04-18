@@ -206,7 +206,6 @@ def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None
     above_cnt = getattr(breadth, "above_ma200", 0)
     below_cnt = getattr(breadth, "below_ma200", 0)
 
-    # Header background: green if up, red if down, navy if neutral
     if set_chg > 0:
         header_bg = "#1B5E20"
     elif set_chg < 0:
@@ -214,30 +213,42 @@ def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None
     else:
         header_bg = "#1A237E"
 
-    # Header contents: SET index is the hero element
-    header_contents = [
-        {"type": "text", "text": "📊 ภาพรวมตลาด SET", "size": "xs", "color": "#DDDDDD"},
+    # Extract RSI/MACD before building header so badges are available
+    set_idx = (indexes or {}).get("SET", {})
+    _rsi = (set_idx.get("rsi", 0) or 0) if set_idx else 0
+    _macd_h = (set_idx.get("macd_hist", set_idx.get("macd_histogram", 0)) or 0) if set_idx else 0
+    _rsi_color = "#E74C3C" if _rsi > 70 else "#27AE60" if _rsi < 40 else "#F39C12"
+    _macd_color = "#27AE60" if _macd_h > 0 else "#E74C3C"
+    _macd_label = "▲ MACD Bull" if _macd_h > 0 else "▼ MACD Bear"
+
+    # Header styled like build_single_stock_card: label → name xl → price+chg% → badges → timestamp
+    header_contents: list = [
+        {"type": "text", "text": "📊 ภาพรวมตลาด", "size": "xs", "color": "#DDDDDD"},
+        {"type": "text", "text": "SET INDEX", "weight": "bold", "size": "xl", "color": "#FFFFFF"},
     ]
     if set_close > 0:
-        header_contents += [
-            {
-                "type": "box",
-                "layout": "horizontal",
-                "contents": [
-                    {"type": "text", "text": f"{set_close:,.2f}", "weight": "bold", "size": "xxl", "color": "#FFFFFF", "flex": 1},
-                    {"type": "text", "text": f"{chg_sign}{set_chg:.2f}%", "size": "lg", "color": chg_color, "weight": "bold", "align": "end"},
-                ],
-            },
-        ]
+        header_contents.append({
+            "type": "box", "layout": "horizontal",
+            "contents": [
+                {"type": "text", "text": f"{set_close:,.2f}", "weight": "bold", "size": "xxl", "color": "#FFFFFF", "flex": 1},
+                {"type": "text", "text": f"{chg_sign}{set_chg:.2f}%", "size": "lg", "color": chg_color, "weight": "bold", "align": "end"},
+            ],
+        })
+    if set_idx and _rsi:
+        header_contents.append({
+            "type": "box", "layout": "horizontal",
+            "contents": [
+                {"type": "text", "text": f"RSI {_rsi:.0f}", "size": "xs", "color": _rsi_color, "weight": "bold"},
+                {"type": "text", "text": _macd_label, "size": "xs", "color": _macd_color, "weight": "bold", "margin": "md"},
+            ],
+        })
     header_contents.append(
         {"type": "text", "text": breadth.scanned_at[:16].replace("T", " "), "size": "xxs", "color": "#DDDDDD"}
     )
 
-    # MA200 visual bar
     above_flex = max(1, int(above_pct))
     below_flex = max(1, 100 - above_flex)
 
-    # Stage distribution rows — each box is tappable
     stage_row = {
         "type": "box", "layout": "horizontal",
         "contents": [
@@ -248,7 +259,6 @@ def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None
         ],
     }
 
-    # Key signal row — Breakout/VCP tappable, 52W High/Low informational
     signal_row = {
         "type": "box", "layout": "horizontal",
         "contents": [
@@ -306,7 +316,6 @@ def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None
         "SERVICE": "#1ABC9C", "TECH": "#3498DB",
     }
 
-    # Sector summary — top 3 sectors by stage2_pct with colors
     if sector_trends:
         top3 = sorted(sector_trends, key=lambda s: s.stage2_pct, reverse=True)[:3]
         sector_rows: list = [
@@ -326,34 +335,16 @@ def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None
         body_contents.append({"type": "separator"})
         body_contents.extend(sector_rows)
 
-    # SET Index RSI/MACD overview
-    set_idx = (indexes or {}).get("SET", {})
-    if set_idx:
-        _rsi = set_idx.get("rsi", 0) or 0
-        _macd_h = set_idx.get("macd_hist", set_idx.get("macd_histogram", 0)) or 0
-        _rsi_color = "#E74C3C" if _rsi > 70 else "#27AE60" if _rsi < 40 else "#F39C12"
-        _macd_color = "#27AE60" if _macd_h > 0 else "#E74C3C"
-        _macd_label = "▲ Bullish" if _macd_h > 0 else "▼ Bearish"
-        body_contents.append({"type": "separator"})
-        body_contents.append({
-            "type": "box", "layout": "horizontal", "paddingTop": "4px", "paddingBottom": "4px",
-            "contents": [
-                {"type": "text", "text": "SET RSI", "size": "xxs", "color": "#7F8C8D", "flex": 2},
-                {"type": "text", "text": f"{_rsi:.0f}", "size": "xs", "weight": "bold", "color": _rsi_color, "flex": 1},
-                {"type": "text", "text": "MACD", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
-                {"type": "text", "text": _macd_label, "size": "xs", "weight": "bold", "color": _macd_color, "flex": 2, "align": "end"},
-            ],
-        })
-
-    # Captain Signal market advice
     body_contents.append({"type": "separator"})
     body_contents.append(_captain_advice_box(_captain_market_advice(breadth)))
+
     return {
         "type": "bubble",
         "size": "mega",
         "header": {
             "type": "box",
             "layout": "vertical",
+            "action": {"type": "message", "label": "ดัชนี", "text": "index"},
             "contents": header_contents,
             "backgroundColor": header_bg,
             "paddingAll": "16px",
@@ -361,90 +352,9 @@ def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None
         "body": {
             "type": "box",
             "layout": "vertical",
-            "spacing": "md",
-            "contents": [
-                # Stage distribution — Stage 2 most prominent
-                {
-                    "type": "box",
-                    "layout": "horizontal",
-                    "contents": [
-                        _stage_box("Stage 2 ✅", breadth.stage2_count, "#27AE60"),
-                        _stage_box("Stage 1 ⚪", breadth.stage1_count, "#95A5A6"),
-                        _stage_box("Stage 3 ⚠️", breadth.stage3_count, "#E67E22"),
-                        _stage_box("Stage 4 ❌", breadth.stage4_count, "#E74C3C"),
-                    ],
-                },
-                {
-                    "type": "text",
-                    "text": f"Stage 2: {breadth.stage2_pct}% ของตลาด",
-                    "size": "xs",
-                    "color": "#27AE60" if breadth.stage2_pct >= 30 else "#7F8C8D",
-                    "align": "center",
-                    "weight": "bold",
-                },
-                {"type": "separator"},
-                # Advancing / Declining
-                {
-                    "type": "box",
-                    "layout": "horizontal",
-                    "contents": [
-                        _kv_box("ขึ้น", str(breadth.advancing), "#27AE60"),
-                        _kv_box("ลง", str(breadth.declining), "#E74C3C"),
-                        _kv_box("ทรงตัว", str(breadth.unchanged), "#7F8C8D"),
-                    ],
-                },
-                {"type": "separator"},
-                # MA200 visual bar
-                {
-                    "type": "box",
-                    "layout": "vertical",
-                    "contents": [
-                        {"type": "text", "text": "% เหนือ MA200", "size": "xxs", "color": "#7F8C8D"},
-                        {
-                            "type": "box",
-                            "layout": "horizontal",
-                            "contents": [
-                                {"type": "box", "layout": "vertical", "flex": above_flex,
-                                 "backgroundColor": "#27AE60", "height": "8px", "contents": []},
-                                {"type": "box", "layout": "vertical", "flex": below_flex,
-                                 "backgroundColor": "#E74C3C", "height": "8px", "contents": []},
-                            ],
-                        },
-                        {
-                            "type": "box",
-                            "layout": "horizontal",
-                            "contents": [
-                                {"type": "text", "text": f"เหนือ {above_pct:.0f}% ({above_cnt})", "size": "xxs", "color": "#27AE60", "flex": 1},
-                                {"type": "text", "text": f"ต่ำกว่า {below_pct:.0f}% ({below_cnt})", "size": "xxs", "color": "#E74C3C", "flex": 1, "align": "end"},
-                            ],
-                        },
-                    ],
-                },
-                {"type": "separator"},
-                # Key signals
-                {
-                    "type": "box",
-                    "layout": "horizontal",
-                    "contents": [
-                        _kv_box("Breakout", str(breadth.breakout_count), "#F39C12"),
-                        _kv_box("VCP", str(breadth.vcp_count), "#2980B9"),
-                        _kv_box("52W High", str(breadth.new_highs_52w), "#8E44AD"),
-                        _kv_box("52W Low", str(breadth.new_lows_52w), "#E74C3C"),
-                    ],
-                },
-            ],
-            "paddingAll": "16px",
-        },
-        "footer": {
-            "type": "box",
-            "layout": "horizontal",
             "spacing": "sm",
-            "contents": [
-                {"type": "button", "action": {"type": "message", "label": "Stage 2", "text": "stage2"}, "style": "primary", "color": "#1B5E20", "height": "sm", "flex": 1},
-                {"type": "button", "action": {"type": "message", "label": "Breakout", "text": "breakout"}, "style": "primary", "color": "#E65100", "height": "sm", "flex": 1},
-                {"type": "button", "action": {"type": "message", "label": "VCP", "text": "vcp"}, "style": "primary", "color": "#0D47A1", "height": "sm", "flex": 1},
-            ],
-            "paddingAll": "8px",
+            "contents": body_contents,
+            "paddingAll": "12px",
         },
     }
 

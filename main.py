@@ -581,7 +581,7 @@ def _broadcast_full_report(breadth: MarketBreadth, signals: list[StockSignal]) -
 
     # 4. Per-user watchlist push (multicast — each user gets their own watchlist snapshot)
     if FIRESTORE_AVAILABLE and _db:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         loop.run_in_executor(None, _push_watchlist_updates_sync, signals)
 
 
@@ -957,7 +957,7 @@ def _reply_single_stock(reply_token: str, symbol: str, user_id: str = "") -> Non
 
     # Gamification: update user score based on what they viewed
     if user_id and FIRESTORE_AVAILABLE and _db and signal_to_show:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         s = signal_to_show
         if s.stage == 2 and s.pattern in ("breakout", "ath_breakout", "vcp"):
             loop.run_in_executor(None, update_user_score, _db, user_id, 1, "viewed_s2_breakout", symbol)
