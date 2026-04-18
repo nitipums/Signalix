@@ -759,11 +759,11 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         cached = {s.symbol: s for s in _last_signals}
         wl_signals = [cached[sym] for sym in wl if sym in cached]
         uncached = [sym for sym in wl if sym not in cached]
-        for sym in uncached:
-            if FIRESTORE_AVAILABLE and _db:
-                sig = load_signal_from_firestore(_db, sym)
-                if sig:
-                    wl_signals.append(sig)
+        if uncached and FIRESTORE_AVAILABLE and _db:
+            fs_sigs = await loop.run_in_executor(
+                None, lambda: [load_signal_from_firestore(_db, s) for s in uncached]
+            )
+            wl_signals.extend(s for s in fs_sigs if s)
         if not wl_signals:
             reply_text(reply_token, "ไม่มีข้อมูลหุ้นใน Watchlist ขณะนี้")
             return
@@ -842,7 +842,7 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         if not symbol:
             reply_text(reply_token, f'ไม่พบหุ้น "{raw.upper()}"')
             return
-        _reply_detailed_stock(reply_token, symbol)
+        await _reply_detailed_stock(reply_token, symbol)
 
     # ── Help → Guide ──
     elif cmd in ("help", "ช่วย", "คำสั่ง", "?"):
@@ -874,7 +874,7 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     else:
         symbol = resolve_symbol(text)
         if symbol:
-            _reply_single_stock(reply_token, symbol, user_id)
+            await _reply_single_stock(reply_token, symbol, user_id)
         else:
             reply_text(
                 reply_token,
@@ -901,36 +901,42 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str, 
     reply_flex(reply_token, title, bubble)
 
 
-def _reply_single_stock(reply_token: str, symbol: str, user_id: str = "") -> None:
+async def _reply_single_stock(reply_token: str, symbol: str, user_id: str = "") -> None:
+    loop = asyncio.get_running_loop()
     signal = next((s for s in _last_signals if s.symbol == symbol), None)
     if signal is None and FIRESTORE_AVAILABLE and _db:
-        signal = load_signal_from_firestore(_db, symbol)
+        signal = await loop.run_in_executor(None, load_signal_from_firestore, _db, symbol)
     if signal is None:
-        reply_text(reply_token, f"ไม่พบข้อมูล {symbol}\nข้อมูลจะพร้อมหลังการสแกนครั้งถัดไป\n10:15 / 12:15 / 15:15 / 16:45 น.")
+        reply_text(reply_token, f'ไม่พบหุ้น "{symbol}" ในระบบ\nตรวจสอบ ticker ให้ถูกต้อง เช่น ADVANC, PTT, KBANK')
         return
     reply_flex(reply_token, f"วิเคราะห์ {symbol}", build_single_stock_card(signal))
-    # Gamification: update user score based on what they viewed
+    # Gamification — fire-and-forget, never block reply
     if user_id and FIRESTORE_AVAILABLE and _db:
-        loop = asyncio.get_running_loop()
         s = signal
         if s.stage == 2 and s.pattern in ("breakout", "ath_breakout", "vcp"):
             loop.run_in_executor(None, update_user_score, _db, user_id, 1, "viewed_s2_breakout", symbol)
         elif s.stage == 4:
-            user_data = _db.collection("users").document(user_id).get().to_dict() or {}
-            if user_data.get("stage4_views_this_week", 0) >= 2:
-                loop.run_in_executor(None, update_user_score, _db, user_id, -1, "repeated_stage4", symbol)
-            loop.run_in_executor(None, increment_stage4_views, _db, user_id)
+            # Read stage4 view count non-blocking in background; penalise if needed
+            def _stage4_gamification():
+                user_data = (_db.collection("users").document(user_id).get().to_dict() or {})
+                if user_data.get("stage4_views_this_week", 0) >= 2:
+                    update_user_score(_db, user_id, -1, "repeated_stage4", symbol)
+                increment_stage4_views(_db, user_id)
+            loop.run_in_executor(None, _stage4_gamification)
 
 
-def _reply_detailed_stock(reply_token: str, symbol: str) -> None:
+async def _reply_detailed_stock(reply_token: str, symbol: str) -> None:
     """Serve deep insight card (technical + fundamentals) for a single stock."""
+    loop = asyncio.get_running_loop()
     signal = next((s for s in _last_signals if s.symbol == symbol), None)
     if signal is None and FIRESTORE_AVAILABLE and _db:
-        signal = load_signal_from_firestore(_db, symbol)
+        signal = await loop.run_in_executor(None, load_signal_from_firestore, _db, symbol)
     if signal is None:
-        reply_text(reply_token, f"ไม่พบข้อมูล {symbol}\nข้อมูลจะพร้อมหลังการสแกนครั้งถัดไป")
+        reply_text(reply_token, f'ไม่พบหุ้น "{symbol}" ในระบบ')
         return
-    fund = get_fundamentals(symbol, _db if FIRESTORE_AVAILABLE else None)
+    fund = await loop.run_in_executor(
+        None, get_fundamentals, symbol, _db if FIRESTORE_AVAILABLE else None
+    )
     reply_flex(reply_token, f"📌 {symbol} Detail", build_watchlist_stock_card(signal, fund))
 
 
