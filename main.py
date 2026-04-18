@@ -861,6 +861,28 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         signals = _get_signals_for(pattern="consolidating")
         _reply_stock_list(reply_token, signals, "⚙️ Consolidating Stocks")
 
+    # ── Advancing / Declining / Flat (tappable from market card) ──
+    elif cmd.startswith("advancing") or cmd.startswith("up ") or cmd == "up":
+        page = _parse_stage_page(cmd)
+        sigs = sorted([s for s in _last_signals if (s.change_pct or 0) > 0],
+                      key=lambda s: s.change_pct, reverse=True)
+        _reply_stock_list(reply_token, sigs, f"📈 Advancing ({len(sigs)} stocks)",
+                          page=page, base_cmd="advancing", subtitle="Sorted by % Gain")
+
+    elif cmd.startswith("declining") or cmd.startswith("down ") or cmd == "down":
+        page = _parse_stage_page(cmd)
+        sigs = sorted([s for s in _last_signals if (s.change_pct or 0) < 0],
+                      key=lambda s: s.change_pct)
+        _reply_stock_list(reply_token, sigs, f"📉 Declining ({len(sigs)} stocks)",
+                          page=page, base_cmd="declining", subtitle="Sorted by % Drop")
+
+    elif cmd.startswith("flat"):
+        page = _parse_stage_page(cmd)
+        sigs = sorted([s for s in _last_signals if (s.change_pct or 0) == 0],
+                      key=lambda s: s.strength_score, reverse=True)
+        _reply_stock_list(reply_token, sigs, f"➡️ Flat ({len(sigs)} stocks)",
+                          page=page, base_cmd="flat")
+
     # ── Detail: deep insight with fundamentals ──
     elif cmd.startswith("detail "):
         raw = text[7:].strip()
@@ -929,7 +951,8 @@ _STAGE_PAGE_SIZE = 40
 
 
 def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str,
-                      text_only: bool = False, page: int = 1, base_cmd: str = "") -> None:
+                      text_only: bool = False, page: int = 1, base_cmd: str = "",
+                      subtitle: str = "Sorted by Strength Score") -> None:
     if not signals:
         reply_text(reply_token, f"ไม่มีหุ้นใน {title} ขณะนี้")
         return
@@ -945,7 +968,8 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str,
         return
     has_more = total > start + _STAGE_PAGE_SIZE
     next_cmd = f"{base_cmd} p{page + 1}" if (has_more and base_cmd) else ""
-    bubble = build_ranked_stock_list_bubble(chunk, title, next_cmd=next_cmd)
+    bubble = build_ranked_stock_list_bubble(chunk, title, next_cmd=next_cmd,
+                                            rank_offset=start, subtitle=subtitle)
     reply_flex(reply_token, title, bubble)
 
 

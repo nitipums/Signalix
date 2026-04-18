@@ -278,9 +278,9 @@ def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None
         {
             "type": "box", "layout": "horizontal",
             "contents": [
-                _kv_box("Up", str(breadth.advancing), "#27AE60"),
-                _kv_box("Down", str(breadth.declining), "#E74C3C"),
-                _kv_box("Flat", str(breadth.unchanged), "#7F8C8D"),
+                _kv_box("Up", str(breadth.advancing), "#27AE60", "advancing"),
+                _kv_box("Down", str(breadth.declining), "#E74C3C", "declining"),
+                _kv_box("Flat", str(breadth.unchanged), "#7F8C8D", "flat"),
             ],
         },
         {"type": "separator"},
@@ -372,8 +372,8 @@ def _stage_box(label: str, count: int, color: str) -> dict:
     }
 
 
-def _kv_box(label: str, value: str, color: str) -> dict:
-    return {
+def _kv_box(label: str, value: str, color: str, action_cmd: str = "") -> dict:
+    box = {
         "type": "box",
         "layout": "vertical",
         "flex": 1,
@@ -383,6 +383,9 @@ def _kv_box(label: str, value: str, color: str) -> dict:
             {"type": "text", "text": label, "size": "xxs", "color": "#7F8C8D", "align": "center"},
         ],
     }
+    if action_cmd:
+        box["action"] = {"type": "message", "label": label, "text": action_cmd}
+    return box
 
 
 def _tappable_stage_box(label: str, count: int, color: str, cmd: str) -> dict:
@@ -719,135 +722,111 @@ def _score_badge_color(score: float) -> str:
     return "#7F8C8D"
 
 
+def _fmt_price(price: float) -> str:
+    if price >= 1000:
+        return f"฿{price:,.0f}"
+    if price >= 100:
+        return f"฿{price:.1f}"
+    return f"฿{price:.2f}"
+
+
 def _stock_row(rank: int, signal: StockSignal) -> dict:
-    """Single row in the consolidated ranked stock list bubble."""
+    """Single row in the ranked stock list. Columns: # | Stock | Price | Chg% | Vol | Pat"""
     chg_pct = signal.change_pct or 0.0
-    score = signal.strength_score or 0.0
-    stage = signal.stage or 1
+    vol_ratio = signal.volume_ratio or 0.0
+    close = signal.close or 0.0
     chg_color = _pct_color(chg_pct)
     chg_sign = "+" if chg_pct > 0 else ""
-    stage_color = STAGE_COLOR.get(stage, "#95A5A6")
+    vol_color = "#27AE60" if vol_ratio >= 2.0 else "#F39C12" if vol_ratio >= 1.0 else "#7F8C8D"
     pattern_short = {
         "breakout": "BO", "ath_breakout": "ATH", "vcp": "VCP",
-        "vcp_low_cheat": "VCP-L", "consolidating": "Coil", "going_down": "DN",
+        "vcp_low_cheat": "VCPl", "consolidating": "Coil", "going_down": "DN",
     }.get(signal.pattern, "–")
-    score_color = _score_badge_color(score)
     return {
         "type": "box",
         "layout": "horizontal",
         "action": {"type": "message", "text": signal.symbol},
-        "spacing": "sm",
-        "paddingTop": "6px",
-        "paddingBottom": "6px",
+        "paddingTop": "5px",
+        "paddingBottom": "5px",
         "contents": [
             {"type": "text", "text": str(rank), "size": "xxs", "color": "#7F8C8D", "flex": 1, "gravity": "center"},
             {"type": "text", "text": signal.symbol, "size": "sm", "weight": "bold", "flex": 4, "gravity": "center"},
-            {"type": "text", "text": f"S{stage}", "size": "xxs", "color": stage_color, "weight": "bold", "flex": 2, "align": "center", "gravity": "center"},
-            {"type": "text", "text": pattern_short, "size": "xxs", "color": PATTERN_COLOR.get(signal.pattern, "#7F8C8D"), "flex": 2, "align": "center", "gravity": "center"},
+            {"type": "text", "text": _fmt_price(close), "size": "xxs", "color": "#CCCCCC", "flex": 3, "align": "end", "gravity": "center"},
             {"type": "text", "text": f"{chg_sign}{chg_pct:.1f}%", "size": "xs", "color": chg_color, "weight": "bold", "flex": 3, "align": "end", "gravity": "center"},
-            {
-                "type": "box", "layout": "vertical", "flex": 2, "gravity": "center",
-                "backgroundColor": score_color, "cornerRadius": "4px",
-                "paddingAll": "2px",
-                "contents": [{"type": "text", "text": str(int(score)), "size": "xxs", "color": "#FFFFFF", "align": "center", "weight": "bold"}],
-            },
+            {"type": "text", "text": f"{vol_ratio:.1f}x", "size": "xxs", "color": vol_color, "flex": 2, "align": "end", "gravity": "center"},
+            {"type": "text", "text": pattern_short, "size": "xxs", "color": PATTERN_COLOR.get(signal.pattern, "#7F8C8D"), "flex": 2, "align": "end", "gravity": "center"},
         ],
     }
 
 
-def build_ranked_stock_list_bubble(signals: list[StockSignal], title: str, max_per_bubble: int = 20, next_cmd: str = "") -> dict:
+def build_ranked_stock_list_bubble(
+    signals: list[StockSignal],
+    title: str,
+    max_per_bubble: int = 40,
+    next_cmd: str = "",
+    rank_offset: int = 0,
+    subtitle: str = "Sorted by Strength Score",
+) -> dict:
     """
-    Tappable ranked stock list. Returns a single bubble (≤20 stocks) or
-    2-bubble carousel (21–40 stocks). Each carousel ≈ 38KB < LINE's 50KB limit.
-    Pass next_cmd to add a 'View More' button on the last bubble for pagination.
+    Single tappable stock list bubble. Columns: # | Stock | Price | Chg% | Vol | Pat
+    40 rows ≈ 35KB < LINE's 50KB limit. Pass next_cmd for 'ดูเพิ่มเติม ▼' pagination button.
+    Pass rank_offset so page 2 shows ranks 41, 42, ... instead of restarting at 1.
     """
     if not signals:
         return {"type": "bubble", "size": "mega", "body": {"type": "box", "layout": "vertical",
                 "contents": [{"type": "text", "text": "ไม่มีหุ้น", "color": "#7F8C8D"}]}}
 
-    def _make_bubble(chunk: list[StockSignal], offset: int, total: int, is_last: bool = False) -> dict:
-        header_text = title
-        if total > max_per_bubble:
-            page = offset // max_per_bubble + 1
-            pages = (total + max_per_bubble - 1) // max_per_bubble
-            header_text = f"{title} ({page}/{pages})"
+    chunk = signals[:max_per_bubble]
 
-        col_header = {
-            "type": "box",
-            "layout": "horizontal",
-            "spacing": "sm",
-            "paddingBottom": "4px",
+    col_header = {
+        "type": "box", "layout": "horizontal", "spacing": "sm", "paddingBottom": "4px",
+        "contents": [
+            {"type": "text", "text": "#", "size": "xxs", "color": "#7F8C8D", "flex": 1},
+            {"type": "text", "text": "Stock", "size": "xxs", "color": "#7F8C8D", "flex": 4},
+            {"type": "text", "text": "Price", "size": "xxs", "color": "#7F8C8D", "flex": 3, "align": "end"},
+            {"type": "text", "text": "Chg%", "size": "xxs", "color": "#7F8C8D", "flex": 3, "align": "end"},
+            {"type": "text", "text": "Vol", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+            {"type": "text", "text": "Pat", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+        ],
+    }
+    rows = [col_header, {"type": "separator"}]
+    for i, sig in enumerate(chunk):
+        rows.append(_stock_row(rank_offset + i + 1, sig))
+        if (i + 1) % 10 == 0 and i + 1 < len(chunk):
+            rows.append({"type": "separator", "margin": "none"})
+
+    scan_ts = _fmt_scan_time(chunk[0].scanned_at) if chunk else ""
+    footer_contents = [
+        {"type": "text", "text": "Tap any stock for full analysis", "size": "xxs", "color": "#7F8C8D", "align": "center"},
+    ]
+    if scan_ts:
+        footer_contents.insert(0, {"type": "text", "text": scan_ts, "size": "xxs", "color": "#95A5A6", "align": "center"})
+    if next_cmd:
+        footer_contents.append({
+            "type": "button",
+            "action": {"type": "message", "label": "ดูเพิ่มเติม ▼", "text": next_cmd},
+            "style": "primary", "color": "#1A237E", "height": "sm", "margin": "sm",
+        })
+
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
             "contents": [
-                {"type": "text", "text": "#", "size": "xxs", "color": "#7F8C8D", "flex": 1},
-                {"type": "text", "text": "Stock", "size": "xxs", "color": "#7F8C8D", "flex": 4},
-                {"type": "text", "text": "Stg", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "center"},
-                {"type": "text", "text": "Pat", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "center"},
-                {"type": "text", "text": "Chg%", "size": "xxs", "color": "#7F8C8D", "flex": 3, "align": "end"},
-                {"type": "text", "text": "Score", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "center"},
+                {"type": "text", "text": title, "weight": "bold", "size": "md", "color": "#FFFFFF"},
+                {"type": "text", "text": subtitle, "size": "xxs", "color": "#BBDDFF"},
             ],
-        }
-
-        rows = [col_header, {"type": "separator"}]
-        for i, sig in enumerate(chunk):
-            rows.append(_stock_row(offset + i + 1, sig))
-            if (i + 1) % 5 == 0 and i + 1 < len(chunk):
-                rows.append({"type": "separator", "margin": "none"})
-
-        scan_ts = _fmt_scan_time(chunk[0].scanned_at) if chunk else ""
-        footer_contents = [
-            {"type": "text", "text": f"Tap a stock for details  ·  {total} total", "size": "xxs", "color": "#7F8C8D", "wrap": True, "align": "center"},
-        ]
-        if scan_ts:
-            footer_contents.insert(0, {"type": "text", "text": scan_ts, "size": "xxs", "color": "#95A5A6", "align": "center"})
-        if is_last and next_cmd:
-            footer_contents.append({
-                "type": "button",
-                "action": {"type": "message", "label": "ดูเพิ่มเติม ▼", "text": next_cmd},
-                "style": "primary", "color": "#1A237E", "height": "sm", "margin": "sm",
-            })
-
-        return {
-            "type": "bubble",
-            "size": "mega",
-            "header": {
-                "type": "box",
-                "layout": "vertical",
-                "contents": [
-                    {"type": "text", "text": header_text, "weight": "bold", "size": "md", "color": "#FFFFFF"},
-                    {"type": "text", "text": "Sorted by Strength Score", "size": "xxs", "color": "#BBDDFF"},
-                ],
-                "backgroundColor": "#1A237E",
-                "paddingAll": "12px",
-            },
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "none",
-                "contents": rows,
-                "paddingAll": "12px",
-            },
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "xs",
-                "contents": footer_contents,
-                "paddingAll": "8px",
-            },
-        }
-
-    total = len(signals)
-    if total <= max_per_bubble:
-        return _make_bubble(signals, 0, total, is_last=True)
-
-    # Cap at 2 bubbles per carousel — LINE's 50KB carousel limit.
-    # 2 bubbles × 20 rows ≈ 38KB, safely under the limit.
-    cap = min(total, max_per_bubble * 2)
-    bubbles = []
-    for i in range(0, cap, max_per_bubble):
-        chunk = signals[i:i + max_per_bubble]
-        is_last = (i + max_per_bubble >= cap)
-        bubbles.append(_make_bubble(chunk, i, total, is_last=is_last))
-    return {"type": "carousel", "contents": bubbles}
+            "backgroundColor": "#1A237E", "paddingAll": "12px",
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "none",
+            "contents": rows, "paddingAll": "12px",
+        },
+        "footer": {
+            "type": "box", "layout": "vertical", "spacing": "xs",
+            "contents": footer_contents, "paddingAll": "8px",
+        },
+    }
 
 
 def build_compact_stock_bubble(signal: StockSignal) -> dict:
