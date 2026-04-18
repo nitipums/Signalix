@@ -224,6 +224,15 @@ async def _background_scan():
             pre_signals = await loop.run_in_executor(None, load_signals_from_firestore, _db)
             if pre_signals:
                 _last_signals = pre_signals
+                # Build derived caches from pre-loaded data so UI works immediately
+                _last_breadth = compute_market_breadth(pre_signals)
+                _last_breadth_card = build_market_breadth_card(_last_breadth)
+                _last_sector_trends = compute_sector_trends(pre_signals)
+                logger.info("Pre-loaded %d signals from Firestore; breadth/sector ready", len(pre_signals))
+
+        # Fetch indexes immediately so /ดัชนี works before full scan completes
+        if not _last_indexes:
+            _last_indexes = await loop.run_in_executor(None, fetch_indexes)
 
         # Run full scan — most expensive call, ~30-60s, must not block event loop
         signals, all_data = await loop.run_in_executor(
@@ -657,14 +666,14 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     # ── Market Breadth ──
     elif cmd in ("ตลาด", "market", "breadth"):
         if _last_breadth_card is None:
-            reply_text(reply_token, "กำลังโหลดข้อมูล กรุณารอสักครู่...")
+            reply_text(reply_token, "⏳ ระบบกำลังเริ่มต้น กรุณาลองใหม่ใน 1-2 นาที")
             return
         reply_flex(reply_token, "ภาพรวมตลาด SET", _last_breadth_card)
 
     # ── Key Indexes ──
     elif cmd in ("index", "indexes", "ดัชนี", "ดัชนีหุ้น"):
         if not _last_indexes:
-            reply_text(reply_token, "กำลังโหลดข้อมูลดัชนี...")
+            reply_text(reply_token, "⏳ ระบบกำลังเริ่มต้น กรุณาลองใหม่ใน 1-2 นาที")
             return
         carousel = build_index_carousel(_last_indexes)
         reply_flex(reply_token, "ดัชนีหุ้นไทย", carousel)
@@ -681,7 +690,7 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
 
     elif cmd in ("sector", "sectors", "เซกเตอร์", "กลุ่มหุ้น"):
         if not _last_sector_trends:
-            reply_text(reply_token, "กำลังโหลดข้อมูลกลุ่มหุ้น...")
+            reply_text(reply_token, "⏳ ระบบกำลังเริ่มต้น กรุณาลองใหม่ใน 1-2 นาที")
             return
         card = build_sector_overview_card(_last_sector_trends)
         reply_flex(reply_token, "แนวโน้มกลุ่มอุตสาหกรรม", card)
@@ -835,7 +844,10 @@ def _get_signals_for(pattern: Optional[str] = None, stage: Optional[int] = None)
 
 def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str) -> None:
     if not signals:
-        reply_text(reply_token, f"ไม่มีหุ้นใน {title} ขณะนี้")
+        if not _last_signals:
+            reply_text(reply_token, "⏳ ระบบกำลังเริ่มต้น กรุณาลองใหม่ใน 1-2 นาที")
+        else:
+            reply_text(reply_token, f"ไม่มีหุ้นใน {title} ขณะนี้")
         return
     bubble = build_ranked_stock_list_bubble(signals, title)
     reply_flex(reply_token, title, bubble)
