@@ -50,7 +50,6 @@ from notifier import (
     build_compact_stock_carousel,
     build_explain_card,
     build_guide_carousel,
-    build_help_card,
     build_index_carousel,
     build_market_breadth_card,
     build_pattern_detail_card,
@@ -111,7 +110,6 @@ _last_sector_trends: list[SectorSummary] = []
 _ath_cache: dict[str, float] = {}
 
 # Static card caches (built once, never change between scans)
-_help_card_cache: Optional[dict] = None
 _guide_carousel_cache: Optional[dict] = None
 
 _CACHE_TTL_MINUTES = 15
@@ -829,19 +827,19 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
 
     elif cmd in ("stage2", "stage 2"):
         signals = _get_signals_for(stage=2)
-        _reply_stock_list(reply_token, signals, "🟢 Stage 2 Stocks")
+        _reply_stock_list(reply_token, signals, "🟢 Stage 2 Stocks", text_only=True)
 
     elif cmd in ("stage1", "stage 1"):
         signals = _get_signals_for(stage=1)
-        _reply_stock_list(reply_token, signals, "⚪ Stage 1 Stocks")
+        _reply_stock_list(reply_token, signals, "⚪ Stage 1 Stocks", text_only=True)
 
     elif cmd in ("stage3", "stage 3"):
         signals = _get_signals_for(stage=3)
-        _reply_stock_list(reply_token, signals, "🟡 Stage 3 Stocks")
+        _reply_stock_list(reply_token, signals, "🟡 Stage 3 Stocks", text_only=True)
 
     elif cmd in ("stage4", "stage 4"):
         signals = _get_signals_for(stage=4)
-        _reply_stock_list(reply_token, signals, "🔴 Stage 4 Stocks")
+        _reply_stock_list(reply_token, signals, "🔴 Stage 4 Stocks", text_only=True)
 
     elif cmd in ("consolidating", "consolidate", "coil"):
         signals = _get_signals_for(pattern="consolidating")
@@ -856,12 +854,12 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             return
         _reply_detailed_stock(reply_token, symbol)
 
-    # ── Help ──
+    # ── Help → Guide ──
     elif cmd in ("help", "ช่วย", "คำสั่ง", "?"):
-        global _help_card_cache
-        if _help_card_cache is None:
-            _help_card_cache = build_help_card()
-        reply_flex(reply_token, "คำสั่ง Signalix", _help_card_cache)
+        global _guide_carousel_cache
+        if _guide_carousel_cache is None:
+            _guide_carousel_cache = build_guide_carousel()
+        reply_flex(reply_token, "📖 คู่มือ Signalix", _guide_carousel_cache)
 
     # ── Performance Review ──
     elif cmd in ("review", "performance", "ผลงาน"):
@@ -899,12 +897,25 @@ def _get_signals_for(pattern: Optional[str] = None, stage: Optional[int] = None)
     return filter_signals(_last_signals, pattern=pattern, stage=stage)
 
 
-def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str) -> None:
+def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str, text_only: bool = False) -> None:
     if not signals:
         if not _last_signals:
             reply_text(reply_token, "ยังไม่มีข้อมูล กรุณารอการสแกนตามกำหนด (10:15 / 12:15 / 15:15 / 16:45 น.)")
         else:
             reply_text(reply_token, f"ไม่มีหุ้นใน {title} ขณะนี้")
+        return
+    if text_only:
+        PAT_ABBR = {"breakout": "BO", "ath_breakout": "ATH", "vcp": "VCP",
+                    "vcp_low_cheat": "VCPl", "consolidating": "CON"}
+        lines = [f"{title} — {len(signals)} หุ้น\n"]
+        for i, s in enumerate(signals[:30], 1):
+            sign = "+" if s.change_pct >= 0 else ""
+            pat = PAT_ABBR.get(s.pattern, s.pattern[:3].upper())
+            lines.append(f"{i}. {s.symbol}  ฿{s.close:,.2f}  {sign}{s.change_pct:.1f}%  [{pat}]")
+        if len(signals) > 30:
+            lines.append(f"\n... และอีก {len(signals) - 30} หุ้น")
+        lines.append("\nพิมพ์ชื่อหุ้น เช่น ADVANC เพื่อดูรายละเอียด")
+        reply_text(reply_token, "\n".join(lines))
         return
     bubble = build_ranked_stock_list_bubble(signals, title)
     reply_flex(reply_token, title, bubble)
