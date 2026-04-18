@@ -895,7 +895,7 @@ def load_signals_from_firestore(db) -> list:
         signals = []
         for doc in docs:
             try:
-                data = {k: v for k, v in doc.to_dict().items() if k in valid_fields}
+                data = {k: v for k, v in doc.to_dict().items() if k in valid_fields and v is not None}
                 signals.append(StockSignal(**data))
             except Exception:
                 continue

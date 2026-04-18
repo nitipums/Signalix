@@ -695,7 +695,7 @@ def filter_signals(signals: list[StockSignal], pattern: Optional[str] = None, st
     """Filter signals by pattern name or stage number."""
     result = signals
     if stage is not None:
-        result = [s for s in result if int(s.stage) == stage]
+        result = [s for s in result if s.stage is not None and int(s.stage) == stage]
     if pattern is not None:
         result = [s for s in result if s.pattern == pattern]
     return result

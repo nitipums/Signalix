@@ -624,9 +624,12 @@ def build_stock_list_carousel(signals: list[StockSignal], title: str = "หุ�
 
 def _stock_row(rank: int, signal: StockSignal) -> dict:
     """Single row in the consolidated ranked stock list bubble."""
-    chg_color = _pct_color(signal.change_pct)
-    chg_sign = "+" if signal.change_pct > 0 else ""
-    stage_color = STAGE_COLOR.get(signal.stage, "#95A5A6")
+    chg_pct = signal.change_pct or 0.0
+    score = signal.strength_score or 0.0
+    stage = signal.stage or 1
+    chg_color = _pct_color(chg_pct)
+    chg_sign = "+" if chg_pct > 0 else ""
+    stage_color = STAGE_COLOR.get(stage, "#95A5A6")
     pattern_short = {
         "breakout": "BO", "ath_breakout": "ATH", "vcp": "VCP",
         "vcp_low_cheat": "VCP-L", "consolidating": "Coil", "going_down": "DN",
@@ -641,10 +644,10 @@ def _stock_row(rank: int, signal: StockSignal) -> dict:
         "contents": [
             {"type": "text", "text": str(rank), "size": "xxs", "color": "#7F8C8D", "flex": 1, "gravity": "center"},
             {"type": "text", "text": signal.symbol, "size": "xs", "weight": "bold", "flex": 4, "gravity": "center"},
-            {"type": "text", "text": f"S{signal.stage}", "size": "xxs", "color": stage_color, "flex": 2, "align": "center", "gravity": "center"},
+            {"type": "text", "text": f"S{stage}", "size": "xxs", "color": stage_color, "flex": 2, "align": "center", "gravity": "center"},
             {"type": "text", "text": pattern_short, "size": "xxs", "color": PATTERN_COLOR.get(signal.pattern, "#7F8C8D"), "flex": 2, "align": "center", "gravity": "center"},
-            {"type": "text", "text": f"{chg_sign}{signal.change_pct:.1f}%", "size": "xxs", "color": chg_color, "flex": 3, "align": "end", "gravity": "center"},
-            {"type": "text", "text": str(int(signal.strength_score)), "size": "xxs", "color": "#F39C12", "flex": 2, "align": "end", "gravity": "center"},
+            {"type": "text", "text": f"{chg_sign}{chg_pct:.1f}%", "size": "xxs", "color": chg_color, "flex": 3, "align": "end", "gravity": "center"},
+            {"type": "text", "text": str(int(score)), "size": "xxs", "color": "#F39C12", "flex": 2, "align": "end", "gravity": "center"},
         ],
     }
 
