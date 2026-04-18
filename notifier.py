@@ -102,29 +102,46 @@ def _pct_color(pct: float) -> str:
 
 
 def build_market_breadth_card(breadth: MarketBreadth) -> dict:
-    """Build a Flex Bubble card for market breadth summary."""
-    chg_color = _pct_color(getattr(breadth, "set_index_change_pct", 0.0))
-    chg_sign = "+" if getattr(breadth, "set_index_change_pct", 0.0) > 0 else ""
+    """Build a Flex Bubble card for market breadth summary with SET index as hero header."""
     set_close = getattr(breadth, "set_index_close", 0.0)
     set_chg = getattr(breadth, "set_index_change_pct", 0.0)
+    chg_color = _pct_color(set_chg)
+    chg_sign = "+" if set_chg > 0 else ""
     above_pct = getattr(breadth, "above_ma200_pct", 0.0)
     below_pct = round(100 - above_pct, 1)
     above_cnt = getattr(breadth, "above_ma200", 0)
     below_cnt = getattr(breadth, "below_ma200", 0)
 
-    index_row = []
+    # Header background: green if up, red if down, navy if neutral
+    if set_chg > 0:
+        header_bg = "#1B5E20"
+    elif set_chg < 0:
+        header_bg = "#B71C1C"
+    else:
+        header_bg = "#1A237E"
+
+    # Header contents: SET index is the hero element
+    header_contents = [
+        {"type": "text", "text": "📊 ภาพรวมตลาด SET", "size": "xs", "color": "#DDDDDD"},
+    ]
     if set_close > 0:
-        index_row = [
+        header_contents += [
             {
                 "type": "box",
                 "layout": "horizontal",
                 "contents": [
-                    _kv_box("SET Index", f"{set_close:,.2f}", "#FFFFFF"),
-                    _kv_box("เปลี่ยนแปลง", f"{chg_sign}{set_chg:.2f}%", chg_color),
+                    {"type": "text", "text": f"{set_close:,.2f}", "weight": "bold", "size": "xxl", "color": "#FFFFFF", "flex": 1},
+                    {"type": "text", "text": f"{chg_sign}{set_chg:.2f}%", "size": "lg", "color": chg_color, "weight": "bold", "align": "end"},
                 ],
             },
-            {"type": "separator"},
         ]
+    header_contents.append(
+        {"type": "text", "text": breadth.scanned_at[:16].replace("T", " "), "size": "xxs", "color": "#DDDDDD"}
+    )
+
+    # MA200 visual bar
+    above_flex = max(1, int(above_pct))
+    below_flex = max(1, 100 - above_flex)
 
     return {
         "type": "bubble",
@@ -132,22 +149,8 @@ def build_market_breadth_card(breadth: MarketBreadth) -> dict:
         "header": {
             "type": "box",
             "layout": "vertical",
-            "contents": [
-                {
-                    "type": "text",
-                    "text": "📊 ภาพรวมตลาด SET",
-                    "weight": "bold",
-                    "size": "lg",
-                    "color": "#FFFFFF",
-                },
-                {
-                    "type": "text",
-                    "text": breadth.scanned_at[:16].replace("T", " "),
-                    "size": "xs",
-                    "color": "#DDDDDD",
-                },
-            ],
-            "backgroundColor": "#1A237E",
+            "contents": header_contents,
+            "backgroundColor": header_bg,
             "paddingAll": "16px",
         },
         "body": {
@@ -155,18 +158,24 @@ def build_market_breadth_card(breadth: MarketBreadth) -> dict:
             "layout": "vertical",
             "spacing": "md",
             "contents": [
-                # SET index level (shown only when data available)
-                *index_row,
-                # Stage distribution
+                # Stage distribution — Stage 2 most prominent
                 {
                     "type": "box",
                     "layout": "horizontal",
                     "contents": [
-                        _stage_box("Stage 2", breadth.stage2_count, "#27AE60"),
-                        _stage_box("Stage 1", breadth.stage1_count, "#95A5A6"),
-                        _stage_box("Stage 3", breadth.stage3_count, "#E67E22"),
-                        _stage_box("Stage 4", breadth.stage4_count, "#E74C3C"),
+                        _stage_box("Stage 2 ✅", breadth.stage2_count, "#27AE60"),
+                        _stage_box("Stage 1 ⚪", breadth.stage1_count, "#95A5A6"),
+                        _stage_box("Stage 3 ⚠️", breadth.stage3_count, "#E67E22"),
+                        _stage_box("Stage 4 ❌", breadth.stage4_count, "#E74C3C"),
                     ],
+                },
+                {
+                    "type": "text",
+                    "text": f"Stage 2: {breadth.stage2_pct}% ของตลาด",
+                    "size": "xs",
+                    "color": "#27AE60" if breadth.stage2_pct >= 30 else "#7F8C8D",
+                    "align": "center",
+                    "weight": "bold",
                 },
                 {"type": "separator"},
                 # Advancing / Declining
@@ -180,46 +189,55 @@ def build_market_breadth_card(breadth: MarketBreadth) -> dict:
                     ],
                 },
                 {"type": "separator"},
-                # MA200 above/below
+                # MA200 visual bar
                 {
                     "type": "box",
-                    "layout": "horizontal",
+                    "layout": "vertical",
                     "contents": [
-                        _kv_box("เหนือ MA200", f"{above_pct:.0f}%\n({above_cnt})", "#27AE60"),
-                        _kv_box("ต่ำกว่า MA200", f"{below_pct:.0f}%\n({below_cnt})", "#E74C3C"),
+                        {"type": "text", "text": "% เหนือ MA200", "size": "xxs", "color": "#7F8C8D"},
+                        {
+                            "type": "box",
+                            "layout": "horizontal",
+                            "contents": [
+                                {"type": "box", "layout": "vertical", "flex": above_flex,
+                                 "backgroundColor": "#27AE60", "height": "8px", "contents": []},
+                                {"type": "box", "layout": "vertical", "flex": below_flex,
+                                 "backgroundColor": "#E74C3C", "height": "8px", "contents": []},
+                            ],
+                        },
+                        {
+                            "type": "box",
+                            "layout": "horizontal",
+                            "contents": [
+                                {"type": "text", "text": f"เหนือ {above_pct:.0f}% ({above_cnt})", "size": "xxs", "color": "#27AE60", "flex": 1},
+                                {"type": "text", "text": f"ต่ำกว่า {below_pct:.0f}% ({below_cnt})", "size": "xxs", "color": "#E74C3C", "flex": 1, "align": "end"},
+                            ],
+                        },
                     ],
                 },
                 {"type": "separator"},
-                # Patterns
+                # Key signals
                 {
                     "type": "box",
                     "layout": "horizontal",
                     "contents": [
                         _kv_box("Breakout", str(breadth.breakout_count), "#F39C12"),
                         _kv_box("VCP", str(breadth.vcp_count), "#2980B9"),
-                        _kv_box("New High", str(breadth.new_highs_52w), "#8E44AD"),
+                        _kv_box("52W High", str(breadth.new_highs_52w), "#8E44AD"),
+                        _kv_box("52W Low", str(breadth.new_lows_52w), "#E74C3C"),
                     ],
-                },
-                {
-                    "type": "text",
-                    "text": f"Stage 2: {breadth.stage2_pct}% ของตลาด",
-                    "size": "xs",
-                    "color": "#7F8C8D",
-                    "align": "center",
                 },
             ],
             "paddingAll": "16px",
         },
         "footer": {
             "type": "box",
-            "layout": "vertical",
+            "layout": "horizontal",
+            "spacing": "sm",
             "contents": [
-                {
-                    "type": "button",
-                    "action": {"type": "message", "label": "ⓘ Stage คืออะไร?", "text": "explain stage"},
-                    "style": "secondary",
-                    "height": "sm",
-                },
+                {"type": "button", "action": {"type": "message", "label": "Stage 2", "text": "stage2"}, "style": "primary", "color": "#1B5E20", "height": "sm", "flex": 1},
+                {"type": "button", "action": {"type": "message", "label": "Breakout", "text": "breakout"}, "style": "primary", "color": "#E65100", "height": "sm", "flex": 1},
+                {"type": "button", "action": {"type": "message", "label": "VCP", "text": "vcp"}, "style": "primary", "color": "#0D47A1", "height": "sm", "flex": 1},
             ],
             "paddingAll": "8px",
         },
@@ -474,6 +492,43 @@ def build_single_stock_card(signal: StockSignal) -> dict:
                         {"type": "text", "text": f"{int(signal.strength_score)}/100", "size": "sm", "weight": "bold", "color": "#F39C12", "align": "end"},
                     ],
                 },
+                # Trade value
+                *([{
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        {"type": "text", "text": "มูลค่าซื้อขาย", "size": "sm", "color": "#7F8C8D", "flex": 1},
+                        {"type": "text", "text": f"฿{signal.trade_value_m:.1f}M", "size": "sm", "weight": "bold", "align": "end"},
+                    ],
+                }] if getattr(signal, "trade_value_m", 0) > 0 else []),
+                # % from 52W high
+                *([{
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        {"type": "text", "text": "ต่ำกว่า 52W High", "size": "sm", "color": "#7F8C8D", "flex": 1},
+                        {"type": "text", "text": f"{signal.pct_from_52w_high:.1f}%", "size": "sm", "weight": "bold", "align": "end",
+                         "color": "#27AE60" if signal.pct_from_52w_high >= -5 else "#E67E22"},
+                    ],
+                }] if getattr(signal, "pct_from_52w_high", 0) != 0 else []),
+                # Risk management section
+                *([
+                    {"type": "separator"},
+                    {"type": "text", "text": "⚖️ Risk Management (ATR-based)", "size": "xxs", "color": "#F39C12", "weight": "bold"},
+                    _detail_row("Stop Loss", f"฿{signal.stop_loss:,.2f}",
+                                f"-{(signal.close - signal.stop_loss) / signal.close * 100:.1f}%", "#E74C3C"),
+                    _detail_row("Target (2:1)", f"฿{signal.target_price:,.2f}",
+                                f"+{(signal.target_price - signal.close) / signal.close * 100:.1f}%", "#27AE60"),
+                ] if getattr(signal, "stop_loss", 0) > 0 else []),
+                # Breakout history
+                *([{
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        {"type": "text", "text": "Breakout (1 ปี)", "size": "sm", "color": "#7F8C8D", "flex": 1},
+                        {"type": "text", "text": f"{signal.breakout_count_1y} ครั้ง", "size": "sm", "weight": "bold", "color": "#2980B9", "align": "end"},
+                    ],
+                }] if getattr(signal, "breakout_count_1y", 0) > 0 else []),
             ],
             "paddingAll": "16px",
         },
@@ -520,13 +575,6 @@ def build_single_stock_card(signal: StockSignal) -> dict:
                         },
                     ],
                 },
-                {
-                    "type": "button",
-                    "action": {"type": "message", "label": "🔄 รีเฟรช (Settrade)", "text": f"refresh {signal.symbol}"},
-                    "style": "link",
-                    "height": "sm",
-                    "color": "#7F8C8D",
-                },
                 {"type": "text", "text": f"อัปเดต: {signal.scanned_at[:16].replace('T', ' ')}", "size": "xxs", "color": "#AAAAAA", "align": "center"},
             ],
             "paddingAll": "12px",
@@ -553,6 +601,114 @@ def build_stock_list_carousel(signals: list[StockSignal], title: str = "หุ�
         "type": "carousel",
         "contents": bubbles,
     }
+
+
+def _stock_row(rank: int, signal: StockSignal) -> dict:
+    """Single row in the consolidated ranked stock list bubble."""
+    chg_color = _pct_color(signal.change_pct)
+    chg_sign = "+" if signal.change_pct > 0 else ""
+    stage_color = STAGE_COLOR.get(signal.stage, "#95A5A6")
+    pattern_short = {
+        "breakout": "BO", "ath_breakout": "ATH", "vcp": "VCP",
+        "vcp_low_cheat": "VCP-L", "consolidating": "Coil", "going_down": "DN",
+    }.get(signal.pattern, "?")
+    return {
+        "type": "box",
+        "layout": "horizontal",
+        "action": {"type": "message", "text": signal.symbol},
+        "spacing": "xs",
+        "paddingTop": "4px",
+        "paddingBottom": "4px",
+        "contents": [
+            {"type": "text", "text": str(rank), "size": "xxs", "color": "#7F8C8D", "flex": 1, "gravity": "center"},
+            {"type": "text", "text": signal.symbol, "size": "xs", "weight": "bold", "flex": 4, "gravity": "center"},
+            {"type": "text", "text": f"S{signal.stage}", "size": "xxs", "color": stage_color, "flex": 2, "align": "center", "gravity": "center"},
+            {"type": "text", "text": pattern_short, "size": "xxs", "color": PATTERN_COLOR.get(signal.pattern, "#7F8C8D"), "flex": 2, "align": "center", "gravity": "center"},
+            {"type": "text", "text": f"{chg_sign}{signal.change_pct:.1f}%", "size": "xxs", "color": chg_color, "flex": 3, "align": "end", "gravity": "center"},
+            {"type": "text", "text": str(int(signal.strength_score)), "size": "xxs", "color": "#F39C12", "flex": 2, "align": "end", "gravity": "center"},
+        ],
+    }
+
+
+def build_ranked_stock_list_bubble(signals: list[StockSignal], title: str, max_per_bubble: int = 40) -> dict:
+    """
+    Single scrollable bubble showing all stocks ranked by strength_score.
+    Each row is tappable (sends symbol name → triggers single stock lookup).
+    For >40 stocks returns a carousel of bubbles.
+    """
+    if not signals:
+        return {"type": "bubble", "size": "mega", "body": {"type": "box", "layout": "vertical",
+                "contents": [{"type": "text", "text": "ไม่มีหุ้น", "color": "#7F8C8D"}]}}
+
+    def _make_bubble(chunk: list[StockSignal], offset: int, total: int) -> dict:
+        header_text = title
+        if total > max_per_bubble:
+            page = offset // max_per_bubble + 1
+            pages = (total + max_per_bubble - 1) // max_per_bubble
+            header_text = f"{title} ({page}/{pages})"
+
+        # Column header
+        col_header = {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "xs",
+            "paddingBottom": "4px",
+            "contents": [
+                {"type": "text", "text": "#", "size": "xxs", "color": "#7F8C8D", "flex": 1},
+                {"type": "text", "text": "หุ้น", "size": "xxs", "color": "#7F8C8D", "flex": 4},
+                {"type": "text", "text": "Stage", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "center"},
+                {"type": "text", "text": "รูปแบบ", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "center"},
+                {"type": "text", "text": "เปลี่ยน", "size": "xxs", "color": "#7F8C8D", "flex": 3, "align": "end"},
+                {"type": "text", "text": "คะแนน", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+            ],
+        }
+
+        rows = [col_header, {"type": "separator"}]
+        for i, sig in enumerate(chunk):
+            rows.append(_stock_row(offset + i + 1, sig))
+
+        footer_text = f"แตะชื่อหุ้นเพื่อดูรายละเอียด | ทั้งหมด {total} หุ้น"
+
+        return {
+            "type": "bubble",
+            "size": "giga",
+            "header": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": header_text, "weight": "bold", "size": "md", "color": "#FFFFFF"},
+                    {"type": "text", "text": f"เรียงตาม Strength Score สูงสุด", "size": "xxs", "color": "#DDDDDD"},
+                ],
+                "backgroundColor": "#1A237E",
+                "paddingAll": "12px",
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "none",
+                "contents": rows,
+                "paddingAll": "12px",
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": footer_text, "size": "xxs", "color": "#7F8C8D", "wrap": True, "align": "center"},
+                ],
+                "paddingAll": "8px",
+            },
+        }
+
+    total = len(signals)
+    if total <= max_per_bubble:
+        return _make_bubble(signals, 0, total)
+
+    # Split into carousel of bubbles (LINE allows max 12 per carousel)
+    bubbles = []
+    for i in range(0, min(total, max_per_bubble * 12), max_per_bubble):
+        chunk = signals[i:i + max_per_bubble]
+        bubbles.append(_make_bubble(chunk, i, total))
+    return {"type": "carousel", "contents": bubbles}
 
 
 def build_compact_stock_bubble(signal: StockSignal) -> dict:
@@ -631,7 +787,7 @@ def build_remaining_symbols_text(signals: list[StockSignal], title: str) -> str:
 
 
 def build_index_carousel(indexes: dict[str, dict]) -> dict:
-    """Build a carousel of index bubbles (SET, SET50, SET100, MAI, sSET)."""
+    """Build a carousel of index bubbles (SET, SET50, SET100, MAI, sSET) with MACD/RSI for SET."""
     INDEX_COLORS = {
         "SET": "#1A237E", "SET50": "#0D47A1", "SET100": "#1565C0",
         "MAI": "#4A148C", "sSET": "#006064",
@@ -643,10 +799,75 @@ def build_index_carousel(indexes: dict[str, dict]) -> dict:
         chg_sign = "+" if chg > 0 else ""
         chg_color = _pct_color(chg)
         tv_url = INDEX_TV_URLS.get(name, "https://www.tradingview.com")
-        bg = INDEX_COLORS.get(name, "#1A237E")
+
+        # Dynamic header bg based on price direction
+        if chg > 0:
+            bg = "#1B5E20" if name == "SET" else INDEX_COLORS.get(name, "#1A237E")
+        elif chg < 0:
+            bg = "#B71C1C" if name == "SET" else INDEX_COLORS.get(name, "#1A237E")
+        else:
+            bg = INDEX_COLORS.get(name, "#1A237E")
+
+        # Build body contents — enriched for SET, minimal for others
+        body_contents = [
+            {"type": "text", "text": f"{close:,.2f}", "weight": "bold", "size": "xxl" if name == "SET" else "xl"},
+            {"type": "text", "text": f"{chg_sign}{chg:.2f}%", "size": "md", "color": chg_color, "weight": "bold"},
+        ]
+
+        # Add MACD/RSI/trend for any index that has the enriched analysis data
+        rsi = data.get("rsi")
+        macd_hist = data.get("macd_hist")
+        implication = data.get("implication", "")
+        above_ma200 = data.get("above_ma200")
+        macd_bullish = data.get("macd_bullish_cross", False)
+        macd_bearish = data.get("macd_bearish_cross", False)
+
+        if rsi is not None:
+            body_contents.append({"type": "separator"})
+            # Trend
+            if above_ma200 is True:
+                trend_text = "▲ อยู่เหนือ MA200 (Uptrend)"
+                trend_color = "#27AE60"
+            elif above_ma200 is False:
+                trend_text = "▼ ต่ำกว่า MA200 (Downtrend)"
+                trend_color = "#E74C3C"
+            else:
+                trend_text = "— Trend ไม่ชัดเจน"
+                trend_color = "#7F8C8D"
+            body_contents.append({"type": "text", "text": trend_text, "size": "xs", "color": trend_color, "weight": "bold"})
+
+            # RSI
+            rsi_color = "#E74C3C" if rsi > 70 else ("#27AE60" if rsi < 30 else "#F39C12")
+            body_contents.append({"type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": "RSI (14)", "size": "xs", "color": "#7F8C8D", "flex": 1},
+                {"type": "text", "text": f"{rsi:.0f}", "size": "xs", "color": rsi_color, "weight": "bold", "align": "end"},
+            ]})
+
+            # MACD signal
+            if macd_hist is not None:
+                if macd_bullish:
+                    macd_label = "🟢 MACD Cross Up"
+                    macd_color = "#27AE60"
+                elif macd_bearish:
+                    macd_label = "🔴 MACD Cross Down"
+                    macd_color = "#E74C3C"
+                elif macd_hist > 0:
+                    macd_label = "MACD เป็นบวก ↑"
+                    macd_color = "#27AE60"
+                else:
+                    macd_label = "MACD เป็นลบ ↓"
+                    macd_color = "#E74C3C"
+                body_contents.append({"type": "text", "text": macd_label, "size": "xs", "color": macd_color})
+
+            # Implication
+            if implication:
+                body_contents.append({"type": "separator"})
+                body_contents.append({"type": "text", "text": implication, "size": "xxs", "color": "#7F8C8D", "wrap": True})
+
+        bubble_size = "mega" if rsi is not None else "kilo"
         bubbles.append({
             "type": "bubble",
-            "size": "kilo",
+            "size": bubble_size,
             "header": {
                 "type": "box",
                 "layout": "vertical",
@@ -659,11 +880,8 @@ def build_index_carousel(indexes: dict[str, dict]) -> dict:
             "body": {
                 "type": "box",
                 "layout": "vertical",
-                "spacing": "sm",
-                "contents": [
-                    {"type": "text", "text": f"{close:,.2f}", "weight": "bold", "size": "xl"},
-                    {"type": "text", "text": f"{chg_sign}{chg:.2f}%", "size": "md", "color": chg_color, "weight": "bold"},
-                ],
+                "spacing": "xs",
+                "contents": body_contents,
                 "paddingAll": "12px",
             },
             "footer": {
@@ -916,6 +1134,28 @@ def build_watchlist_stock_card(signal: StockSignal, fundamentals: dict) -> dict:
         ]},
     ]
 
+    # Risk / reward extra rows
+    if getattr(signal, "trade_value_m", 0) > 0:
+        body_contents.append({"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "มูลค่าซื้อขาย", "size": "sm", "color": "#7F8C8D", "flex": 1},
+            {"type": "text", "text": f"฿{signal.trade_value_m:.1f}M", "size": "sm", "weight": "bold", "align": "end"},
+        ]})
+    if getattr(signal, "pct_from_52w_high", 0) != 0:
+        body_contents.append({"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "ต่ำกว่า 52W High", "size": "sm", "color": "#7F8C8D", "flex": 1},
+            {"type": "text", "text": f"{signal.pct_from_52w_high:.1f}%", "size": "sm", "weight": "bold", "align": "end",
+             "color": "#27AE60" if signal.pct_from_52w_high >= -5 else "#E67E22"},
+        ]})
+    if getattr(signal, "stop_loss", 0) > 0:
+        body_contents += [
+            {"type": "separator"},
+            {"type": "text", "text": "⚖️ Risk Management (ATR-based)", "size": "xxs", "color": "#F39C12", "weight": "bold"},
+            _detail_row("Stop Loss", f"฿{signal.stop_loss:,.2f}",
+                        f"-{(signal.close - signal.stop_loss) / signal.close * 100:.1f}%", "#E74C3C"),
+            _detail_row("Target (2:1)", f"฿{signal.target_price:,.2f}",
+                        f"+{(signal.target_price - signal.close) / signal.close * 100:.1f}%", "#27AE60"),
+        ]
+
     if fund_rows:
         body_contents += [
             {"type": "separator"},
@@ -1114,6 +1354,172 @@ def build_guide_carousel() -> dict:
     }
 
     return {"type": "carousel", "contents": [stage_bubble, pattern_bubble, score_vol_bubble, quickref_bubble]}
+
+
+def build_stage_cycle_card() -> dict:
+    """Comprehensive Minervini 4-stage cycle card with trading rules for each stage."""
+    def _stage_trading_row(stage_icon: str, stage_name: str, color: str, when_buy: str, action: str) -> list:
+        return [
+            {
+                "type": "box",
+                "layout": "horizontal",
+                "contents": [
+                    {"type": "text", "text": stage_icon, "size": "sm", "flex": 1, "gravity": "center"},
+                    {"type": "text", "text": stage_name, "size": "sm", "weight": "bold", "color": color, "flex": 3},
+                    {"type": "text", "text": action, "size": "xxs", "color": "#7F8C8D", "flex": 3, "align": "end", "wrap": True},
+                ],
+            },
+            {"type": "text", "text": when_buy, "size": "xxs", "color": "#555555", "wrap": True, "margin": "xs"},
+            {"type": "separator"},
+        ]
+
+    return {
+        "type": "bubble",
+        "size": "giga",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "📊 Minervini 4-Stage Cycle", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+                {"type": "text", "text": "วิธีซื้อขายตาม Stage Analysis", "size": "xs", "color": "#DDDDDD"},
+            ],
+            "backgroundColor": "#1A237E",
+            "paddingAll": "16px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": "วงจร Stage: 1 → 2 → 3 → 4 → 1 (วนซ้ำ)", "size": "xs", "color": "#7F8C8D", "align": "center"},
+                {"type": "separator"},
+                *_stage_trading_row("⚪", "Stage 1 – Basing", "#95A5A6",
+                    "ราคาพักตัว MA200 แบนราบ ยังไม่ทำ breakout\nรอจนกว่าจะเข้า Stage 2 ก่อนซื้อ",
+                    "ห้ามซื้อ (รอ)"),
+                *_stage_trading_row("🟢", "Stage 2 – Uptrend", "#27AE60",
+                    "✅ โซนซื้อ: ราคา > MA150 > MA200 ที่กำลังขึ้น\n"
+                    "Entry: Breakout/VCP + Volume ≥ 1.4x avg\n"
+                    "Stop Loss: -7–8% จาก entry หรือ ATR × 1.5\n"
+                    "Target: R:R 2:1 ขึ้นไป",
+                    "ซื้อ/ถือ"),
+                *_stage_trading_row("🟡", "Stage 3 – Distribution", "#E67E22",
+                    "⚠️ Smart money กำลังขาย ราคาหลุด MA150\n"
+                    "ลดขนาด Position และตั้ง Trailing Stop\n"
+                    "ห้ามซื้อเพิ่ม ระวัง False breakout",
+                    "ขายบางส่วน"),
+                *_stage_trading_row("🔴", "Stage 4 – Downtrend", "#E74C3C",
+                    "❌ ราคาต่ำกว่า MA150 และ MA200 ที่กำลังลง\n"
+                    "ขายออกทั้งหมดถ้ายังถืออยู่\n"
+                    "รอให้กลับมา Stage 1 ก่อนสนใจใหม่",
+                    "ขายหมด/หลีกเลี่ยง"),
+                {"type": "text", "text": "Risk Management: ตัด Loss ทันทีที่ -7-8% จาก entry\nไม่เฉลี่ยลงในหุ้นขาลง", "size": "xxs", "color": "#E74C3C", "wrap": True},
+            ],
+            "paddingAll": "16px",
+        },
+        "footer": {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "sm",
+            "contents": [
+                {"type": "button", "action": {"type": "message", "label": "Stage 2 Stocks", "text": "stage2"}, "style": "primary", "color": "#1B5E20", "height": "sm", "flex": 1},
+                {"type": "button", "action": {"type": "message", "label": "Breakout Stocks", "text": "breakout"}, "style": "primary", "color": "#E65100", "height": "sm", "flex": 1},
+            ],
+            "paddingAll": "8px",
+        },
+    }
+
+
+def build_pattern_detail_card(pattern: str) -> dict:
+    """Rich explanation card for a specific trading pattern with entry/stop/target rules."""
+    PATTERN_DETAILS = {
+        "breakout": {
+            "icon": "🚀", "color": "#1B5E20",
+            "title": "Breakout Pattern",
+            "desc": "ราคาปิดสูงกว่า resistance สูงสุด 52 สัปดาห์\nพร้อม Volume สูงกว่าค่าเฉลี่ย 20 วัน ≥ 1.4x",
+            "entry": "ซื้อเมื่อราคาปิดเหนือ 52-week high บน Volume สูง",
+            "stop": "ต่ำกว่า Breakout level หรือ ATR × 1.5",
+            "target": "R:R 2:1 ขึ้นไป ใช้ Trailing Stop หลัง breakout",
+            "note": "Breakout ที่ดี: Stage 2 + Volume ≥ 1.5x + ไม่มี overhead supply",
+        },
+        "ath_breakout": {
+            "icon": "🏆", "color": "#E65100",
+            "title": "ATH Breakout",
+            "desc": "Breakout ที่ราคาทำ All-Time High ใหม่\nไม่มี overhead supply เลย — หุ้นแข็งแกร่งที่สุด",
+            "entry": "ซื้อเมื่อราคาปิดสูงกว่า ATH เดิม บน Volume สูง",
+            "stop": "ATR × 1.5 หรือ -7% จาก entry",
+            "target": "ไม่มี ceiling — ใช้ Trailing Stop (ATR × 2-3)",
+            "note": "ATH Breakout = แนวโน้มแข็งแกร่งที่สุด มักวิ่งต่อได้ดี",
+        },
+        "vcp": {
+            "icon": "🔍", "color": "#0D47A1",
+            "title": "VCP – Volatility Contraction",
+            "desc": "ความผันผวนหดตัวเรื่อยๆ 3+ ครั้ง พร้อม Volume แห้ง\nรูปแบบ: ลง 15% → 10% → 6% → 3%",
+            "entry": "ซื้อเมื่อราคา breakout จาก contraction สุดท้าย + Volume ขึ้น",
+            "stop": "ต่ำกว่า Low ของ VCP contraction สุดท้าย",
+            "target": "R:R 3:1 ขึ้นไป (VCP มักให้ risk ต่ำมาก)",
+            "note": "VCP ที่ดี: Stage 2 เท่านั้น, Volume แห้งก่อน breakout",
+        },
+        "vcp_low_cheat": {
+            "icon": "🎯", "color": "#00695C",
+            "title": "VCP Low Cheat",
+            "desc": "Entry แบบ aggressive ใน VCP\nราคาอยู่ที่ Low ของ contraction สุดท้าย + Volume แห้งมาก",
+            "entry": "ซื้อที่ Low ของ VCP + ตั้ง Stop แคบมาก (<3%)",
+            "stop": "ต่ำกว่า Low ของ contraction สุดท้าย",
+            "target": "R:R 4:1 หรือมากกว่า (เพราะ Risk น้อยมาก)",
+            "note": "High risk/reward แต่ต้องการ discipline สูง",
+        },
+        "consolidating": {
+            "icon": "⚙️", "color": "#4A148C",
+            "title": "Consolidating",
+            "desc": "หุ้นพักตัวในกรอบแคบ ATR กำลังหด\nกำลัง build base สำหรับ breakout ต่อไป",
+            "entry": "ยังไม่ซื้อ รอ breakout จาก consolidation",
+            "stop": "N/A — ยังไม่ entry",
+            "target": "ดูหลัง breakout เกิดขึ้น",
+            "note": "Base ยิ่งยาว breakout ยิ่งแรง (Tight base = good setup)",
+        },
+    }
+    info = PATTERN_DETAILS.get(pattern, {
+        "icon": "📉", "color": "#B71C1C", "title": pattern,
+        "desc": "Pattern ขาลง ไม่แนะนำให้ซื้อ",
+        "entry": "หลีกเลี่ยง", "stop": "N/A", "target": "N/A", "note": "",
+    })
+
+    rows = [
+        {"type": "text", "text": info["desc"], "size": "sm", "wrap": True, "color": "#333333"},
+        {"type": "separator"},
+        {"type": "text", "text": "🎯 Entry", "size": "xs", "weight": "bold", "color": "#27AE60"},
+        {"type": "text", "text": info["entry"], "size": "xs", "wrap": True, "color": "#555555"},
+        {"type": "text", "text": "🛑 Stop Loss", "size": "xs", "weight": "bold", "color": "#E74C3C"},
+        {"type": "text", "text": info["stop"], "size": "xs", "wrap": True, "color": "#555555"},
+        {"type": "text", "text": "💰 Target", "size": "xs", "weight": "bold", "color": "#F39C12"},
+        {"type": "text", "text": info["target"], "size": "xs", "wrap": True, "color": "#555555"},
+    ]
+    if info["note"]:
+        rows += [
+            {"type": "separator"},
+            {"type": "text", "text": f"💡 {info['note']}", "size": "xxs", "wrap": True, "color": "#7F8C8D"},
+        ]
+
+    return {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": f"{info['icon']} {info['title']}", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+            ],
+            "backgroundColor": info["color"],
+            "paddingAll": "16px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": rows,
+            "paddingAll": "16px",
+        },
+    }
 
 
 def _guide_row(label: str, desc: str, color: str = "#333333") -> dict:

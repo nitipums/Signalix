@@ -401,13 +401,22 @@ def _df_to_bq(symbol: str, df: pd.DataFrame) -> "pd.DataFrame":
 
 
 def save_ohlcv_to_bq(symbol: str, df: pd.DataFrame) -> None:
-    """Append full OHLCV history for one symbol to BigQuery (used during sync)."""
+    """Append OHLCV history for one symbol to BQ, skipping already-stored rows."""
     if _bq_client is None or df is None or df.empty:
-        logger.warning("save_ohlcv_to_bq(%s): skipped — client=%s, df_empty=%s", symbol, _bq_client is None, df is None or df.empty)
         return
     try:
         from google.cloud import bigquery
         bq_df = _df_to_bq(symbol, df)
+        # Only insert rows newer than what's already in BQ for this symbol
+        max_df = _bq_client.query(
+            f"SELECT MAX(date) AS max_date FROM {_bq_table()} WHERE symbol = '{symbol}'"
+        ).to_dataframe()
+        last = max_df["max_date"].iloc[0] if not max_df.empty else None
+        if pd.notna(last):
+            bq_df = bq_df[bq_df["date"] > last]
+        if bq_df.empty:
+            logger.debug("BQ: %s already up to date", symbol)
+            return
         table_id = f"{_bq_project}.{_bq_dataset}.ohlcv"
         job = _bq_client.load_table_from_dataframe(
             bq_df, table_id,
@@ -417,7 +426,7 @@ def save_ohlcv_to_bq(symbol: str, df: pd.DataFrame) -> None:
             ),
         )
         job.result()
-        logger.info("BQ: saved %d rows for %s", len(bq_df), symbol)
+        logger.info("BQ: saved %d new rows for %s", len(bq_df), symbol)
     except Exception as exc:
         logger.error("save_ohlcv_to_bq(%s) failed: %s", symbol, exc)
 
@@ -576,6 +585,92 @@ def GET_ALL_SYMBOLS_WITH_INDEX() -> list[str]:
     return SET_STOCKS + ["SET"]
 
 
+def fetch_latest_candles(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
+    """
+    Intraday scan data fetch: load BQ history + merge with a small yfinance
+    batch download (5d) to get today's candle.  Much faster than a full 1y download.
+    Falls back to fetch_all_stocks() if BQ history is unavailable.
+    """
+    bq_data = load_all_ohlcv_from_bq(lookback_days=lookback_days) if BQ_AVAILABLE else {}
+    if not bq_data:
+        logger.warning("fetch_latest_candles: BQ unavailable — falling back to full fetch")
+        return fetch_all_stocks(period="1y")
+
+    all_symbols = GET_ALL_SYMBOLS_WITH_INDEX()
+    tickers = [("^SET.BK" if s == "SET" else _to_yf_ticker(s)) for s in all_symbols]
+
+    try:
+        raw = yf.download(
+            tickers,
+            period="5d",
+            group_by="ticker",
+            progress=False,
+            auto_adjust=True,
+            threads=True,
+        )
+    except Exception as exc:
+        logger.error("fetch_latest_candles: yfinance 5d download failed: %s", exc)
+        return bq_data
+
+    results: dict[str, pd.DataFrame] = {}
+    for symbol, ticker in zip(all_symbols, tickers):
+        bq_df = bq_data.get(symbol)
+        new_df = pd.DataFrame()
+        try:
+            if len(tickers) == 1:
+                new_df = raw.copy()
+            else:
+                new_df = raw[ticker].copy() if ticker in raw.columns.get_level_values(0) else pd.DataFrame()
+            if not new_df.empty:
+                new_df = new_df.dropna(subset=["Close"])
+                new_df.index = pd.to_datetime(new_df.index).tz_localize(None)
+                new_df.index.name = "Date"
+                if isinstance(new_df.columns, pd.MultiIndex):
+                    new_df.columns = new_df.columns.get_level_values(0)
+                new_df.columns = [c.replace(" ", "_") for c in new_df.columns]
+        except Exception:
+            new_df = pd.DataFrame()
+
+        if bq_df is not None and not bq_df.empty and not new_df.empty:
+            combined = pd.concat([bq_df, new_df])
+            combined = combined[~combined.index.duplicated(keep="last")]
+            results[symbol] = combined.sort_index()
+        elif bq_df is not None and not bq_df.empty:
+            results[symbol] = bq_df
+        elif not new_df.empty:
+            results[symbol] = new_df
+
+    logger.info("fetch_latest_candles: %d symbols merged (BQ + yfinance 5d)", len(results))
+    return results
+
+
+def fetch_indexes_with_history(period: str = "1y") -> dict[str, pd.DataFrame]:
+    """
+    Fetch full OHLCV history DataFrames for all SET indexes.
+    Used by analyze_index() for MACD/RSI calculations.
+    """
+    tickers = list(INDEX_SYMBOLS.values())
+    names = list(INDEX_SYMBOLS.keys())
+    result: dict[str, pd.DataFrame] = {}
+    try:
+        raw = yf.download(tickers, period=period, group_by="ticker", progress=False, auto_adjust=True)
+        for name, ticker in zip(names, tickers):
+            try:
+                if len(tickers) == 1:
+                    df = raw.copy()
+                else:
+                    df = raw[ticker].copy() if ticker in raw.columns.get_level_values(0) else pd.DataFrame()
+                df = df.dropna(subset=["Close"])
+                if len(df) >= 30:
+                    df.index = pd.to_datetime(df.index).tz_localize(None)
+                    result[name] = df
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.error("fetch_indexes_with_history failed: %s", exc)
+    return result
+
+
 def get_latest_price(symbol: str) -> Optional[dict]:
     """
     Get latest price info for a single symbol.
@@ -720,12 +815,15 @@ def load_signals_from_firestore(db) -> list:
     if db is None:
         return []
     try:
+        import dataclasses
         from analyzer import StockSignal
+        valid_fields = {f.name for f in dataclasses.fields(StockSignal)}
         docs = db.collection("signals").stream()
         signals = []
         for doc in docs:
             try:
-                signals.append(StockSignal(**doc.to_dict()))
+                data = {k: v for k, v in doc.to_dict().items() if k in valid_fields}
+                signals.append(StockSignal(**data))
             except Exception:
                 continue
         signals.sort(key=lambda s: s.strength_score, reverse=True)

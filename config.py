@@ -5,6 +5,7 @@ from functools import lru_cache
 class Settings(BaseSettings):
     # Google Cloud
     gcp_project_id: str = ""
+    bq_dataset: str = "signalix"
 
     # LINE Messaging API
     line_channel_access_token: str = ""

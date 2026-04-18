@@ -3,16 +3,16 @@
 #
 # All times are in Asia/Bangkok timezone (ICT, UTC+7)
 # Cloud Scheduler cron uses UTC — ICT = UTC+7
-# 10:30 ICT = 03:30 UTC → "30 3 * * 1-5"  (Mon–Fri)
-# 12:00 ICT = 05:00 UTC → "0 5 * * 1-5"
+# 10:15 ICT = 03:15 UTC → "15 3 * * 1-5"  (Mon–Fri)
+# 12:15 ICT = 05:15 UTC → "15 5 * * 1-5"
 # 15:15 ICT = 08:15 UTC → "15 8 * * 1-5"
-# 16:30 ICT = 09:30 UTC → "30 9 * * 1-5"
+# 16:45 ICT = 09:45 UTC → "45 9 * * 1-5"
 
 jobs:
 
   - name: signalix-morning-scan
-    description: "10:30 ICT — Morning breakout scan"
-    schedule: "30 3 * * 1-5"
+    description: "10:15 ICT — Morning breakout scan (intraday: BQ history + latest candle)"
+    schedule: "15 3 * * 1-5"
     timeZone: "Asia/Bangkok"
     httpTarget:
       uri: "${CLOUD_RUN_URL}/scan"
@@ -20,11 +20,11 @@ jobs:
       headers:
         Content-Type: application/json
         X-Scan-Secret: "${SCAN_SECRET}"
-      body: '{"scan_type": "breakout", "broadcast": true}'
+      body: '{"scan_type": "breakout", "broadcast": true, "mode": "intraday"}'
 
-  - name: signalix-midday-breadth
-    description: "12:00 ICT — Midday market breadth"
-    schedule: "0 5 * * 1-5"
+  - name: signalix-midday-scan
+    description: "12:15 ICT — Midday market breadth (intraday: BQ history + latest candle)"
+    schedule: "15 5 * * 1-5"
     timeZone: "Asia/Bangkok"
     httpTarget:
       uri: "${CLOUD_RUN_URL}/scan"
@@ -32,10 +32,10 @@ jobs:
       headers:
         Content-Type: application/json
         X-Scan-Secret: "${SCAN_SECRET}"
-      body: '{"scan_type": "breadth", "broadcast": true}'
+      body: '{"scan_type": "breadth", "broadcast": true, "mode": "intraday"}'
 
   - name: signalix-preclose-scan
-    description: "15:15 ICT — Pre-close strong signals"
+    description: "15:15 ICT — Pre-close VCP setups (intraday: BQ history + latest candle)"
     schedule: "15 8 * * 1-5"
     timeZone: "Asia/Bangkok"
     httpTarget:
@@ -44,11 +44,11 @@ jobs:
       headers:
         Content-Type: application/json
         X-Scan-Secret: "${SCAN_SECRET}"
-      body: '{"scan_type": "vcp", "broadcast": true}'
+      body: '{"scan_type": "vcp", "broadcast": true, "mode": "intraday"}'
 
   - name: signalix-postclose-report
-    description: "16:30 ICT — Post-close full report"
-    schedule: "30 9 * * 1-5"
+    description: "16:45 ICT — Post-close full report + BigQuery update (full fetch + BQ write)"
+    schedule: "45 9 * * 1-5"
     timeZone: "Asia/Bangkok"
     httpTarget:
       uri: "${CLOUD_RUN_URL}/scan"
@@ -56,4 +56,4 @@ jobs:
       headers:
         Content-Type: application/json
         X-Scan-Secret: "${SCAN_SECRET}"
-      body: '{"scan_type": "full", "broadcast": true}'
+      body: '{"scan_type": "full", "broadcast": true, "mode": "full"}'

@@ -51,6 +51,13 @@ class StockSignal:
     tradingview_url: str
     scanned_at: str                # ISO timestamp
     breakout_details: dict = field(default_factory=dict)
+    # Risk/reward fields (all default 0 for backward compat with old Firestore docs)
+    atr: float = 0.0               # 14-day Average True Range
+    trade_value_m: float = 0.0     # Trade value in THB millions (volume * close / 1M)
+    pct_from_52w_high: float = 0.0 # (close / high_52w - 1) * 100, negative when below ATH
+    stop_loss: float = 0.0         # ATR-based: close - 1.5 * ATR
+    target_price: float = 0.0      # 2:1 risk/reward: close + 2 * (close - stop_loss)
+    breakout_count_1y: int = 0     # Number of distinct breakout events in past year
 
 
 @dataclass
@@ -402,6 +409,16 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
 
     score = _strength_score(df, stage, pattern, volume_ratio)
 
+    # Risk/reward calculations
+    atr_series = _atr(df)
+    atr_val = float(atr_series.iloc[-1]) if len(df) >= 14 and not np.isnan(atr_series.iloc[-1]) else 0.0
+    trade_value_m = round(float(c * vol_now) / 1_000_000, 2)
+    pct_from_high = round((c / high_52w - 1) * 100, 2) if high_52w > 0 else 0.0
+    stop_loss_price = round(c - 1.5 * atr_val, 2) if atr_val > 0 else 0.0
+    risk_per_share = c - stop_loss_price if stop_loss_price > 0 else 0.0
+    target = round(c + 2 * risk_per_share, 2) if risk_per_share > 0 else 0.0
+    bo_count = count_breakouts_1y(df)
+
     from datetime import datetime
     import pytz
     bkk = pytz.timezone("Asia/Bangkok")
@@ -425,7 +442,110 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
         tradingview_url=tradingview_url(symbol),
         scanned_at=now_str,
         breakout_details=bp_details,
+        atr=round(atr_val, 4),
+        trade_value_m=trade_value_m,
+        pct_from_52w_high=pct_from_high,
+        stop_loss=stop_loss_price,
+        target_price=target,
+        breakout_count_1y=bo_count,
     )
+
+
+def count_breakouts_1y(df: pd.DataFrame) -> int:
+    """Count distinct 52-week breakout events in the past year of price data."""
+    if len(df) < 60:
+        return 0
+    window = df.iloc[-252:]
+    close = window["Close"]
+    vol = window["Volume"]
+    vol_avg = vol.rolling(20, min_periods=20).mean()
+    prev_resistance = close.shift(1).rolling(52, min_periods=52).max()
+    breakout_days = (close > prev_resistance) & (vol > vol_avg * 1.4)
+    # Count transitions from False→True (distinct events, not consecutive days)
+    transitions = breakout_days.astype(int).diff().clip(lower=0)
+    return int(transitions.sum())
+
+
+def analyze_index(df: pd.DataFrame, name: str) -> dict:
+    """
+    Compute MACD (12/26/9 EMA), RSI (14), trend vs MA200, and Thai implication text.
+    Returns an enriched dict compatible with the existing {close, change_pct} schema.
+    """
+    close = df["Close"].dropna()
+    if len(close) < 30:
+        return {"name": name, "close": 0.0, "change_pct": 0.0}
+
+    # MACD
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    macd_signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    macd_hist = macd_line - macd_signal_line
+
+    # RSI (Wilder smoothing via ewm)
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+    rs = gain / loss.replace(0, np.nan)
+    rsi_series = 100 - (100 / (1 + rs))
+
+    # Trend vs MA200
+    ma200 = close.rolling(200, min_periods=50).mean()
+
+    # Latest values
+    cur_close = float(close.iloc[-1])
+    prev_close = float(close.iloc[-2]) if len(close) > 1 else cur_close
+    change_pct = round((cur_close - prev_close) / prev_close * 100, 2) if prev_close else 0.0
+
+    cur_macd = float(macd_line.iloc[-1])
+    cur_signal = float(macd_signal_line.iloc[-1])
+    cur_hist = float(macd_hist.iloc[-1])
+    prev_hist = float(macd_hist.iloc[-2]) if len(macd_hist) > 1 else 0.0
+    cur_rsi = float(rsi_series.iloc[-1]) if not np.isnan(rsi_series.iloc[-1]) else 50.0
+    cur_ma200 = float(ma200.iloc[-1]) if not np.isnan(ma200.iloc[-1]) else 0.0
+    above_ma200 = cur_close > cur_ma200 if cur_ma200 > 0 else None
+
+    # Crossover signals
+    macd_bullish_cross = cur_hist > 0 and prev_hist <= 0
+    macd_bearish_cross = cur_hist < 0 and prev_hist >= 0
+
+    # Build Thai implication text
+    parts = []
+    if above_ma200 is True:
+        parts.append("เหนือ MA200 (uptrend)")
+    elif above_ma200 is False:
+        parts.append("ต่ำกว่า MA200 (downtrend)")
+    if macd_bullish_cross:
+        parts.append("🟢 MACD cross up")
+    elif macd_bearish_cross:
+        parts.append("🔴 MACD cross down")
+    elif cur_macd > cur_signal:
+        parts.append("MACD เป็นบวก")
+    else:
+        parts.append("MACD เป็นลบ")
+    if cur_rsi > 70:
+        parts.append(f"⚠️ RSI overbought ({cur_rsi:.0f})")
+    elif cur_rsi < 30:
+        parts.append(f"🟢 RSI oversold ({cur_rsi:.0f})")
+    else:
+        parts.append(f"RSI {cur_rsi:.0f} (ปกติ)")
+
+    return {
+        "name": name,
+        "close": round(cur_close, 2),
+        "change_pct": change_pct,
+        "prev_close": round(prev_close, 2),
+        "macd_line": round(cur_macd, 4),
+        "macd_signal": round(cur_signal, 4),
+        "macd_hist": round(cur_hist, 4),
+        "rsi": round(cur_rsi, 1),
+        "above_ma200": above_ma200,
+        "ma200": round(cur_ma200, 2),
+        "trend": "uptrend" if above_ma200 else ("downtrend" if above_ma200 is False else "unknown"),
+        "macd_bullish_cross": macd_bullish_cross,
+        "macd_bearish_cross": macd_bearish_cross,
+        "implication": " | ".join(parts),
+    }
 
 
 def run_full_scan(
