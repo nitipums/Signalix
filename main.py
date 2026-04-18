@@ -35,8 +35,7 @@ from analyzer import (
 from config import get_settings
 from data import (
     SECTOR_MAP, append_new_candles_to_bq, BQ_AVAILABLE,
-    fetch_indexes_with_history, fetch_latest_candles, fetch_ohlcv,
-    fetch_ohlcv_settrade, get_cached_fundamentals, get_fundamentals,
+    fetch_indexes_with_history, fetch_latest_candles, get_fundamentals,
     get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
     increment_stage4_views, load_breakout_review,
     load_scan_state, load_signal_from_firestore, load_signals_from_firestore,
@@ -112,8 +111,6 @@ _ath_cache: dict[str, float] = {}
 
 # Static card caches (built once, never change between scans)
 _guide_carousel_cache: Optional[dict] = None
-
-_CACHE_TTL_MINUTES = 15
 
 # Explanation texts for ⓘ buttons
 _EXPLANATIONS: dict[str, str] = {
@@ -222,7 +219,6 @@ async def startup_event():
 
 async def _warm_from_firestore():
     """Load all cached state from Firestore. No scan is run — data comes from last scheduled scan."""
-    await asyncio.sleep(2)  # let server finish booting first
     global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
     loop = asyncio.get_running_loop()
     try:
@@ -581,7 +577,7 @@ def _broadcast_full_report(breadth: MarketBreadth, signals: list[StockSignal]) -
 
     # 4. Per-user watchlist push (multicast — each user gets their own watchlist snapshot)
     if FIRESTORE_AVAILABLE and _db:
-        loop = asyncio.get_running_loop()
+        loop = asyncio.get_event_loop()
         loop.run_in_executor(None, _push_watchlist_updates_sync, signals)
 
 
@@ -764,16 +760,8 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         wl_signals = [cached[sym] for sym in wl if sym in cached]
         uncached = [sym for sym in wl if sym not in cached]
         for sym in uncached:
-            # Try Firestore signals collection before live yfinance fetch
             if FIRESTORE_AVAILABLE and _db:
                 sig = load_signal_from_firestore(_db, sym)
-                if sig:
-                    wl_signals.append(sig)
-                    continue
-            df = fetch_ohlcv(sym)
-            if df is not None:
-                sig = scan_stock(sym, df, ath_override=_ath_cache.get(sym))
-                del df
                 if sig:
                     wl_signals.append(sig)
         if not wl_signals:
@@ -913,76 +901,35 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str, 
     reply_flex(reply_token, title, bubble)
 
 
-def _cache_is_fresh() -> bool:
-    """Return True if _last_signals was updated within CACHE_TTL_MINUTES."""
-    if _last_scan_time is None:
-        return False
-    age = (datetime.now(BANGKOK_TZ) - _last_scan_time).total_seconds() / 60
-    return age < _CACHE_TTL_MINUTES
-
-
 def _reply_single_stock(reply_token: str, symbol: str, user_id: str = "") -> None:
-    # Cache-first: serve from last scan if cache is fresh (< 15 min old)
-    cached = next((s for s in _last_signals if s.symbol == symbol), None)
-    signal_to_show = None
-    if cached and _cache_is_fresh():
-        reply_flex(reply_token, f"วิเคราะห์ {symbol}", build_single_stock_card(cached))
-        signal_to_show = cached
-    else:
-        # Cache stale or miss: try Settrade API only (no yfinance for on-demand)
-        df = fetch_ohlcv_settrade(symbol)
-        if df is None:
-            if cached:
-                reply_flex(reply_token, f"วิเคราะห์ {symbol} (แคช)", build_single_stock_card(cached))
-                signal_to_show = cached
-            elif FIRESTORE_AVAILABLE and _db:
-                try:
-                    doc = _db.collection("signals").document(symbol).get()
-                    if doc.exists:
-                        fs_signal = StockSignal(**doc.to_dict())
-                        reply_flex(reply_token, f"วิเคราะห์ {symbol} (แคช)", build_single_stock_card(fs_signal))
-                        signal_to_show = fs_signal
-                except Exception:
-                    pass
-            if signal_to_show is None:
-                reply_text(reply_token, f"ไม่พบข้อมูล {symbol} ขณะนี้\nลองพิมพ์ชื่อใหม่หลังจาก scan ถัดไปครับ")
-                return
-        else:
-            live_signal = scan_stock(symbol, df, ath_override=_ath_cache.get(symbol))
-            if live_signal is None:
-                reply_text(reply_token, f"ข้อมูลไม่เพียงพอสำหรับ {symbol}")
-                return
-            reply_flex(reply_token, f"วิเคราะห์ {symbol}", build_single_stock_card(live_signal))
-            signal_to_show = live_signal
-
+    signal = next((s for s in _last_signals if s.symbol == symbol), None)
+    if signal is None and FIRESTORE_AVAILABLE and _db:
+        signal = load_signal_from_firestore(_db, symbol)
+    if signal is None:
+        reply_text(reply_token, f"ไม่พบข้อมูล {symbol}\nข้อมูลจะพร้อมหลังการสแกนครั้งถัดไป\n10:15 / 12:15 / 15:15 / 16:45 น.")
+        return
+    reply_flex(reply_token, f"วิเคราะห์ {symbol}", build_single_stock_card(signal))
     # Gamification: update user score based on what they viewed
-    if user_id and FIRESTORE_AVAILABLE and _db and signal_to_show:
+    if user_id and FIRESTORE_AVAILABLE and _db:
         loop = asyncio.get_running_loop()
-        s = signal_to_show
+        s = signal
         if s.stage == 2 and s.pattern in ("breakout", "ath_breakout", "vcp"):
             loop.run_in_executor(None, update_user_score, _db, user_id, 1, "viewed_s2_breakout", symbol)
         elif s.stage == 4:
             user_data = _db.collection("users").document(user_id).get().to_dict() or {}
-            week_views = user_data.get("stage4_views_this_week", 0)
-            if week_views >= 2:
+            if user_data.get("stage4_views_this_week", 0) >= 2:
                 loop.run_in_executor(None, update_user_score, _db, user_id, -1, "repeated_stage4", symbol)
             loop.run_in_executor(None, increment_stage4_views, _db, user_id)
 
 
 def _reply_detailed_stock(reply_token: str, symbol: str) -> None:
     """Serve deep insight card (technical + fundamentals) for a single stock."""
-    cached = next((s for s in _last_signals if s.symbol == symbol), None)
-    if cached:
-        signal = cached
-    else:
-        df = fetch_ohlcv_settrade(symbol) or fetch_ohlcv(symbol)
-        if df is None:
-            reply_text(reply_token, f"ไม่พบข้อมูล {symbol}")
-            return
-        signal = scan_stock(symbol, df, ath_override=_ath_cache.get(symbol))
-        if signal is None:
-            reply_text(reply_token, f"ข้อมูลไม่เพียงพอสำหรับ {symbol}")
-            return
+    signal = next((s for s in _last_signals if s.symbol == symbol), None)
+    if signal is None and FIRESTORE_AVAILABLE and _db:
+        signal = load_signal_from_firestore(_db, symbol)
+    if signal is None:
+        reply_text(reply_token, f"ไม่พบข้อมูล {symbol}\nข้อมูลจะพร้อมหลังการสแกนครั้งถัดไป")
+        return
     fund = get_fundamentals(symbol, _db if FIRESTORE_AVAILABLE else None)
     reply_flex(reply_token, f"📌 {symbol} Detail", build_watchlist_stock_card(signal, fund))
 
