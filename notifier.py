@@ -1015,7 +1015,7 @@ def build_sector_carousel(sectors: list[SectorSummary]) -> dict:
 
 
 def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
-    """Single mega bubble with all sectors as table rows + quick-tap buttons."""
+    """Single mega bubble — each sector row is tappable, no footer buttons."""
     SECTOR_COLORS = {
         "AGRO": "#27AE60", "CONSUMP": "#F39C12", "FINCIAL": "#2980B9",
         "INDUS": "#8E44AD", "PROPCON": "#E67E22", "RESOURC": "#E74C3C",
@@ -1026,29 +1026,20 @@ def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
         color = SECTOR_COLORS.get(sec.sector, "#95A5A6")
         trend = "▲" if sec.advancing > sec.declining else ("▼" if sec.declining > sec.advancing else "=")
         trend_color = "#27AE60" if trend == "▲" else ("#E74C3C" if trend == "▼" else "#7F8C8D")
+        s2_color = "#27AE60" if sec.stage2_pct >= 30 else ("#F39C12" if sec.stage2_pct >= 20 else "#7F8C8D")
         rows.append({
             "type": "box",
             "layout": "horizontal",
+            "paddingTop": "6px",
+            "paddingBottom": "6px",
+            "action": {"type": "message", "label": sec.sector, "text": f"sector {sec.sector}"},
             "contents": [
-                {"type": "text", "text": sec.sector, "size": "xs", "weight": "bold", "color": color, "flex": 3},
-                {"type": "text", "text": f"S2:{sec.stage2_pct}%", "size": "xxs", "color": "#27AE60" if sec.stage2_pct >= 20 else "#7F8C8D", "flex": 2, "align": "end"},
-                {"type": "text", "text": f"{trend}{sec.advancing}/{sec.declining}", "size": "xxs", "color": trend_color, "flex": 2, "align": "end"},
+                {"type": "text", "text": sec.sector, "size": "sm", "weight": "bold", "color": color, "flex": 3},
+                {"type": "text", "text": f"S2:{sec.stage2_pct:.0f}%", "size": "xs", "color": s2_color, "weight": "bold", "flex": 2, "align": "end"},
+                {"type": "text", "text": f"{trend}{sec.advancing}/{sec.declining}", "size": "xs", "color": trend_color, "flex": 2, "align": "end"},
             ],
         })
-
-    # Top 4 by stage2_pct as tap buttons
-    top4 = sorted(sectors, key=lambda s: s.stage2_pct, reverse=True)[:4]
-    btn_row = [
-        {
-            "type": "button",
-            "action": {"type": "message", "label": s.sector, "text": f"sector {s.sector}"},
-            "style": "link",
-            "height": "sm",
-            "flex": 1,
-            "color": SECTOR_COLORS.get(s.sector, "#2980B9"),
-        }
-        for s in top4
-    ]
+        rows.append({"type": "separator"})
 
     return {
         "type": "bubble",
@@ -1058,7 +1049,7 @@ def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
             "layout": "vertical",
             "contents": [
                 {"type": "text", "text": "🏭 Sector Overview", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
-                {"type": "text", "text": "กลุ่มอุตสาหกรรม SET — แตะกลุ่มเพื่อดูหุ้น", "size": "xxs", "color": "#CCCCCC"},
+                {"type": "text", "text": "แตะชื่อกลุ่มเพื่อดูรายชื่อหุ้น", "size": "xxs", "color": "#CCCCCC"},
             ],
             "backgroundColor": "#0D0D1A",
             "paddingAll": "14px",
@@ -1066,11 +1057,12 @@ def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
         "body": {
             "type": "box",
             "layout": "vertical",
-            "spacing": "xs",
+            "spacing": "none",
             "contents": [
                 {
                     "type": "box",
                     "layout": "horizontal",
+                    "paddingBottom": "4px",
                     "contents": [
                         {"type": "text", "text": "Sector", "size": "xxs", "color": "#AAAAAA", "flex": 3},
                         {"type": "text", "text": "Stage2%", "size": "xxs", "color": "#AAAAAA", "flex": 2, "align": "end"},
@@ -1081,17 +1073,6 @@ def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
                 *rows,
             ],
             "paddingAll": "14px",
-        },
-        "footer": {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "xs",
-            "contents": [
-                {"type": "text", "text": "ดูหุ้นใน Sector:", "size": "xxs", "color": "#7F8C8D"},
-                {"type": "box", "layout": "horizontal", "contents": btn_row[:2]},
-                {"type": "box", "layout": "horizontal", "contents": btn_row[2:4]} if len(btn_row) > 2 else {"type": "box", "layout": "vertical", "contents": []},
-            ],
-            "paddingAll": "10px",
         },
     }
 
