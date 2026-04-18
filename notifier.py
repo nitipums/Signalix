@@ -678,7 +678,20 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
     if advice:
         body_contents.append(_captain_advice_box(advice))
 
-    share_url = f"https://social-plugins.line.me/lineit/share?url={quote(signal.tradingview_url)}" if signal.tradingview_url else ""
+    _pat_label = {"breakout": "Breakout", "ath_breakout": "ATH Breakout",
+                  "vcp": "VCP", "vcp_low_cheat": "VCP Low", "consolidating": "Consolidating"}
+    _sign = "+" if signal.change_pct >= 0 else ""
+    _share_text = (
+        f"📊 {signal.symbol} — {signal.name}\n"
+        f"Stage {signal.stage} | {_pat_label.get(signal.pattern, signal.pattern)}\n"
+        f"฿{signal.close:,.2f}  {_sign}{signal.change_pct:.2f}%"
+    )
+    if getattr(signal, "stop_loss", 0) > 0:
+        _share_text += f"\nStop Loss: ฿{signal.stop_loss:,.2f}"
+    if signal.tradingview_url:
+        _share_text += f"\n\n{signal.tradingview_url}"
+    share_url = f"https://line.me/R/share?text={quote(_share_text)}"
+
     wl_label = "－ Remove" if in_watchlist else "＋ Watchlist"
     wl_action_text = f"remove {signal.symbol}" if in_watchlist else f"add {signal.symbol}"
 
@@ -686,13 +699,10 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
         {"type": "button",
          "action": {"type": "message", "label": wl_label, "text": wl_action_text},
          "style": "secondary", "height": "sm", "flex": 1},
+        {"type": "button",
+         "action": {"type": "uri", "label": "📤 Share", "uri": share_url},
+         "style": "secondary", "height": "sm", "flex": 1},
     ]
-    if share_url:
-        footer_buttons.append(
-            {"type": "button",
-             "action": {"type": "uri", "label": "📤 Share", "uri": share_url},
-             "style": "secondary", "height": "sm", "flex": 1}
-        )
 
     return {
         "type": "bubble",
@@ -1496,7 +1506,7 @@ def build_guide_carousel() -> dict:
                 {"type": "separator"},
                 _cmd_row("watchlist", "Your Watchlist"),
                 {"type": "separator"},
-                _cmd_row("help", "Commands List"),
+                _cmd_row("score", "My Captain Score"),
             ],
             "paddingAll": "16px",
         },
@@ -1857,97 +1867,6 @@ def build_welcome_card(display_name: str) -> dict:
     }
 
 
-def build_help_card() -> dict:
-    """Help menu card — English-only with tappable command rows."""
-    def _section(title: str) -> dict:
-        return {
-            "type": "text", "text": title, "weight": "bold",
-            "size": "xxs", "color": "#F39C12", "margin": "lg",
-        }
-
-    def _cmd(cmd: str, desc: str) -> dict:
-        return {
-            "type": "box",
-            "layout": "horizontal",
-            "action": {"type": "message", "label": cmd, "text": cmd},
-            "paddingTop": "5px",
-            "paddingBottom": "5px",
-            "contents": [
-                {"type": "text", "text": cmd, "size": "xs", "weight": "bold", "color": "#2980B9", "flex": 3},
-                {"type": "text", "text": desc, "size": "xs", "color": "#7F8C8D", "flex": 5, "wrap": True},
-            ],
-        }
-
-    return {
-        "type": "bubble",
-        "size": "mega",
-        "header": {
-            "type": "box",
-            "layout": "vertical",
-            "contents": [
-                {"type": "text", "text": "📖 Signalix Commands", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
-                {"type": "text", "text": "Tap any command to run it", "size": "xxs", "color": "#BBDDFF"},
-            ],
-            "backgroundColor": "#1A237E",
-            "paddingAll": "16px",
-        },
-        "body": {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "none",
-            "contents": [
-                _section("MARKET"),
-                _cmd("market", "Market breadth overview"),
-                _cmd("index", "SET / SET50 / MAI indexes"),
-                _cmd("sector", "Sector trends"),
-                _section("STOCKS"),
-                _cmd("breakout", "Breakout stocks"),
-                _cmd("ath", "ATH breakout stocks"),
-                _cmd("vcp", "VCP pattern stocks"),
-                _cmd("stage2", "Stage 2 stocks"),
-                _cmd("stage1", "Stage 1 stocks"),
-                _section("WATCHLIST"),
-                _cmd("watchlist", "View your watchlist"),
-                _cmd("add PTT", "Add a stock"),
-                _cmd("remove PTT", "Remove a stock"),
-                _section("GUIDE"),
-                _cmd("guide", "Stage & pattern guide"),
-                {"type": "separator", "margin": "lg"},
-                {
-                    "type": "text",
-                    "text": "Type any symbol:  PTT  ·  ADVANC  ·  KBANK",
-                    "size": "xxs", "color": "#7F8C8D", "margin": "md", "wrap": True,
-                },
-            ],
-            "paddingAll": "16px",
-        },
-    }
-
-
-def _cmd_row(cmd: str, desc: str) -> dict:
-    return {
-        "type": "box",
-        "layout": "horizontal",
-        "contents": [
-            {"type": "text", "text": cmd, "size": "xs", "weight": "bold", "color": "#2980B9", "flex": 2},
-            {"type": "text", "text": desc, "size": "xs", "color": "#7F8C8D", "flex": 3},
-        ],
-    }
-
-
-def _cmd_button(cmd: str, desc: str) -> dict:
-    """Tappable command button — sends cmd text as a message when tapped."""
-    send_text = cmd.split(" / ")[0].strip()
-    label = f"{send_text}  —  {desc}"
-    if len(label) > 40:
-        label = label[:39] + "…"
-    return {
-        "type": "button",
-        "action": {"type": "message", "label": label, "text": send_text},
-        "style": "link",
-        "height": "sm",
-        "color": "#2980B9",
-    }
 
 
 def build_performance_review_card(rows: list[dict]) -> dict:
