@@ -856,7 +856,6 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
 
     # ── Help → Guide ──
     elif cmd in ("help", "ช่วย", "คำสั่ง", "?"):
-        global _guide_carousel_cache
         if _guide_carousel_cache is None:
             _guide_carousel_cache = build_guide_carousel()
         reply_flex(reply_token, "📖 คู่มือ Signalix", _guide_carousel_cache)
