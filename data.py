@@ -19,7 +19,10 @@ BANGKOK_TZ = pytz.timezone("Asia/Bangkok")
 
 # /root/.cache/py-yfinance may exist as a file (not dir) in container images,
 # causing TzCache creation to fail. Redirect to /tmp which is always writable.
-yf.set_tz_cache_location("/tmp/yfinance-tz")
+import os as _os
+_tz_dir = "/tmp/yfinance-tz"
+_os.makedirs(_tz_dir, exist_ok=True)  # pre-create so yfinance's own makedirs doesn't fail
+yf.set_tz_cache_location(_tz_dir)
 
 # ─── BigQuery (optional) ──────────────────────────────────────────────────────
 _bq_client = None
@@ -838,16 +841,21 @@ def load_scan_state(db) -> "dict | None":
 
 
 def save_signals_to_firestore(signals: list, db) -> None:
-    """Batch-write latest scan signals to Firestore signals/{symbol}."""
+    """Batch-write latest scan signals to Firestore signals/{symbol}.
+    Firestore batch limit is 500 ops — chunked to avoid silent failure."""
     if not signals or db is None:
         return
     try:
-        batch = db.batch()
-        for signal in signals:
-            doc_ref = db.collection("signals").document(signal.symbol)
-            batch.set(doc_ref, signal.__dict__)
-        batch.commit()
-        logger.info("Saved %d signals to Firestore", len(signals))
+        BATCH_LIMIT = 499
+        saved = 0
+        for i in range(0, len(signals), BATCH_LIMIT):
+            batch = db.batch()
+            for signal in signals[i:i + BATCH_LIMIT]:
+                doc_ref = db.collection("signals").document(signal.symbol)
+                batch.set(doc_ref, signal.__dict__)
+            batch.commit()
+            saved += len(signals[i:i + BATCH_LIMIT])
+        logger.info("Saved %d signals to Firestore (%d batches)", saved, -(-len(signals) // BATCH_LIMIT))
     except Exception as exc:
         logger.error("save_signals_to_firestore failed: %s", exc)
 

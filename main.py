@@ -240,7 +240,7 @@ async def _warm_from_firestore():
 
         if state:
             _last_breadth = state["breadth"]
-            _last_breadth_card = build_market_breadth_card(_last_breadth)
+            _last_breadth_card = build_market_breadth_card(_last_breadth, state["sector_trends"])
             _last_indexes = state["indexes"]
             _last_sector_trends = state["sector_trends"]
             try:
@@ -252,10 +252,11 @@ async def _warm_from_firestore():
             # Fallback: compute derived caches from signals when scan_state is missing/incomplete
             if not _last_breadth:
                 _last_breadth = compute_market_breadth(signals)
-                _last_breadth_card = build_market_breadth_card(_last_breadth)
+                _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends)
                 logger.info("Computed breadth from %d signals (scan_state missing)", len(signals))
             if not _last_sector_trends:
                 _last_sector_trends = compute_sector_trends(signals)
+                _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends)
                 logger.info("Computed sector_trends from signals (scan_state missing)")
 
         logger.info("Warmed from Firestore: %d signals, breadth=%s, indexes=%d, sectors=%d",
@@ -378,7 +379,7 @@ async def scan(
     _last_signals = signals
     _last_scan_time = datetime.now(BANGKOK_TZ)
     _last_breadth = breadth
-    _last_breadth_card = build_market_breadth_card(breadth)
+    _last_breadth_card = build_market_breadth_card(breadth, sector_trends)
     _last_sector_trends = sector_trends
     _last_indexes = indexes
 
@@ -688,7 +689,7 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     # ── Sector Trends: overview or drill-down ──
     elif cmd.startswith("sector ") and len(cmd) > 7:
         sector_name = cmd[7:].upper().strip()
-        sector_sigs = [s for s in _last_signals if SECTOR_MAP.get(s.symbol) == sector_name]
+        sector_sigs = [s for s in _last_signals if SECTOR_MAP.get(s.symbol) == sector_name and s.stage in (1, 2)]
         sector_sigs.sort(key=lambda s: s.strength_score, reverse=True)
         if sector_sigs:
             _reply_stock_list(reply_token, sector_sigs, f"🏭 {sector_name} — Leaders")

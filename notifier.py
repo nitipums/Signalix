@@ -80,13 +80,10 @@ STAGE_LABEL = {1: "Stage 1 – Basing", 2: "Stage 2 – Uptrend", 3: "Stage 3 �
 # LINE fetches these directly — must be publicly accessible.
 # Set to empty string to skip the hero for that pattern.
 PATTERN_IMAGES: dict[str, str] = {
-    # Fill in direct HTTPS PNG/JPEG URLs to show hero images in guide cards.
-    # Recommended: upload diagrams to GCS or GitHub static/ and paste URLs here.
-    # Cards work fine without images — empty string = no hero shown.
-    "stage_cycle": "",
-    "breakout": "",
-    "ath_breakout": "",
-    "vcp": "",
+    "stage_cycle":   "https://raw.githubusercontent.com/nitipums/Signalix/main/static/stage_cycle.jpg",
+    "breakout":      "https://raw.githubusercontent.com/nitipums/Signalix/main/static/breakout.jpg",
+    "ath_breakout":  "https://raw.githubusercontent.com/nitipums/Signalix/main/static/ath_breakout.jpg",
+    "vcp":           "https://raw.githubusercontent.com/nitipums/Signalix/main/static/vcp.jpg",
     "vcp_low_cheat": "",
     "consolidating": "",
 }
@@ -135,7 +132,7 @@ def _pct_color(pct: float) -> str:
     return "#7F8C8D"
 
 
-def build_market_breadth_card(breadth: MarketBreadth) -> dict:
+def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None = None) -> dict:
     """Build a Flex Bubble card for market breadth summary with SET index as hero header."""
     set_close = getattr(breadth, "set_index_close", 0.0)
     set_chg = getattr(breadth, "set_index_change_pct", 0.0)
@@ -146,7 +143,6 @@ def build_market_breadth_card(breadth: MarketBreadth) -> dict:
     above_cnt = getattr(breadth, "above_ma200", 0)
     below_cnt = getattr(breadth, "below_ma200", 0)
 
-    # Header background: green if up, red if down, navy if neutral
     if set_chg > 0:
         header_bg = "#1B5E20"
     elif set_chg < 0:
@@ -154,126 +150,128 @@ def build_market_breadth_card(breadth: MarketBreadth) -> dict:
     else:
         header_bg = "#1A237E"
 
-    # Header contents: SET index is the hero element
     header_contents = [
-        {"type": "text", "text": "📊 ภาพรวมตลาด SET", "size": "xs", "color": "#DDDDDD"},
+        {"type": "text", "text": "📊 Market Overview — SET", "size": "xs", "color": "#DDDDDD"},
     ]
     if set_close > 0:
-        header_contents += [
-            {
-                "type": "box",
-                "layout": "horizontal",
-                "contents": [
-                    {"type": "text", "text": f"{set_close:,.2f}", "weight": "bold", "size": "xxl", "color": "#FFFFFF", "flex": 1},
-                    {"type": "text", "text": f"{chg_sign}{set_chg:.2f}%", "size": "lg", "color": chg_color, "weight": "bold", "align": "end"},
-                ],
-            },
-        ]
+        header_contents.append({
+            "type": "box", "layout": "horizontal",
+            "contents": [
+                {"type": "text", "text": f"{set_close:,.2f}", "weight": "bold", "size": "xxl", "color": "#FFFFFF", "flex": 1},
+                {"type": "text", "text": f"{chg_sign}{set_chg:.2f}%", "size": "lg", "color": chg_color, "weight": "bold", "align": "end"},
+            ],
+        })
     header_contents.append(
         {"type": "text", "text": breadth.scanned_at[:16].replace("T", " "), "size": "xxs", "color": "#DDDDDD"}
     )
 
-    # MA200 visual bar
     above_flex = max(1, int(above_pct))
     below_flex = max(1, 100 - above_flex)
+
+    # Stage distribution rows — each box is tappable
+    stage_row = {
+        "type": "box", "layout": "horizontal",
+        "contents": [
+            _tappable_stage_box("Stage 2 ✅", breadth.stage2_count, "#27AE60", "stage2"),
+            _tappable_stage_box("Stage 1 ⚪", breadth.stage1_count, "#95A5A6", "stage1"),
+            _tappable_stage_box("Stage 3 ⚠️", breadth.stage3_count, "#E67E22", "stage3"),
+            _tappable_stage_box("Stage 4 ❌", breadth.stage4_count, "#E74C3C", "stage4"),
+        ],
+    }
+
+    # Key signal row — Breakout/VCP tappable, 52W High/Low informational
+    signal_row = {
+        "type": "box", "layout": "horizontal",
+        "contents": [
+            _tappable_kv_box("Breakout", str(breadth.breakout_count), "#F39C12", "breakout"),
+            _tappable_kv_box("VCP", str(breadth.vcp_count), "#2980B9", "vcp"),
+            _kv_box("52W High", str(breadth.new_highs_52w), "#8E44AD"),
+            _kv_box("52W Low", str(breadth.new_lows_52w), "#E74C3C"),
+        ],
+    }
+
+    body_contents = [
+        stage_row,
+        {"type": "text", "text": f"Stage 2: {breadth.stage2_pct}% of market",
+         "size": "xs", "color": "#27AE60" if breadth.stage2_pct >= 30 else "#7F8C8D",
+         "align": "center", "weight": "bold"},
+        {"type": "separator"},
+        {
+            "type": "box", "layout": "horizontal",
+            "contents": [
+                _kv_box("Up", str(breadth.advancing), "#27AE60"),
+                _kv_box("Down", str(breadth.declining), "#E74C3C"),
+                _kv_box("Flat", str(breadth.unchanged), "#7F8C8D"),
+            ],
+        },
+        {"type": "separator"},
+        {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "% Above MA200", "size": "xxs", "color": "#7F8C8D"},
+                {
+                    "type": "box", "layout": "horizontal",
+                    "contents": [
+                        {"type": "box", "layout": "vertical", "flex": above_flex,
+                         "backgroundColor": "#27AE60", "height": "8px", "contents": []},
+                        {"type": "box", "layout": "vertical", "flex": below_flex,
+                         "backgroundColor": "#E74C3C", "height": "8px", "contents": []},
+                    ],
+                },
+                {
+                    "type": "box", "layout": "horizontal",
+                    "contents": [
+                        {"type": "text", "text": f"Above {above_pct:.0f}% ({above_cnt})", "size": "xxs", "color": "#27AE60", "flex": 1},
+                        {"type": "text", "text": f"Below {below_pct:.0f}% ({below_cnt})", "size": "xxs", "color": "#E74C3C", "flex": 1, "align": "end"},
+                    ],
+                },
+            ],
+        },
+        {"type": "separator"},
+        signal_row,
+    ]
+
+    # Sector summary — top 3 sectors by stage2_pct
+    if sector_trends:
+        top3 = sorted(sector_trends, key=lambda s: s.stage2_pct, reverse=True)[:3]
+        sector_rows = [
+            {"type": "text", "text": "Top Sectors", "size": "xxs", "color": "#7F8C8D", "margin": "sm"},
+        ]
+        for s in top3:
+            sector_rows.append({
+                "type": "box", "layout": "horizontal",
+                "action": {"type": "message", "label": s.sector, "text": f"sector {s.sector}"},
+                "paddingTop": "4px", "paddingBottom": "4px",
+                "contents": [
+                    {"type": "text", "text": s.sector, "size": "xs", "weight": "bold", "color": "#FFFFFF", "flex": 3},
+                    {"type": "text", "text": f"{s.stage2_count} S2", "size": "xs", "color": "#27AE60", "flex": 2, "align": "center"},
+                    {"type": "text", "text": f"{s.stage2_pct:.0f}%", "size": "xs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+                ],
+            })
+        body_contents.append({"type": "separator"})
+        body_contents.extend(sector_rows)
 
     return {
         "type": "bubble",
         "size": "mega",
         "header": {
-            "type": "box",
-            "layout": "vertical",
+            "type": "box", "layout": "vertical",
             "contents": header_contents,
             "backgroundColor": header_bg,
             "paddingAll": "16px",
         },
         "body": {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "md",
-            "contents": [
-                # Stage distribution — Stage 2 most prominent
-                {
-                    "type": "box",
-                    "layout": "horizontal",
-                    "contents": [
-                        _stage_box("Stage 2 ✅", breadth.stage2_count, "#27AE60"),
-                        _stage_box("Stage 1 ⚪", breadth.stage1_count, "#95A5A6"),
-                        _stage_box("Stage 3 ⚠️", breadth.stage3_count, "#E67E22"),
-                        _stage_box("Stage 4 ❌", breadth.stage4_count, "#E74C3C"),
-                    ],
-                },
-                {
-                    "type": "text",
-                    "text": f"Stage 2: {breadth.stage2_pct}% ของตลาด",
-                    "size": "xs",
-                    "color": "#27AE60" if breadth.stage2_pct >= 30 else "#7F8C8D",
-                    "align": "center",
-                    "weight": "bold",
-                },
-                {"type": "separator"},
-                # Advancing / Declining
-                {
-                    "type": "box",
-                    "layout": "horizontal",
-                    "contents": [
-                        _kv_box("ขึ้น", str(breadth.advancing), "#27AE60"),
-                        _kv_box("ลง", str(breadth.declining), "#E74C3C"),
-                        _kv_box("ทรงตัว", str(breadth.unchanged), "#7F8C8D"),
-                    ],
-                },
-                {"type": "separator"},
-                # MA200 visual bar
-                {
-                    "type": "box",
-                    "layout": "vertical",
-                    "contents": [
-                        {"type": "text", "text": "% เหนือ MA200", "size": "xxs", "color": "#7F8C8D"},
-                        {
-                            "type": "box",
-                            "layout": "horizontal",
-                            "contents": [
-                                {"type": "box", "layout": "vertical", "flex": above_flex,
-                                 "backgroundColor": "#27AE60", "height": "8px", "contents": []},
-                                {"type": "box", "layout": "vertical", "flex": below_flex,
-                                 "backgroundColor": "#E74C3C", "height": "8px", "contents": []},
-                            ],
-                        },
-                        {
-                            "type": "box",
-                            "layout": "horizontal",
-                            "contents": [
-                                {"type": "text", "text": f"เหนือ {above_pct:.0f}% ({above_cnt})", "size": "xxs", "color": "#27AE60", "flex": 1},
-                                {"type": "text", "text": f"ต่ำกว่า {below_pct:.0f}% ({below_cnt})", "size": "xxs", "color": "#E74C3C", "flex": 1, "align": "end"},
-                            ],
-                        },
-                    ],
-                },
-                {"type": "separator"},
-                # Key signals
-                {
-                    "type": "box",
-                    "layout": "horizontal",
-                    "contents": [
-                        _kv_box("Breakout", str(breadth.breakout_count), "#F39C12"),
-                        _kv_box("VCP", str(breadth.vcp_count), "#2980B9"),
-                        _kv_box("52W High", str(breadth.new_highs_52w), "#8E44AD"),
-                        _kv_box("52W Low", str(breadth.new_lows_52w), "#E74C3C"),
-                    ],
-                },
-            ],
+            "type": "box", "layout": "vertical", "spacing": "md",
+            "contents": body_contents,
             "paddingAll": "16px",
         },
         "footer": {
-            "type": "box",
-            "layout": "horizontal",
-            "spacing": "sm",
+            "type": "box", "layout": "vertical", "paddingAll": "8px",
             "contents": [
-                {"type": "button", "action": {"type": "message", "label": "Stage 2", "text": "stage2"}, "style": "primary", "color": "#1B5E20", "height": "sm", "flex": 1},
-                {"type": "button", "action": {"type": "message", "label": "Breakout", "text": "breakout"}, "style": "primary", "color": "#E65100", "height": "sm", "flex": 1},
-                {"type": "button", "action": {"type": "message", "label": "VCP", "text": "vcp"}, "style": "primary", "color": "#0D47A1", "height": "sm", "flex": 1},
+                {"type": "button",
+                 "action": {"type": "message", "label": "📖 Guide", "text": "guide"},
+                 "style": "primary", "color": "#1A237E", "height": "sm"},
             ],
-            "paddingAll": "8px",
         },
     }
 
@@ -297,6 +295,28 @@ def _kv_box(label: str, value: str, color: str) -> dict:
         "layout": "vertical",
         "flex": 1,
         "alignItems": "center",
+        "contents": [
+            {"type": "text", "text": value, "weight": "bold", "size": "lg", "color": color, "align": "center"},
+            {"type": "text", "text": label, "size": "xxs", "color": "#7F8C8D", "align": "center"},
+        ],
+    }
+
+
+def _tappable_stage_box(label: str, count: int, color: str, cmd: str) -> dict:
+    return {
+        "type": "box", "layout": "vertical", "flex": 1, "alignItems": "center",
+        "action": {"type": "message", "label": label, "text": cmd},
+        "contents": [
+            {"type": "text", "text": str(count), "weight": "bold", "size": "xl", "color": color, "align": "center"},
+            {"type": "text", "text": label, "size": "xxs", "color": "#7F8C8D", "align": "center"},
+        ],
+    }
+
+
+def _tappable_kv_box(label: str, value: str, color: str, cmd: str) -> dict:
+    return {
+        "type": "box", "layout": "vertical", "flex": 1, "alignItems": "center",
+        "action": {"type": "message", "label": label, "text": cmd},
         "contents": [
             {"type": "text", "text": value, "weight": "bold", "size": "lg", "color": color, "align": "center"},
             {"type": "text", "text": label, "size": "xxs", "color": "#7F8C8D", "align": "center"},
@@ -1299,8 +1319,51 @@ def build_explain_card(metric: str, explanation: str) -> dict:
     }
 
 
+def _tappable_guide_row(label: str, desc: str, color: str, cmd: str) -> dict:
+    """Guide row that is tappable — sends cmd as a message when tapped."""
+    return {
+        "type": "box", "layout": "horizontal",
+        "action": {"type": "message", "label": label, "text": cmd},
+        "paddingTop": "6px", "paddingBottom": "6px",
+        "contents": [
+            {"type": "text", "text": label, "size": "sm", "color": color, "weight": "bold", "flex": 2},
+            {"type": "text", "text": desc, "size": "sm", "color": "#CCCCCC", "flex": 3, "wrap": True},
+        ],
+    }
+
+
 def build_guide_carousel() -> dict:
-    """4-bubble carousel: Stage / Pattern / Score+Volume / Quick Reference."""
+    """4-bubble carousel: Quick Reference first, then Stage / Pattern / Score+Volume."""
+    quickref_bubble = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [{"type": "text", "text": "⚡ Quick Reference", "weight": "bold", "size": "lg", "color": "#FFFFFF"}],
+            "backgroundColor": "#0D0D1A",
+            "paddingAll": "16px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "xs",
+            "contents": [
+                _cmd_button("market", "Market Breadth"),
+                _cmd_button("index", "SET50/MAI/sSET"),
+                _cmd_button("sector", "Sector Trends"),
+                _cmd_button("breakout", "Breakout Stocks"),
+                _cmd_button("vcp", "VCP Setups"),
+                _cmd_button("ath", "ATH Breakout"),
+                _cmd_button("stage2", "Stage 2 Stocks"),
+                _cmd_button("stage1", "Stage 1 Stocks"),
+                _cmd_button("watchlist", "Your Watchlist"),
+                _cmd_button("help", "Commands List"),
+            ],
+            "paddingAll": "16px",
+        },
+    }
+
     stage_bubble = {
         "type": "bubble",
         "size": "mega",
@@ -1314,17 +1377,19 @@ def build_guide_carousel() -> dict:
         "body": {
             "type": "box",
             "layout": "vertical",
-            "spacing": "sm",
+            "spacing": "none",
             "contents": [
-                {"type": "text", "text": "Minervini Stage วิเคราะห์ตาม MA50/150/200", "size": "xs", "color": "#7F8C8D", "wrap": True},
+                {"type": "text", "text": "Minervini Stage — MA50/150/200", "size": "xs", "color": "#7F8C8D", "wrap": True},
+                {"type": "separator", "margin": "sm"},
+                _tappable_guide_row("⚪ Stage 1", "Basing — accumulating", "#95A5A6", "stage1"),
                 {"type": "separator"},
-                _guide_row("⚪ Stage 1", "Basing — สะสมตัว รอ breakout", "#95A5A6"),
-                _guide_row("🟢 Stage 2", "Uptrend ✅ — โซนซื้อที่ดีที่สุด", "#27AE60"),
-                _guide_row("🟡 Stage 3", "Topping ⚠️ — ระวัง smart money ขาย", "#E67E22"),
-                _guide_row("🔴 Stage 4", "Downtrend ❌ — หลีกเลี่ยง", "#E74C3C"),
+                _tappable_guide_row("🟢 Stage 2", "Uptrend ✅ — best buy zone", "#27AE60", "stage2"),
                 {"type": "separator"},
-                {"type": "text", "text": "Stage 2 เงื่อนไข:", "weight": "bold", "size": "xs", "color": "#27AE60"},
-                {"type": "text", "text": "ราคา > MA150 > MA200\nMA200 กำลังขึ้น\nราคา ≥ 52W low × 1.25\nราคา ≥ 52W high × 0.75", "size": "xxs", "color": "#555555", "wrap": True},
+                _tappable_guide_row("🟡 Stage 3", "Topping ⚠️ — smart money selling", "#E67E22", "stage3"),
+                {"type": "separator"},
+                _tappable_guide_row("🔴 Stage 4", "Downtrend ❌ — avoid", "#E74C3C", "stage4"),
+                {"type": "separator", "margin": "sm"},
+                {"type": "text", "text": "Stage 2 requires: Price > MA150 > MA200\nMA200 rising · Price ≥ 52W low × 1.25", "size": "xs", "color": "#7F8C8D", "wrap": True},
             ],
             "paddingAll": "16px",
         },
@@ -1343,16 +1408,19 @@ def build_guide_carousel() -> dict:
         "body": {
             "type": "box",
             "layout": "vertical",
-            "spacing": "sm",
+            "spacing": "none",
             "contents": [
-                _guide_row("🚀 Breakout", "ราคา > 52W high + Vol ≥ 1.4x avg", "#27AE60"),
-                _guide_row("🏆 ATH Breakout", "Breakout + ใกล้/สูงกว่า All-Time High", "#F39C12"),
-                _guide_row("🔍 VCP", "ความผันผวนหดตัว 3+ ครั้ง + Vol แห้ง", "#2980B9"),
-                _guide_row("🎯 VCP Low Cheat", "Entry ที่ low ของ VCP contraction สุดท้าย", "#1ABC9C"),
-                _guide_row("⚙️ Consolidating", "Base หดตัว รอ breakout", "#95A5A6"),
-                _guide_row("📉 Going Down", "Stage 4 downtrend ชัดเจน", "#E74C3C"),
+                _tappable_guide_row("🚀 Breakout", "Price > 52W high + Vol ≥ 1.4x", "#27AE60", "breakout"),
                 {"type": "separator"},
-                {"type": "text", "text": "Strategy: ซื้อ Breakout/VCP ใน Stage 2 เท่านั้น", "size": "xxs", "color": "#7F8C8D", "wrap": True},
+                _tappable_guide_row("🏆 ATH Breakout", "Near/above All-Time High", "#F39C12", "ath"),
+                {"type": "separator"},
+                _tappable_guide_row("🔍 VCP", "Volatility contracting 3+ times", "#2980B9", "vcp"),
+                {"type": "separator"},
+                _guide_row("🎯 VCP Low Cheat", "Entry at VCP last contraction low", "#1ABC9C"),
+                {"type": "separator"},
+                _guide_row("⚙️ Consolidating", "Base forming, wait for breakout", "#95A5A6"),
+                {"type": "separator"},
+                {"type": "text", "text": "Strategy: Buy Breakout/VCP in Stage 2 only", "size": "xs", "color": "#7F8C8D", "wrap": True, "margin": "sm"},
             ],
             "paddingAll": "16px",
         },
@@ -1374,49 +1442,21 @@ def build_guide_carousel() -> dict:
             "spacing": "sm",
             "contents": [
                 {"type": "text", "text": "Strength Score (0–100)", "weight": "bold", "size": "sm", "color": "#F39C12"},
-                _guide_row("Stage 2", "+40 คะแนน", "#27AE60"),
-                _guide_row("ATH Breakout", "+25 คะแนน", "#F39C12"),
-                _guide_row("Breakout", "+20 คะแนน", "#27AE60"),
-                _guide_row("VCP", "+15 คะแนน", "#2980B9"),
-                _guide_row("Volume bonus", "สูงสุด +15 คะแนน", "#E67E22"),
-                _guide_row("52W proximity", "สูงสุด +20 คะแนน", "#9B59B6"),
+                _guide_row("Stage 2", "+40 pts", "#27AE60"),
+                _guide_row("ATH Breakout", "+25 pts", "#F39C12"),
+                _guide_row("Breakout", "+20 pts", "#27AE60"),
+                _guide_row("VCP", "+15 pts", "#2980B9"),
+                _guide_row("Volume bonus", "up to +15 pts", "#E67E22"),
+                _guide_row("52W proximity", "up to +20 pts", "#9B59B6"),
                 {"type": "separator"},
                 {"type": "text", "text": "Volume Ratio", "weight": "bold", "size": "sm", "color": "#F39C12"},
-                {"type": "text", "text": "= Volume วันนี้ ÷ ค่าเฉลี่ย 20 วัน\n1.0x ปกติ  |  1.4x+ สูง  |  2.0x+ สูงมาก", "size": "xxs", "color": "#555555", "wrap": True},
+                {"type": "text", "text": "= Today's vol ÷ 20-day avg\n1.0x normal  |  1.4x+ high  |  2.0x+ surge", "size": "xs", "color": "#7F8C8D", "wrap": True},
             ],
             "paddingAll": "16px",
         },
     }
 
-    quickref_bubble = {
-        "type": "bubble",
-        "size": "mega",
-        "header": {
-            "type": "box",
-            "layout": "vertical",
-            "contents": [{"type": "text", "text": "⚡ Quick Reference", "weight": "bold", "size": "lg", "color": "#FFFFFF"}],
-            "backgroundColor": "#4A148C",
-            "paddingAll": "16px",
-        },
-        "body": {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "xs",
-            "contents": [
-                _cmd_button("ตลาด", "Market Breadth"),
-                _cmd_button("ดัชนี", "SET50/MAI/sSET"),
-                _cmd_button("sector", "กลุ่มอุตสาหกรรม"),
-                _cmd_button("breakout", "หุ้น Breakout"),
-                _cmd_button("vcp", "VCP Setups"),
-                _cmd_button("stage2", "Stage 2 Stocks"),
-                _cmd_button("watchlist", "Watchlist ของคุณ"),
-                _cmd_button("guide", "คู่มือ (การ์ดนี้)"),
-            ],
-            "paddingAll": "16px",
-        },
-    }
-
-    return {"type": "carousel", "contents": [stage_bubble, pattern_bubble, score_vol_bubble, quickref_bubble]}
+    return {"type": "carousel", "contents": [quickref_bubble, stage_bubble, pattern_bubble, score_vol_bubble]}
 
 
 def build_stage_cycle_card() -> dict:
