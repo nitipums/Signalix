@@ -408,28 +408,9 @@ async def scan(
     if not body.broadcast:
         return {"scanned": len(signals), "mode": body.mode, "breadth": breadth.__dict__}
 
-    # Choose what to broadcast based on scan_type
-    if body.scan_type == "breadth":
-        _broadcast_breadth(breadth)
-
-    elif body.scan_type == "breakout":
-        breakouts = filter_signals(signals, pattern="breakout") + filter_signals(signals, pattern="ath_breakout")
-        if breakouts:
-            carousel = build_compact_stock_carousel(breakouts[:10], "🚀 Breakout Stocks")
-            broadcast_flex("Breakout Stocks Update", carousel)
-        else:
-            broadcast_text(f"🔍 สแกน Breakout เสร็จแล้ว ({len(signals)} หุ้น) — ไม่พบสัญญาณ Breakout วันนี้")
-
-    elif body.scan_type == "vcp":
-        vcps = filter_signals(signals, pattern="vcp") + filter_signals(signals, pattern="vcp_low_cheat")
-        if vcps:
-            carousel = build_compact_stock_carousel(vcps[:10], "🔍 VCP Setups")
-            broadcast_flex("VCP Pattern Update", carousel)
-        else:
-            broadcast_text(f"🔍 สแกน VCP เสร็จแล้ว ({len(signals)} หุ้น) — ไม่พบ VCP Setup วันนี้")
-
-    else:  # "full" — post-close full report
-        _broadcast_full_report(breadth, signals)
+    # Always broadcast the full report (market + breakouts + fallen + per-user watchlist)
+    # regardless of scan_type — every scheduled scan sends the same consistent output
+    _broadcast_full_report(breadth, signals)
 
     return {"scanned": len(signals), "mode": body.mode, "broadcast": body.scan_type}
 
@@ -559,7 +540,7 @@ async def admin_check(x_scan_secret: Optional[str] = Header(default=None)):
 
 
 def _broadcast_breadth(breadth: MarketBreadth) -> None:
-    card = _last_breadth_card or build_market_breadth_card(breadth)
+    card = _last_breadth_card or build_market_breadth_card(breadth, _last_sector_trends, _last_indexes)
     broadcast_flex("ภาพรวมตลาด SET", card)
 
 
@@ -587,7 +568,7 @@ def _broadcast_full_report(breadth: MarketBreadth, signals: list[StockSignal]) -
 
     # 4. Per-user watchlist push (multicast — each user gets their own watchlist snapshot)
     if FIRESTORE_AVAILABLE and _db:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         loop.run_in_executor(None, _push_watchlist_updates_sync, signals)
 
 
