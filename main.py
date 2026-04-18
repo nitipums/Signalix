@@ -838,20 +838,20 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         _reply_stock_list(reply_token, signals, "🎯 VCP Low Cheat Stocks")
 
     elif cmd in ("stage2", "stage 2"):
-        signals = _get_signals_for(stage=2)
-        _reply_stock_list(reply_token, signals, "🟢 Stage 2 Stocks", text_only=True)
+        all_sigs = _get_signals_for(stage=2)
+        _reply_stock_list(reply_token, all_sigs[:40], f"🟢 Stage 2 — Top 40 ({len(all_sigs)} total)")
 
     elif cmd in ("stage1", "stage 1"):
-        signals = _get_signals_for(stage=1)
-        _reply_stock_list(reply_token, signals, "⚪ Stage 1 Stocks", text_only=True)
+        all_sigs = _get_signals_for(stage=1)
+        _reply_stock_list(reply_token, all_sigs[:40], f"⚪ Stage 1 — Top 40 ({len(all_sigs)} total)")
 
     elif cmd in ("stage3", "stage 3"):
-        signals = _get_signals_for(stage=3)
-        _reply_stock_list(reply_token, signals, "🟡 Stage 3 Stocks", text_only=True)
+        all_sigs = _get_signals_for(stage=3)
+        _reply_stock_list(reply_token, all_sigs[:40], f"🟡 Stage 3 — Top 40 ({len(all_sigs)} total)")
 
     elif cmd in ("stage4", "stage 4"):
-        signals = _get_signals_for(stage=4)
-        _reply_stock_list(reply_token, signals, "🔴 Stage 4 Stocks", text_only=True)
+        all_sigs = _get_signals_for(stage=4)
+        _reply_stock_list(reply_token, all_sigs[:40], f"🔴 Stage 4 — Top 40 ({len(all_sigs)} total)")
 
     elif cmd in ("consolidating", "consolidate", "coil"):
         signals = _get_signals_for(pattern="consolidating")
