@@ -4,6 +4,11 @@
 - Always commit and push to the current working branch after finishing any task or set of changes.
 - Development branch: `claude/optimize-performance-ui-CqM7o`
 - Use `git push -u origin <branch>` on first push of a branch.
+- **ALWAYS merge to `main` and push `main` after every task completes.** This is required every time — no exceptions.
+  ```
+  git checkout main && git merge claude/optimize-performance-ui-CqM7o && git push origin main
+  git checkout claude/optimize-performance-ui-CqM7o
+  ```
 
 ## Project overview
 LINE Bot for Thai SET stock market scanning using Minervini stage analysis.
