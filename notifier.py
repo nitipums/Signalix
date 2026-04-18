@@ -195,7 +195,7 @@ def _cmd_row(cmd: str, desc: str) -> dict:
     }
 
 
-def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None = None) -> dict:
+def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None = None, indexes: dict | None = None) -> dict:
     """Build a Flex Bubble card for market breadth summary with SET index as hero header."""
     set_close = getattr(breadth, "set_index_close", 0.0)
     set_chg = getattr(breadth, "set_index_change_pct", 0.0)
@@ -325,6 +325,25 @@ def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None
             })
         body_contents.append({"type": "separator"})
         body_contents.extend(sector_rows)
+
+    # SET Index RSI/MACD overview
+    set_idx = (indexes or {}).get("SET", {})
+    if set_idx:
+        _rsi = set_idx.get("rsi", 0) or 0
+        _macd_h = set_idx.get("macd_hist", set_idx.get("macd_histogram", 0)) or 0
+        _rsi_color = "#E74C3C" if _rsi > 70 else "#27AE60" if _rsi < 40 else "#F39C12"
+        _macd_color = "#27AE60" if _macd_h > 0 else "#E74C3C"
+        _macd_label = "▲ Bullish" if _macd_h > 0 else "▼ Bearish"
+        body_contents.append({"type": "separator"})
+        body_contents.append({
+            "type": "box", "layout": "horizontal", "paddingTop": "4px", "paddingBottom": "4px",
+            "contents": [
+                {"type": "text", "text": "SET RSI", "size": "xxs", "color": "#7F8C8D", "flex": 2},
+                {"type": "text", "text": f"{_rsi:.0f}", "size": "xs", "weight": "bold", "color": _rsi_color, "flex": 1},
+                {"type": "text", "text": "MACD", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+                {"type": "text", "text": _macd_label, "size": "xs", "weight": "bold", "color": _macd_color, "flex": 2, "align": "end"},
+            ],
+        })
 
     # Captain Signal market advice
     body_contents.append({"type": "separator"})
@@ -690,6 +709,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
         _share_text += f"\nStop Loss: ฿{signal.stop_loss:,.2f}"
     if signal.tradingview_url:
         _share_text += f"\n\n{signal.tradingview_url}"
+    _share_text += "\n\n📱 Signalix: https://lin.ee/pXKkaZJ"
     share_url = f"https://line.me/R/share?text={quote(_share_text)}"
 
     wl_label = "－ Remove" if in_watchlist else "＋ Watchlist"
@@ -1534,10 +1554,10 @@ def build_guide_carousel() -> dict:
             "contents": [
                 {"type": "text", "text": "Minervini Stage วิเคราะห์ตาม MA50/150/200", "size": "xs", "color": "#7F8C8D", "wrap": True},
                 {"type": "separator"},
-                _guide_row("⚪ Stage 1", "Basing — สะสมตัว รอ breakout", "#95A5A6"),
-                _guide_row("🟢 Stage 2", "Uptrend ✅ — โซนซื้อที่ดีที่สุด", "#27AE60"),
-                _guide_row("🟡 Stage 3", "Topping ⚠️ — ระวัง smart money ขาย", "#E67E22"),
-                _guide_row("🔴 Stage 4", "Downtrend ❌ — หลีกเลี่ยง", "#E74C3C"),
+                _guide_row("⚪ Stage 1", "Basing — สะสมตัว รอ breakout", "#95A5A6", cmd="stage1"),
+                _guide_row("🟢 Stage 2", "Uptrend ✅ — โซนซื้อที่ดีที่สุด", "#27AE60", cmd="stage2"),
+                _guide_row("🟡 Stage 3", "Topping ⚠️ — ระวัง smart money ขาย", "#E67E22", cmd="stage3"),
+                _guide_row("🔴 Stage 4", "Downtrend ❌ — หลีกเลี่ยง", "#E74C3C", cmd="stage4"),
                 {"type": "separator"},
                 {"type": "text", "text": "Stage 2 เงื่อนไข:", "weight": "bold", "size": "xs", "color": "#27AE60"},
                 {"type": "text", "text": "ราคา > MA150 > MA200\nMA200 กำลังขึ้น\nราคา ≥ 52W low × 1.25\nราคา ≥ 52W high × 0.75", "size": "xxs", "color": "#555555", "wrap": True},
@@ -1561,11 +1581,11 @@ def build_guide_carousel() -> dict:
             "layout": "vertical",
             "spacing": "sm",
             "contents": [
-                _guide_row("🚀 Breakout", "ราคา > 52W high + Vol ≥ 1.4x avg", "#27AE60"),
-                _guide_row("🏆 ATH Breakout", "Breakout + ใกล้/สูงกว่า All-Time High", "#F39C12"),
-                _guide_row("🔍 VCP", "ความผันผวนหดตัว 3+ ครั้ง + Vol แห้ง", "#2980B9"),
-                _guide_row("🎯 VCP Low Cheat", "Entry ที่ low ของ VCP contraction สุดท้าย", "#1ABC9C"),
-                _guide_row("⚙️ Consolidating", "Base หดตัว รอ breakout", "#95A5A6"),
+                _guide_row("🚀 Breakout", "ราคา > 52W high + Vol ≥ 1.4x avg", "#27AE60", cmd="breakout"),
+                _guide_row("🏆 ATH Breakout", "Breakout + ใกล้/สูงกว่า All-Time High", "#F39C12", cmd="ath"),
+                _guide_row("🔍 VCP", "ความผันผวนหดตัว 3+ ครั้ง + Vol แห้ง", "#2980B9", cmd="vcp"),
+                _guide_row("🎯 VCP Low Cheat", "Entry ที่ low ของ VCP contraction สุดท้าย", "#1ABC9C", cmd="vcp low cheat"),
+                _guide_row("⚙️ Consolidating", "Base หดตัว รอ breakout", "#95A5A6", cmd="consolidating"),
                 _guide_row("📉 Going Down", "Stage 4 downtrend ชัดเจน", "#E74C3C"),
                 {"type": "separator"},
                 {"type": "text", "text": "Strategy: ซื้อ Breakout/VCP ใน Stage 2 เท่านั้น", "size": "xxs", "color": "#7F8C8D", "wrap": True},
@@ -1786,15 +1806,19 @@ def build_pattern_detail_card(pattern: str) -> dict:
     return bubble
 
 
-def _guide_row(label: str, desc: str, color: str = "#333333") -> dict:
-    return {
+def _guide_row(label: str, desc: str, color: str = "#333333", cmd: str = "") -> dict:
+    box: dict = {
         "type": "box",
         "layout": "horizontal",
+        "paddingTop": "4px", "paddingBottom": "4px",
         "contents": [
             {"type": "text", "text": label, "size": "xs", "color": color, "weight": "bold", "flex": 2},
             {"type": "text", "text": desc, "size": "xs", "color": "#555555", "flex": 3, "wrap": True},
         ],
     }
+    if cmd:
+        box["action"] = {"type": "message", "label": label[:20], "text": cmd}
+    return box
 
 
 def build_welcome_card(display_name: str) -> dict:
@@ -1961,6 +1985,51 @@ def build_score_card(user_data: dict) -> dict:
                     *history_rows,
                 ] if history_rows else []),
             ],
+        },
+    }
+
+
+def build_simple_tappable_list(signals: list[StockSignal], title: str, max_items: int = 100) -> dict:
+    """Compact tappable list bubble for stage/filter results. Each row sends symbol to bot."""
+    PAT_ABBR = {"breakout": "BO", "ath_breakout": "ATH", "vcp": "VCP",
+                "vcp_low_cheat": "VCPl", "consolidating": "CON"}
+    top = signals[:max_items]
+    rows = []
+    for i, s in enumerate(top, 1):
+        sign = "+" if s.change_pct >= 0 else ""
+        chg_color = "#27AE60" if s.change_pct >= 0 else "#E74C3C"
+        pat = PAT_ABBR.get(s.pattern, s.pattern[:3].upper())
+        rows.append({
+            "type": "box", "layout": "horizontal",
+            "action": {"type": "message", "label": s.symbol, "text": s.symbol},
+            "paddingTop": "5px", "paddingBottom": "5px",
+            "contents": [
+                {"type": "text", "text": f"{i}.", "size": "xxs", "color": "#7F8C8D", "flex": 1},
+                {"type": "text", "text": s.symbol, "size": "sm", "weight": "bold", "color": "#FFFFFF", "flex": 3},
+                {"type": "text", "text": f"฿{s.close:,.0f}", "size": "xs", "color": "#CCCCCC", "flex": 3, "align": "end"},
+                {"type": "text", "text": f"{sign}{s.change_pct:.1f}%", "size": "xs", "color": chg_color, "flex": 2, "align": "end"},
+                {"type": "text", "text": pat, "size": "xxs", "color": "#95A5A6", "flex": 2, "align": "end"},
+            ],
+        })
+        if i % 10 == 0 and i < len(top):
+            rows.append({"type": "separator"})
+    total = len(signals)
+    shown = len(top)
+    footer_note = f"แสดง {shown}/{total}  ·  แตะชื่อหุ้นเพื่อดูรายละเอียด" if total > shown else f"{total} หุ้น  ·  แตะชื่อหุ้นเพื่อดูรายละเอียด"
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "contents": [{"type": "text", "text": title, "weight": "bold", "size": "md", "color": "#FFFFFF"}],
+            "backgroundColor": "#1A237E", "paddingAll": "12px",
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "none",
+            "contents": rows, "paddingAll": "12px",
+        },
+        "footer": {
+            "type": "box", "layout": "vertical", "paddingAll": "8px",
+            "contents": [{"type": "text", "text": footer_note, "size": "xxs", "color": "#7F8C8D", "align": "center", "wrap": True}],
         },
     }
 
