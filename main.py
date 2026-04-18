@@ -8,6 +8,7 @@ Endpoints:
 """
 
 import asyncio
+import functools
 import hashlib
 import hmac
 import logging
@@ -33,9 +34,10 @@ from analyzer import (
 from config import get_settings
 from data import (
     SECTOR_MAP, append_new_candles_to_bq, BQ_AVAILABLE, fetch_indexes,
-    fetch_ohlcv, fetch_ohlcv_settrade, get_fundamentals, get_stock_list,
-    init_bq, load_ath_cache, load_ath_from_bq, load_signals_from_firestore,
-    resolve_symbol, save_signals_to_firestore, sync_ath_to_firestore, tradingview_url,
+    fetch_ohlcv, fetch_ohlcv_settrade, get_cached_fundamentals, get_fundamentals,
+    get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
+    load_signals_from_firestore, resolve_symbol, save_signals_to_firestore,
+    sync_ath_to_firestore, tradingview_url,
 )
 from notifier import (
     broadcast_flex,
@@ -54,6 +56,7 @@ from notifier import (
     build_watchlist_stock_card,
     build_welcome_card,
     get_webhook_handler,
+    init_notifier,
     reply_flex,
     reply_flex_and_text,
     reply_text,
@@ -189,9 +192,13 @@ _EXPLANATIONS: dict[str, str] = {
 
 
 @app.on_event("startup")
-async def startup_scan():
-    """Run a background scan on startup so cache is warm immediately."""
-    import asyncio
+async def startup_event():
+    """Initialize singletons then kick off the background scan."""
+    loop = asyncio.get_running_loop()
+    settings = get_settings()
+    if settings.gcp_project_id:
+        await loop.run_in_executor(None, init_bq, settings.gcp_project_id, settings.bq_dataset)
+    init_notifier(settings.line_channel_access_token)
     asyncio.create_task(_background_scan())
 
 
@@ -200,26 +207,35 @@ async def _background_scan():
     global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
     try:
         logger.info("Running startup scan...")
-        # Load ATH: prefer BQ (computed from full history), fall back to Firestore
+        loop = asyncio.get_running_loop()
+
+        # Load ATH non-blocking: prefer BQ, fall back to Firestore
         if BQ_AVAILABLE:
-            _ath_cache = load_ath_from_bq()
+            _ath_cache = await loop.run_in_executor(None, load_ath_from_bq)
             logger.info("ATH cache loaded from BQ: %d entries", len(_ath_cache))
         elif FIRESTORE_AVAILABLE and _db:
-            _ath_cache = load_ath_cache(_db)
+            _ath_cache = await loop.run_in_executor(None, load_ath_cache, _db)
             logger.info("ATH cache loaded from Firestore: %d entries", len(_ath_cache))
+
+        # Pre-load last signals from Firestore for warm responses before scan finishes
         if FIRESTORE_AVAILABLE and _db and not _last_signals:
-            pre_signals = load_signals_from_firestore(_db)
+            pre_signals = await loop.run_in_executor(None, load_signals_from_firestore, _db)
             if pre_signals:
                 _last_signals = pre_signals
-        signals, all_data = run_full_scan(ath_cache=_ath_cache)
+
+        # Run full scan — most expensive call, ~30-60s, must not block event loop
+        signals, all_data = await loop.run_in_executor(
+            None, functools.partial(run_full_scan, ath_cache=_ath_cache)
+        )
         _last_signals = signals
         _last_scan_time = datetime.now(BANGKOK_TZ)
         _last_breadth = compute_market_breadth(signals, index_df=all_data.get("SET"))
         _last_breadth_card = build_market_breadth_card(_last_breadth)
         _last_sector_trends = compute_sector_trends(signals)
-        _last_indexes = fetch_indexes()
+        _last_indexes = await loop.run_in_executor(None, fetch_indexes)
         logger.info("Startup scan complete: %d stocks", len(signals))
-        loop = asyncio.get_event_loop()
+
+        # Persist to Firestore + BQ (fire-and-forget)
         if FIRESTORE_AVAILABLE and _db:
             loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
         if BQ_AVAILABLE:
@@ -305,15 +321,20 @@ async def scan(
     global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
 
     logger.info("Running scan: type=%s broadcast=%s", body.scan_type, body.broadcast)
+    loop = asyncio.get_running_loop()
+
     if not _ath_cache:
         if BQ_AVAILABLE:
-            _ath_cache = load_ath_from_bq()
+            _ath_cache = await loop.run_in_executor(None, load_ath_from_bq)
         elif FIRESTORE_AVAILABLE and _db:
-            _ath_cache = load_ath_cache(_db)
-    signals, all_data = run_full_scan(ath_cache=_ath_cache)
+            _ath_cache = await loop.run_in_executor(None, load_ath_cache, _db)
+
+    signals, all_data = await loop.run_in_executor(
+        None, functools.partial(run_full_scan, ath_cache=_ath_cache)
+    )
     breadth = compute_market_breadth(signals, index_df=all_data.get("SET"))
     sector_trends = compute_sector_trends(signals)
-    indexes = fetch_indexes()
+    indexes = await loop.run_in_executor(None, fetch_indexes)
 
     _last_signals = signals
     _last_scan_time = datetime.now(BANGKOK_TZ)
@@ -322,10 +343,9 @@ async def scan(
     _last_sector_trends = sector_trends
     _last_indexes = indexes
 
-    # Persist to Firestore + BigQuery
-    loop = asyncio.get_event_loop()
+    # Persist to Firestore + BigQuery (fire-and-forget)
     if FIRESTORE_AVAILABLE and _db:
-        _save_breadth_to_firestore(breadth)
+        loop.run_in_executor(None, _save_breadth_to_firestore, breadth)
         loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
     if BQ_AVAILABLE:
         loop.run_in_executor(None, append_new_candles_to_bq, all_data)
@@ -666,11 +686,11 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         if not wl_signals:
             reply_text(reply_token, "ไม่มีข้อมูลหุ้นใน Watchlist ขณะนี้")
             return
-        # ≤5 stocks: show deep insight cards with fundamentals
+        # ≤5 stocks: show deep insight cards with fundamentals (cache-only, no yfinance)
         if len(wl_signals) <= 5:
             bubbles = []
             for sig in wl_signals:
-                fund = get_fundamentals(sig.symbol, _db if FIRESTORE_AVAILABLE else None)
+                fund = get_cached_fundamentals(sig.symbol, _db if FIRESTORE_AVAILABLE else None)
                 bubbles.append(build_watchlist_stock_card(sig, fund))
             if len(bubbles) == 1:
                 reply_flex(reply_token, f"📌 {wl_signals[0].symbol}", bubbles[0])
