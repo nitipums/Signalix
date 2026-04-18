@@ -80,10 +80,13 @@ STAGE_LABEL = {1: "Stage 1 – Basing", 2: "Stage 2 – Uptrend", 3: "Stage 3 �
 # LINE fetches these directly — must be publicly accessible.
 # Set to empty string to skip the hero for that pattern.
 PATTERN_IMAGES: dict[str, str] = {
-    "stage_cycle": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/69/Minervini_Stage_Analysis.png/640px-Minervini_Stage_Analysis.png",
-    "breakout": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Breakout_technical_analysis.png/640px-Breakout_technical_analysis.png",
+    # Fill in direct HTTPS PNG/JPEG URLs to show hero images in guide cards.
+    # Recommended: upload diagrams to GCS or GitHub static/ and paste URLs here.
+    # Cards work fine without images — empty string = no hero shown.
+    "stage_cycle": "",
+    "breakout": "",
     "ath_breakout": "",
-    "vcp": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/5b/Volatility_contraction_pattern.png/640px-Volatility_contraction_pattern.png",
+    "vcp": "",
     "vcp_low_cheat": "",
     "consolidating": "",
 }
