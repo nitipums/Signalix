@@ -38,9 +38,11 @@ from data import (
     fetch_indexes_with_history, fetch_latest_candles, fetch_ohlcv,
     fetch_ohlcv_settrade, get_cached_fundamentals, get_fundamentals,
     get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
-    load_scan_state, load_signal_from_firestore, load_signals_from_firestore, resolve_symbol,
+    increment_stage4_views, load_breakout_review,
+    load_scan_state, load_signal_from_firestore, load_signals_from_firestore,
+    log_breakout, resolve_symbol,
     save_scan_state, save_signals_to_firestore,
-    sync_ath_to_firestore, tradingview_url,
+    sync_ath_to_firestore, tradingview_url, update_user_score,
 )
 from notifier import (
     broadcast_flex,
@@ -58,10 +60,14 @@ from notifier import (
     build_single_stock_card,
     build_stage_cycle_card,
     build_stage_picker_card,
+    build_performance_review_card,
+    build_score_card,
+    build_watchlist_carousel,
     build_watchlist_stock_card,
     build_welcome_card,
     get_webhook_handler,
     init_notifier,
+    multicast_flex,
     reply_flex,
     reply_text,
 )
@@ -387,6 +393,10 @@ async def scan(
     if FIRESTORE_AVAILABLE and _db:
         loop.run_in_executor(None, save_scan_state, _db, breadth, indexes, sector_trends, body.scan_type, body.mode)
         loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
+        # Log new Stage-2 breakouts for performance review
+        for _sig in signals:
+            if _sig.stage == 2 and _sig.pattern in ("breakout", "ath_breakout"):
+                loop.run_in_executor(None, log_breakout, _db, _sig)
     if BQ_AVAILABLE and body.mode == "full":
         loop.run_in_executor(None, append_new_candles_to_bq, all_data)
     del all_data  # release 900+ DataFrames; BQ executor holds its own ref
@@ -550,32 +560,56 @@ def _broadcast_breadth(breadth: MarketBreadth) -> None:
 
 
 def _broadcast_full_report(breadth: MarketBreadth, signals: list[StockSignal]) -> None:
-    # 1. Market breadth bubble
+    # 1. Market breadth bubble (tappable — all stage/sector links inside)
     _broadcast_breadth(breadth)
 
-    # 2. Top Stage 2 stocks — ranked list card
-    stage2 = filter_signals(signals, stage=2)[:30]
-    if stage2:
-        bubble = build_ranked_stock_list_bubble(stage2, "🟢 Stage 2 Stocks")
-        broadcast_flex("Stage 2 Stocks", bubble)
-
-    # 3. Breakout + ATH breakout — ranked list card
-    breakouts = (
-        filter_signals(signals, pattern="breakout")
-        + filter_signals(signals, pattern="ath_breakout")
-    )[:30]
+    # 2. Breakout + ATH breakout
+    breakouts = sorted(
+        [s for s in signals if s.stage == 2 and s.pattern in ("breakout", "ath_breakout")],
+        key=lambda s: s.strength_score, reverse=True,
+    )[:20]
     if breakouts:
-        bubble = build_ranked_stock_list_bubble(breakouts, "🚀 Breakout Stocks")
-        broadcast_flex("Breakout Stocks", bubble)
+        bubble = build_ranked_stock_list_bubble(breakouts, "🚀 Breaking Out")
+        broadcast_flex("Breaking Out", bubble)
 
-    # 4. VCP setups — ranked list card
-    vcps = (
-        filter_signals(signals, pattern="vcp")
-        + filter_signals(signals, pattern="vcp_low_cheat")
-    )[:30]
-    if vcps:
-        bubble = build_ranked_stock_list_bubble(vcps, "🔍 VCP Setups")
-        broadcast_flex("VCP Setups", bubble)
+    # 3. Trend-change / fallen stocks (Stage 3-4 with negative day)
+    fallen = sorted(
+        [s for s in signals if s.stage in (3, 4) and s.change_pct < -1.5],
+        key=lambda s: s.change_pct,
+    )[:20]
+    if fallen:
+        bubble = build_ranked_stock_list_bubble(fallen, "⚠️ Trend Change Alert")
+        broadcast_flex("Trend Change Alert", bubble)
+
+    # 4. Per-user watchlist push (multicast — each user gets their own watchlist snapshot)
+    if FIRESTORE_AVAILABLE and _db:
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, _push_watchlist_updates_sync, signals)
+
+
+def _push_watchlist_updates_sync(signals: list[StockSignal]) -> None:
+    """Sync helper: multicast each user's watchlist snapshot. Runs in executor."""
+    if not FIRESTORE_AVAILABLE or not _db:
+        return
+    sigs_map = {s.symbol: s for s in signals}
+    try:
+        users = list(_db.collection("users").stream())
+    except Exception as exc:
+        logger.error("_push_watchlist_updates_sync: fetch users failed: %s", exc)
+        return
+    for u in users:
+        data = u.to_dict() or {}
+        wl = data.get("watchlist", [])
+        if not wl:
+            continue
+        wl_sigs = [sigs_map[sym] for sym in wl if sym in sigs_map]
+        if not wl_sigs:
+            continue
+        try:
+            card = build_watchlist_carousel(wl_sigs)
+            multicast_flex([u.id], "📌 Watchlist Update", card)
+        except Exception as exc:
+            logger.error("watchlist push failed for %s: %s", u.id, exc)
 
 
 # ─── LINE Webhook ──────────────────────────────────────────────────────────────
@@ -746,19 +780,8 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         if not wl_signals:
             reply_text(reply_token, "ไม่มีข้อมูลหุ้นใน Watchlist ขณะนี้")
             return
-        # ≤5 stocks: show deep insight cards with fundamentals (cache-only, no yfinance)
-        if len(wl_signals) <= 5:
-            bubbles = []
-            for sig in wl_signals:
-                fund = get_cached_fundamentals(sig.symbol, _db if FIRESTORE_AVAILABLE else None)
-                bubbles.append(build_watchlist_stock_card(sig, fund))
-            if len(bubbles) == 1:
-                reply_flex(reply_token, f"📌 {wl_signals[0].symbol}", bubbles[0])
-            else:
-                carousel = {"type": "carousel", "contents": bubbles}
-                reply_flex(reply_token, f"📌 Watchlist ({len(bubbles)} หุ้น)", carousel)
-        else:
-            _reply_stock_list(reply_token, wl_signals, f"📌 Watchlist ({len(wl_signals)} หุ้น)")
+        card = build_watchlist_carousel(wl_signals)
+        reply_flex(reply_token, f"📌 Watchlist ({len(wl_signals)} หุ้น)", card)
 
     # ── Watchlist: add ──
     elif cmd.startswith("add ") or cmd.startswith("เพิ่ม "):
@@ -841,11 +864,31 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             _help_card_cache = build_help_card()
         reply_flex(reply_token, "คำสั่ง Signalix", _help_card_cache)
 
+    # ── Performance Review ──
+    elif cmd in ("review", "performance", "ผลงาน"):
+        if not FIRESTORE_AVAILABLE or not _db:
+            reply_text(reply_token, "ไม่สามารถโหลดข้อมูลได้ขณะนี้")
+            return
+        rows = await loop.run_in_executor(None, load_breakout_review, _db, _last_signals)
+        card = build_performance_review_card(rows)
+        reply_flex(reply_token, "📊 Breakout Performance", card)
+
+    # ── User Score ──
+    elif cmd in ("score", "คะแนน", "myscore"):
+        if not user_id or not FIRESTORE_AVAILABLE or not _db:
+            reply_text(reply_token, "ไม่สามารถโหลดข้อมูลได้ขณะนี้")
+            return
+        user_data = await loop.run_in_executor(
+            None, lambda: (_db.collection("users").document(user_id).get().to_dict() or {})
+        )
+        card = build_score_card(user_data)
+        reply_flex(reply_token, "⭐ Captain's Score", card)
+
     # ── Single stock lookup ──
     else:
         symbol = resolve_symbol(text)
         if symbol:
-            _reply_single_stock(reply_token, symbol)
+            _reply_single_stock(reply_token, symbol, user_id)
         else:
             reply_text(
                 reply_token,
@@ -876,35 +919,52 @@ def _cache_is_fresh() -> bool:
     return age < _CACHE_TTL_MINUTES
 
 
-def _reply_single_stock(reply_token: str, symbol: str) -> None:
+def _reply_single_stock(reply_token: str, symbol: str, user_id: str = "") -> None:
     # Cache-first: serve from last scan if cache is fresh (< 15 min old)
     cached = next((s for s in _last_signals if s.symbol == symbol), None)
+    signal_to_show = None
     if cached and _cache_is_fresh():
         reply_flex(reply_token, f"วิเคราะห์ {symbol}", build_single_stock_card(cached))
-        return
-    # Cache stale or miss: try Settrade API only (no yfinance for on-demand)
-    df = fetch_ohlcv_settrade(symbol)
-    if df is None:
-        # Fall back to stale in-memory cache first, then Firestore, then error
-        if cached:
-            reply_flex(reply_token, f"วิเคราะห์ {symbol} (แคช)", build_single_stock_card(cached))
-            return
-        if FIRESTORE_AVAILABLE and _db:
-            try:
-                doc = _db.collection("signals").document(symbol).get()
-                if doc.exists:
-                    fs_signal = StockSignal(**doc.to_dict())
-                    reply_flex(reply_token, f"วิเคราะห์ {symbol} (แคช)", build_single_stock_card(fs_signal))
-                    return
-            except Exception:
-                pass
-        reply_text(reply_token, f"ไม่พบข้อมูล {symbol} ขณะนี้\nลองพิมพ์ชื่อใหม่หลังจาก scan ถัดไปครับ")
-        return
-    signal = scan_stock(symbol, df, ath_override=_ath_cache.get(symbol))
-    if signal is None:
-        reply_text(reply_token, f"ข้อมูลไม่เพียงพอสำหรับ {symbol}")
-        return
-    reply_flex(reply_token, f"วิเคราะห์ {symbol}", build_single_stock_card(signal))
+        signal_to_show = cached
+    else:
+        # Cache stale or miss: try Settrade API only (no yfinance for on-demand)
+        df = fetch_ohlcv_settrade(symbol)
+        if df is None:
+            if cached:
+                reply_flex(reply_token, f"วิเคราะห์ {symbol} (แคช)", build_single_stock_card(cached))
+                signal_to_show = cached
+            elif FIRESTORE_AVAILABLE and _db:
+                try:
+                    doc = _db.collection("signals").document(symbol).get()
+                    if doc.exists:
+                        fs_signal = StockSignal(**doc.to_dict())
+                        reply_flex(reply_token, f"วิเคราะห์ {symbol} (แคช)", build_single_stock_card(fs_signal))
+                        signal_to_show = fs_signal
+                except Exception:
+                    pass
+            if signal_to_show is None:
+                reply_text(reply_token, f"ไม่พบข้อมูล {symbol} ขณะนี้\nลองพิมพ์ชื่อใหม่หลังจาก scan ถัดไปครับ")
+                return
+        else:
+            live_signal = scan_stock(symbol, df, ath_override=_ath_cache.get(symbol))
+            if live_signal is None:
+                reply_text(reply_token, f"ข้อมูลไม่เพียงพอสำหรับ {symbol}")
+                return
+            reply_flex(reply_token, f"วิเคราะห์ {symbol}", build_single_stock_card(live_signal))
+            signal_to_show = live_signal
+
+    # Gamification: update user score based on what they viewed
+    if user_id and FIRESTORE_AVAILABLE and _db and signal_to_show:
+        loop = asyncio.get_event_loop()
+        s = signal_to_show
+        if s.stage == 2 and s.pattern in ("breakout", "ath_breakout", "vcp"):
+            loop.run_in_executor(None, update_user_score, _db, user_id, 1, "viewed_s2_breakout", symbol)
+        elif s.stage == 4:
+            user_data = _db.collection("users").document(user_id).get().to_dict() or {}
+            week_views = user_data.get("stage4_views_this_week", 0)
+            if week_views >= 2:
+                loop.run_in_executor(None, update_user_score, _db, user_id, -1, "repeated_stage4", symbol)
+            loop.run_in_executor(None, increment_stage4_views, _db, user_id)
 
 
 def _reply_detailed_stock(reply_token: str, symbol: str) -> None:
@@ -994,8 +1054,8 @@ def _add_to_watchlist(user_id: str, symbol: str) -> tuple[bool, str]:
     wl = _get_user_watchlist(user_id)
     if symbol in wl:
         return False, f"{symbol} อยู่ใน Watchlist แล้ว ✅"
-    if len(wl) >= 30:
-        return False, "Watchlist เต็มแล้ว (สูงสุด 30 หุ้น)"
+    if len(wl) >= 10:
+        return False, "Watchlist เต็มแล้ว (สูงสุด 10 หุ้น)"
     wl.append(symbol)
     _db.collection("users").document(user_id).set({"watchlist": wl}, merge=True)
     return True, f"เพิ่ม {symbol} เข้า Watchlist แล้ว ✅\nWatchlist ของคุณมี {len(wl)} หุ้น"

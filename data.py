@@ -178,6 +178,7 @@ INDEX_SYMBOLS: dict[str, str] = {
     "SET100": "^SET100.BK",
     "MAI":    "^MAI.BK",
     "sSET":   "^SSET.BK",
+    "SETESG": "^SETESG.BK",
 }
 
 # TradingView URLs per index
@@ -187,6 +188,7 @@ INDEX_TV_URLS: dict[str, str] = {
     "SET100": "https://www.tradingview.com/chart/?symbol=SET%3ASET100",
     "MAI":    "https://www.tradingview.com/chart/?symbol=SET%3AMAI",
     "sSET":   "https://www.tradingview.com/chart/?symbol=SET%3ASSET",
+    "SETESG": "https://www.tradingview.com/chart/?symbol=SET%3ASETESG",
 }
 
 # Official SET sector codes
@@ -903,6 +905,101 @@ def load_signal_from_firestore(db, symbol: str):
     except Exception as exc:
         logger.warning("load_signal_from_firestore(%s) failed: %s", symbol, exc)
         return None
+
+
+# ─── Performance Review ───────────────────────────────────────────────────────
+
+def log_breakout(db, signal) -> None:
+    """Record a Stage-2 breakout entry in Firestore breakout_log/{symbol}."""
+    if db is None:
+        return
+    if signal.stage != 2 or signal.pattern not in ("breakout", "ath_breakout", "vcp"):
+        return
+    try:
+        db.collection("breakout_log").document(signal.symbol).set({
+            "symbol": signal.symbol,
+            "breakout_price": signal.close,
+            "breakout_date": signal.scanned_at[:10],
+            "pattern": signal.pattern,
+            "logged_at": signal.scanned_at,
+        })
+    except Exception as exc:
+        logger.warning("log_breakout(%s) failed: %s", signal.symbol, exc)
+
+
+def load_breakout_review(db, current_signals: list) -> list:
+    """Return sorted list of dicts: breakout_log joined with current signal price."""
+    if db is None:
+        return []
+    try:
+        docs = {d.id: d.to_dict() for d in db.collection("breakout_log").stream()}
+    except Exception as exc:
+        logger.warning("load_breakout_review failed: %s", exc)
+        return []
+    sigs_map = {s.symbol: s for s in current_signals}
+    rows = []
+    for sym, log in docs.items():
+        sig = sigs_map.get(sym)
+        bp = log.get("breakout_price", 0)
+        if sig and bp > 0:
+            gain = (sig.close - bp) / bp * 100
+            rows.append({
+                "symbol": sym, "breakout_price": bp,
+                "breakout_date": log.get("breakout_date", ""),
+                "pattern": log.get("pattern", ""),
+                "current_close": sig.close,
+                "gain_pct": gain,
+                "current_stage": sig.stage,
+            })
+    return sorted(rows, key=lambda r: r["gain_pct"], reverse=True)
+
+
+# ─── Gamification ─────────────────────────────────────────────────────────────
+
+def update_user_score(db, user_id: str, delta: int, reason: str, symbol: str = "") -> None:
+    """Increment/decrement user score and append a history entry."""
+    if db is None or not user_id:
+        return
+    try:
+        from google.cloud import firestore as _fs
+        db.collection("users").document(user_id).set({
+            "score": _fs.Increment(delta),
+            "score_history": _fs.ArrayUnion([{
+                "date": _dt_bangkok()[:10],
+                "delta": delta,
+                "reason": reason,
+                "symbol": symbol,
+            }]),
+        }, merge=True)
+    except Exception as exc:
+        logger.warning("update_user_score(%s) failed: %s", user_id, exc)
+
+
+def increment_stage4_views(db, user_id: str) -> None:
+    """Increment stage4_views_this_week counter (reset weekly)."""
+    if db is None or not user_id:
+        return
+    try:
+        from google.cloud import firestore as _fs
+        import datetime as _dt
+        today = _dt.date.today()
+        week_start = (today - _dt.timedelta(days=today.weekday())).isoformat()
+        ref = db.collection("users").document(user_id)
+        data = (ref.get().to_dict() or {})
+        stored_week = data.get("stage4_week_start", "")
+        if stored_week != week_start:
+            ref.set({"stage4_views_this_week": 1, "stage4_week_start": week_start}, merge=True)
+        else:
+            ref.set({"stage4_views_this_week": _fs.Increment(1)}, merge=True)
+    except Exception as exc:
+        logger.warning("increment_stage4_views(%s) failed: %s", user_id, exc)
+
+
+def _dt_bangkok() -> str:
+    """Return current Bangkok time as ISO string."""
+    import datetime as _dt
+    import pytz
+    return _dt.datetime.now(pytz.timezone("Asia/Bangkok")).isoformat()
 
 
 def fetch_fundamentals(symbol: str) -> dict:
