@@ -412,7 +412,7 @@ def save_ohlcv_to_bq(symbol: str, df: pd.DataFrame) -> None:
             f"SELECT MAX(date) AS max_date FROM {_bq_table()} WHERE symbol = '{symbol}'"
         ).to_dataframe()
         last = max_df["max_date"].iloc[0] if not max_df.empty else None
-        if last is not None:
+        if pd.notna(last):
             bq_df = bq_df[bq_df["date"] > last]
         if bq_df.empty:
             logger.debug("BQ: %s already up to date", symbol)
