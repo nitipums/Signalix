@@ -1776,6 +1776,15 @@ def broadcast_flex(alt_text: str, container: dict) -> None:
         logger.error("Failed to broadcast: %s", exc)
 
 
+def broadcast_text(text: str) -> None:
+    """Broadcast a plain text message to all followers."""
+    api = _get_api()
+    try:
+        api.broadcast(BroadcastRequest(messages=[TextMessage(text=text)]))
+    except Exception as exc:
+        logger.error("Failed to broadcast text: %s", exc)
+
+
 def multicast_flex(user_ids: list[str], alt_text: str, container: dict) -> None:
     """Send Flex Message to a list of user IDs (up to 500 at a time)."""
     if not user_ids:

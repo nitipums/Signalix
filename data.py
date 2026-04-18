@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 BANGKOK_TZ = pytz.timezone("Asia/Bangkok")
 
+# /root/.cache/py-yfinance may exist as a file (not dir) in container images,
+# causing TzCache creation to fail. Redirect to /tmp which is always writable.
+yf.set_tz_cache_location("/tmp/yfinance-tz")
+
 # ─── BigQuery (optional) ──────────────────────────────────────────────────────
 _bq_client = None
 _bq_project = ""

@@ -44,6 +44,7 @@ from data import (
 )
 from notifier import (
     broadcast_flex,
+    broadcast_text,
     build_compact_stock_carousel,
     build_explain_card,
     build_guide_carousel,
@@ -400,12 +401,16 @@ async def scan(
         if breakouts:
             carousel = build_compact_stock_carousel(breakouts[:10], "🚀 Breakout Stocks")
             broadcast_flex("Breakout Stocks Update", carousel)
+        else:
+            broadcast_text(f"🔍 สแกน Breakout เสร็จแล้ว ({len(signals)} หุ้น) — ไม่พบสัญญาณ Breakout วันนี้")
 
     elif body.scan_type == "vcp":
         vcps = filter_signals(signals, pattern="vcp") + filter_signals(signals, pattern="vcp_low_cheat")
         if vcps:
             carousel = build_compact_stock_carousel(vcps[:10], "🔍 VCP Setups")
             broadcast_flex("VCP Pattern Update", carousel)
+        else:
+            broadcast_text(f"🔍 สแกน VCP เสร็จแล้ว ({len(signals)} หุ้น) — ไม่พบ VCP Setup วันนี้")
 
     else:  # "full" — post-close full report
         _broadcast_full_report(breadth, signals)
