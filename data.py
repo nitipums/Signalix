@@ -431,7 +431,9 @@ def save_ohlcv_to_bq(symbol: str, df: pd.DataFrame) -> None:
         logger.error("save_ohlcv_to_bq(%s) failed: %s", symbol, exc)
 
 
-def load_all_ohlcv_from_bq(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
+_PRICE_COLS = ["Open", "High", "Low", "Close"]
+
+def load_all_ohlcv_from_bq(lookback_days: int = 260) -> dict[str, pd.DataFrame]:
     """Load last N days of OHLCV for all symbols from BQ. Returns dict[symbol, df]."""
     if _bq_client is None:
         return {}
@@ -451,8 +453,10 @@ def load_all_ohlcv_from_bq(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
             g = grp.set_index("date").drop(columns=["symbol"])
             g.index.name = "Date"
             g.columns = ["Open", "High", "Low", "Close", "Volume"]
+            g[_PRICE_COLS] = g[_PRICE_COLS].astype("float32")
             result[symbol] = g
-        logger.info("BQ: loaded %d symbols (%d rows, %d-day window)", len(result), len(df), lookback_days)
+        del df  # free the flat BQ result before returning
+        logger.info("BQ: loaded %d symbols (%d-day window)", len(result), lookback_days)
         return result
     except Exception as exc:
         logger.error("load_all_ohlcv_from_bq failed: %s", exc)
@@ -558,12 +562,16 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
         logger.error("Batch download failed: %s", exc)
         return results
 
+    multi_ticker = len(tickers) > 1
+    top_level = raw.columns.get_level_values(0) if multi_ticker else None
     for symbol, ticker in zip(all_symbols, tickers):
         try:
-            if len(tickers) == 1:
+            if not multi_ticker:
                 df = raw.copy()
+            elif ticker in top_level:
+                df = raw[ticker].copy()
             else:
-                df = raw[ticker].copy() if ticker in raw.columns.get_level_values(0) else pd.DataFrame()
+                continue
 
             if df.empty or df["Close"].dropna().empty:
                 logger.warning("Empty data for %s", symbol)
@@ -573,10 +581,13 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
             df.index = pd.to_datetime(df.index).tz_localize(None)
             df.index.name = "Date"
             df.columns = [c.replace(" ", "_") for c in df.columns]
+            price_cols = [c for c in _PRICE_COLS if c in df.columns]
+            df[price_cols] = df[price_cols].astype("float32")
             results[symbol] = df
         except Exception as exc:
             logger.warning("Could not process %s: %s", symbol, exc)
 
+    del raw  # free the large multi-index download immediately
     logger.info("Fetched data for %d/%d symbols", len(results), len(all_symbols))
     return results
 
@@ -585,7 +596,7 @@ def GET_ALL_SYMBOLS_WITH_INDEX() -> list[str]:
     return SET_STOCKS + ["SET"]
 
 
-def fetch_latest_candles(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
+def fetch_latest_candles(lookback_days: int = 260) -> dict[str, pd.DataFrame]:
     """
     Intraday scan data fetch: load BQ history + merge with a small yfinance
     batch download (5d) to get today's candle.  Much faster than a full 1y download.

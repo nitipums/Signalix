@@ -251,6 +251,7 @@ async def _background_scan():
             loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
         if BQ_AVAILABLE:
             loop.run_in_executor(None, append_new_candles_to_bq, all_data)
+        del all_data  # release 900+ DataFrames; BQ executor holds its own ref
     except Exception as exc:
         logger.error("Startup scan failed: %s", exc)
 
@@ -386,6 +387,7 @@ async def scan(
         loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
     if BQ_AVAILABLE and body.mode == "full":
         loop.run_in_executor(None, append_new_candles_to_bq, all_data)
+    del all_data  # release 900+ DataFrames; BQ executor holds its own ref
 
     if not body.broadcast:
         return {"scanned": len(signals), "mode": body.mode, "breadth": breadth.__dict__}
