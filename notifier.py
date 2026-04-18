@@ -755,17 +755,17 @@ def _stock_row(rank: int, signal: StockSignal) -> dict:
     }
 
 
-def build_ranked_stock_list_bubble(signals: list[StockSignal], title: str, max_per_bubble: int = 20) -> dict:
+def build_ranked_stock_list_bubble(signals: list[StockSignal], title: str, max_per_bubble: int = 20, next_cmd: str = "") -> dict:
     """
-    Single scrollable bubble showing all stocks ranked by strength_score.
-    Each row is tappable (sends symbol name → triggers single stock lookup).
-    For >40 stocks returns a carousel of bubbles.
+    Tappable ranked stock list. Returns a single bubble (≤20 stocks) or
+    2-bubble carousel (21–40 stocks). Each carousel ≈ 38KB < LINE's 50KB limit.
+    Pass next_cmd to add a 'View More' button on the last bubble for pagination.
     """
     if not signals:
         return {"type": "bubble", "size": "mega", "body": {"type": "box", "layout": "vertical",
                 "contents": [{"type": "text", "text": "ไม่มีหุ้น", "color": "#7F8C8D"}]}}
 
-    def _make_bubble(chunk: list[StockSignal], offset: int, total: int) -> dict:
+    def _make_bubble(chunk: list[StockSignal], offset: int, total: int, is_last: bool = False) -> dict:
         header_text = title
         if total > max_per_bubble:
             page = offset // max_per_bubble + 1
@@ -790,7 +790,6 @@ def build_ranked_stock_list_bubble(signals: list[StockSignal], title: str, max_p
         rows = [col_header, {"type": "separator"}]
         for i, sig in enumerate(chunk):
             rows.append(_stock_row(offset + i + 1, sig))
-            # subtle group break every 5 rows
             if (i + 1) % 5 == 0 and i + 1 < len(chunk):
                 rows.append({"type": "separator", "margin": "none"})
 
@@ -800,6 +799,12 @@ def build_ranked_stock_list_bubble(signals: list[StockSignal], title: str, max_p
         ]
         if scan_ts:
             footer_contents.insert(0, {"type": "text", "text": scan_ts, "size": "xxs", "color": "#95A5A6", "align": "center"})
+        if is_last and next_cmd:
+            footer_contents.append({
+                "type": "button",
+                "action": {"type": "message", "label": "ดูเพิ่มเติม ▼", "text": next_cmd},
+                "style": "primary", "color": "#1A237E", "height": "sm", "margin": "sm",
+            })
 
         return {
             "type": "bubble",
@@ -832,13 +837,16 @@ def build_ranked_stock_list_bubble(signals: list[StockSignal], title: str, max_p
 
     total = len(signals)
     if total <= max_per_bubble:
-        return _make_bubble(signals, 0, total)
+        return _make_bubble(signals, 0, total, is_last=True)
 
-    # Split into carousel of bubbles (LINE hard limit: 12 per carousel)
+    # Cap at 2 bubbles per carousel — LINE's 50KB carousel limit.
+    # 2 bubbles × 20 rows ≈ 38KB, safely under the limit.
+    cap = min(total, max_per_bubble * 2)
     bubbles = []
-    for i in range(0, min(total, max_per_bubble * 12), max_per_bubble):
+    for i in range(0, cap, max_per_bubble):
         chunk = signals[i:i + max_per_bubble]
-        bubbles.append(_make_bubble(chunk, i, total))
+        is_last = (i + max_per_bubble >= cap)
+        bubbles.append(_make_bubble(chunk, i, total, is_last=is_last))
     return {"type": "carousel", "contents": bubbles}
 
 

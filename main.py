@@ -11,7 +11,6 @@ import asyncio
 import functools
 import hashlib
 import hmac
-import json as _json
 import logging
 import secrets
 from datetime import datetime
@@ -838,21 +837,25 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         signals = _get_signals_for(pattern="vcp_low_cheat")
         _reply_stock_list(reply_token, signals, "🎯 VCP Low Cheat Stocks")
 
-    elif cmd in ("stage2", "stage 2"):
+    elif cmd.startswith("stage2") or cmd.startswith("stage 2"):
+        page = _parse_stage_page(cmd)
         all_sigs = _get_signals_for(stage=2)
-        _reply_stock_list(reply_token, all_sigs, f"🟢 Stage 2 ({len(all_sigs)} stocks)")
+        _reply_stock_list(reply_token, all_sigs, f"🟢 Stage 2 ({len(all_sigs)} stocks)", page=page, base_cmd="stage2")
 
-    elif cmd in ("stage1", "stage 1"):
+    elif cmd.startswith("stage1") or cmd.startswith("stage 1"):
+        page = _parse_stage_page(cmd)
         all_sigs = _get_signals_for(stage=1)
-        _reply_stock_list(reply_token, all_sigs, f"⚪ Stage 1 ({len(all_sigs)} stocks)")
+        _reply_stock_list(reply_token, all_sigs, f"⚪ Stage 1 ({len(all_sigs)} stocks)", page=page, base_cmd="stage1")
 
-    elif cmd in ("stage3", "stage 3"):
+    elif cmd.startswith("stage3") or cmd.startswith("stage 3"):
+        page = _parse_stage_page(cmd)
         all_sigs = _get_signals_for(stage=3)
-        _reply_stock_list(reply_token, all_sigs, f"🟡 Stage 3 ({len(all_sigs)} stocks)")
+        _reply_stock_list(reply_token, all_sigs, f"🟡 Stage 3 ({len(all_sigs)} stocks)", page=page, base_cmd="stage3")
 
-    elif cmd in ("stage4", "stage 4"):
+    elif cmd.startswith("stage4") or cmd.startswith("stage 4"):
+        page = _parse_stage_page(cmd)
         all_sigs = _get_signals_for(stage=4)
-        _reply_stock_list(reply_token, all_sigs, f"🔴 Stage 4 ({len(all_sigs)} stocks)")
+        _reply_stock_list(reply_token, all_sigs, f"🔴 Stage 4 ({len(all_sigs)} stocks)", page=page, base_cmd="stage4")
 
     elif cmd in ("consolidating", "consolidate", "coil"):
         signals = _get_signals_for(pattern="consolidating")
@@ -905,18 +908,28 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             )
 
 
+def _parse_stage_page(cmd: str) -> int:
+    """Extract page number from commands like 'stage4 p2' or 'stage 4 p3'. Returns 1 if absent."""
+    if " p" in cmd:
+        try:
+            return int(cmd.split(" p")[-1])
+        except ValueError:
+            pass
+    return 1
+
+
 def _get_signals_for(pattern: Optional[str] = None, stage: Optional[int] = None) -> list[StockSignal]:
     return filter_signals(_last_signals, pattern=pattern, stage=stage)
 
 
 
-# Confirmed: 2 bubbles × 20 rows ≈ 38KB works. 12 bubbles × 20 rows ≈ 228KB fails.
-# LINE reply tokens are consumed even on a failed API call, so we must size-check
-# BEFORE sending — a failed attempt + retry = two silent failures.
-_FLEX_BYTE_LIMIT = 130_000  # 130KB: safely above 38KB confirmed, well below 228KB failed
+# LINE carousel hard limit: 50KB (confirmed). 2 bubbles × 20 rows ≈ 38KB per page.
+# Pagination: each page shows 40 stocks; "ดูเพิ่มเติม ▼" button sends "stage4 p2" etc.
+_STAGE_PAGE_SIZE = 40
 
 
-def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str, text_only: bool = False) -> None:
+def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str,
+                      text_only: bool = False, page: int = 1, base_cmd: str = "") -> None:
     if not signals:
         reply_text(reply_token, f"ไม่มีหุ้นใน {title} ขณะนี้")
         return
@@ -924,14 +937,15 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str, 
         bubble = build_simple_tappable_list(signals, title)
         reply_flex(reply_token, title, bubble)
         return
-    bubble = build_ranked_stock_list_bubble(signals, title)
-    if len(_json.dumps(bubble, ensure_ascii=False)) > _FLEX_BYTE_LIMIT:
-        # Payload too large — reduce stock count until it fits the safe limit
-        for cap in (120, 80, 60, 40):
-            bubble = build_ranked_stock_list_bubble(signals[:cap], title)
-            if len(_json.dumps(bubble, ensure_ascii=False)) <= _FLEX_BYTE_LIMIT:
-                logger.info("Flex capped at %d stocks for '%s' (limit %d bytes)", cap, title, _FLEX_BYTE_LIMIT)
-                break
+    total = len(signals)
+    start = (page - 1) * _STAGE_PAGE_SIZE
+    chunk = signals[start:start + _STAGE_PAGE_SIZE]
+    if not chunk:
+        reply_text(reply_token, "ไม่มีข้อมูลเพิ่มเติมแล้วครับ")
+        return
+    has_more = total > start + _STAGE_PAGE_SIZE
+    next_cmd = f"{base_cmd} p{page + 1}" if (has_more and base_cmd) else ""
+    bubble = build_ranked_stock_list_bubble(chunk, title, next_cmd=next_cmd)
     reply_flex(reply_token, title, bubble)
 
 
