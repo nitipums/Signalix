@@ -23,7 +23,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from data import SECTOR_MAP, fetch_all_stocks, get_stock_list, tradingview_url
+from data import SECTOR_MAP, fetch_all_stocks, get_sector, get_stock_list, tradingview_url
 
 logger = logging.getLogger(__name__)
 
@@ -705,10 +705,13 @@ def filter_signals(signals: list[StockSignal], pattern: Optional[str] = None, st
 
 
 def compute_sector_trends(signals: list[StockSignal]) -> list["SectorSummary"]:
-    """Group signals by SET sector and compute breadth stats per sector."""
+    """Group signals by SET sector and compute breadth stats per sector.
+    Uses get_sector() which checks the dynamic subsector map first, then falls
+    back to the static SECTOR_MAP, so coverage improves after refresh_sector_map.
+    """
     sector_groups: dict[str, list[StockSignal]] = {}
     for s in signals:
-        sec = SECTOR_MAP.get(s.symbol, "OTHER")
+        sec = get_sector(s.symbol)
         sector_groups.setdefault(sec, []).append(s)
 
     summaries = []

@@ -34,14 +34,18 @@ from analyzer import (
 )
 from config import get_settings
 from data import (
-    SECTOR_MAP, append_new_candles_to_bq, BQ_AVAILABLE,
-    fetch_indexes_with_history, fetch_latest_candles, get_fundamentals,
-    get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
+    SECTOR_MAP, SUBSECTOR_TO_SECTOR, SECTOR_INDEX_SYMBOLS,
+    append_new_candles_to_bq, BQ_AVAILABLE,
+    fetch_indexes_with_history, fetch_latest_candles, fetch_sector_index_prices,
+    fetch_sector_map_from_yfinance, get_fundamentals,
+    get_sector, get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
     increment_stage4_views, load_breakout_review,
     load_latest_signals_from_bq,
-    load_scan_state, load_signal_from_firestore, load_signals_from_firestore,
+    load_scan_state, load_sector_map_from_firestore, load_signal_from_firestore,
+    load_signals_from_firestore,
     log_breakout, resolve_symbol,
-    save_scan_state, save_signals_to_bq, save_signals_to_firestore,
+    save_scan_state, save_sector_map_to_firestore, save_signals_to_bq,
+    save_signals_to_firestore,
     sync_ath_to_firestore, tradingview_url, update_user_score,
 )
 from notifier import (
@@ -107,7 +111,8 @@ _last_signals: list[StockSignal] = []
 _last_breadth: Optional[MarketBreadth] = None
 _last_breadth_card: Optional[dict] = None  # pre-built, invalidated when _last_breadth changes
 _last_scan_time: Optional[datetime] = None   # when _last_signals was last populated
-_last_indexes: dict[str, dict] = {}
+_last_indexes: dict[str, dict] = {}          # SET/SET50/MAI/sSET/SETESG index analysis
+_last_sector_indexes: dict[str, dict] = {}   # AGRO/CONSUMP/… index prices
 _last_sector_trends: list[SectorSummary] = []
 _ath_cache: dict[str, float] = {}
 
@@ -221,7 +226,7 @@ async def startup_event():
 
 async def _warm_from_firestore():
     """Load cached state on startup. BQ is tried first (durable), Firestore as fallback."""
-    global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
+    global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache, _last_sector_indexes
     loop = asyncio.get_running_loop()
     try:
         # Load ATH non-blocking: prefer BQ, fall back to Firestore
@@ -231,6 +236,14 @@ async def _warm_from_firestore():
         elif FIRESTORE_AVAILABLE and _db:
             _ath_cache = await loop.run_in_executor(None, load_ath_cache, _db)
             logger.info("ATH cache loaded from Firestore: %d entries", len(_ath_cache))
+
+        # ── Sector map: load from Firestore, wire into data module ───────────────
+        if FIRESTORE_AVAILABLE and _db:
+            from data import _dynamic_sector_map as _dsm
+            loaded_map = await loop.run_in_executor(None, load_sector_map_from_firestore, _db)
+            if loaded_map:
+                _dsm.update(loaded_map)
+                logger.info("Sector map loaded: %d symbols with subsector data", len(loaded_map))
 
         # ── Signals: BQ first (guaranteed durable), Firestore fallback ──────────
         if BQ_AVAILABLE:
@@ -394,10 +407,14 @@ async def scan(
     indexes = _analyze_index_dfs(index_dfs)
     del index_dfs
 
+    # Fetch SET sector index prices (AGRO, FINCIAL, TECH, etc.) — fire and forget
+    sector_indexes = await loop.run_in_executor(None, fetch_sector_index_prices)
+
     _last_signals = signals
     _last_scan_time = datetime.now(BANGKOK_TZ)
     _last_breadth = breadth
     _last_sector_trends = sector_trends
+    _last_sector_indexes = sector_indexes
     _last_breadth_card = build_market_breadth_card(breadth, sector_trends, indexes)
     _last_indexes = indexes
 
@@ -449,6 +466,43 @@ async def sync_ath_endpoint(
         "chunk_size": chunk_size,
         "total_chunks": total_chunks,
         "next_chunk": chunk + 1 if chunk + 1 < total_chunks else None,
+    }
+
+
+@app.post("/admin/refresh_sector_map")
+async def refresh_sector_map_endpoint(
+    x_scan_secret: Optional[str] = Header(default=None),
+):
+    """One-time endpoint: fetch subsector classification for all SET stocks via yfinance.info,
+    cache in Firestore sector_map/latest, wire into live sector routing.
+    Takes ~2 min for 900 stocks. Call once; data is reused across all restarts."""
+    settings = get_settings()
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
+
+    global _last_sector_trends
+    loop = asyncio.get_running_loop()
+    symbols = get_stock_list()
+    sector_map = await loop.run_in_executor(None, fetch_sector_map_from_yfinance, symbols)
+
+    # Wire into live routing
+    from data import _dynamic_sector_map as _dsm
+    _dsm.clear()
+    _dsm.update(sector_map)
+
+    # Persist to Firestore
+    if FIRESTORE_AVAILABLE and _db:
+        await loop.run_in_executor(None, save_sector_map_to_firestore, sector_map, _db)
+
+    # Recompute sector trends with new mapping
+    if _last_signals:
+        _last_sector_trends = compute_sector_trends(_last_signals)
+
+    return {
+        "mapped": len(sector_map),
+        "total_symbols": len(symbols),
+        "coverage_pct": round(len(sector_map) / len(symbols) * 100, 1),
+        "sample": dict(list(sector_map.items())[:10]),
     }
 
 
@@ -748,7 +802,13 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             except ValueError:
                 pass
         sector_name = rest
-        sector_sigs = [s for s in _last_signals if SECTOR_MAP.get(s.symbol) == sector_name]
+        # get_sector() uses dynamic subsector map + SECTOR_MAP fallback
+        # Also match by subsector code (e.g. "sector BANK" returns all BANK stocks)
+        from data import get_subsector
+        sector_sigs = [
+            s for s in _last_signals
+            if get_sector(s.symbol) == sector_name or get_subsector(s.symbol) == sector_name
+        ]
         sector_sigs.sort(key=lambda s: s.strength_score, reverse=True)
         if sector_sigs:
             _reply_stock_list(reply_token, sector_sigs, f"🏭 {sector_name} — Leaders",

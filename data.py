@@ -280,6 +280,247 @@ SECTOR_MAP: dict[str, str] = {
 
 _STOCK_SET = set(SET_STOCKS)
 
+# ─── SET Subsector taxonomy ───────────────────────────────────────────────────
+
+# SET's 25 official subsectors mapped to their parent industry group
+SUBSECTOR_TO_SECTOR: dict[str, str] = {
+    # AGRO
+    "AGRI":    "AGRO",    # Agricultural products
+    "FOOD":    "AGRO",    # Food & Beverage
+    # CONSUMP
+    "FASHION": "CONSUMP", # Fashion & Apparel
+    "HOME":    "CONSUMP", # Household & Office products
+    "PERSON":  "CONSUMP", # Personal products & Pharma
+    # FINCIAL
+    "BANK":    "FINCIAL", # Banking
+    "FIN":     "FINCIAL", # Finance & Securities
+    "INSUR":   "FINCIAL", # Insurance
+    # INDUS
+    "AUTO":    "INDUS",   # Automotive
+    "IMM":     "INDUS",   # Industrial Materials & Machinery
+    "PAPER":   "INDUS",   # Paper & Printing
+    "PETRO":   "INDUS",   # Petrochemical & Chemical
+    "PKG":     "INDUS",   # Packaging
+    "STEEL":   "INDUS",   # Steel & Metal products
+    # PROPCON
+    "CONMAT":  "PROPCON", # Construction Materials
+    "CONS":    "PROPCON", # Construction Services
+    "PF":      "PROPCON", # Property Funds & REITs
+    "PROP":    "PROPCON", # Property Development
+    # RESOURC
+    "ENERG":   "RESOURC", # Energy & Utilities
+    "MINE":    "RESOURC", # Mining
+    # SERVICE
+    "COMM":    "SERVICE", # Commerce (retail/wholesale)
+    "HELTH":   "SERVICE", # Healthcare Services
+    "MEDIA":   "SERVICE", # Media & Publishing
+    "PROF":    "SERVICE", # Professional Services
+    "TOURISM": "SERVICE", # Tourism & Leisure
+    "TRANS":   "SERVICE", # Transportation & Logistics
+    # TECH
+    "ETRON":   "TECH",    # Electronic Components
+    "ICT":     "TECH",    # Information & Communication Technology
+}
+
+# Translation from Yahoo Finance sector/industry strings → SET subsector codes
+# Used by fetch_sector_map_from_yfinance()
+_YF_INDUSTRY_TO_SUBSECTOR: dict[str, str] = {
+    # Banking & Finance
+    "Banks—Regional": "BANK", "Banks—Diversified": "BANK",
+    "Capital Markets": "FIN", "Financial Conglomerates": "FIN",
+    "Credit Services": "FIN", "Asset Management": "FIN",
+    "Insurance—Life": "INSUR", "Insurance—Property & Casualty": "INSUR",
+    "Insurance—Diversified": "INSUR", "Insurance Brokers": "INSUR",
+    # Technology
+    "Software—Application": "ICT", "Software—Infrastructure": "ICT",
+    "Telecom Services": "ICT", "Communication Equipment": "ICT",
+    "Internet Content & Information": "ICT", "Electronic Gaming & Multimedia": "ICT",
+    "Information Technology Services": "ICT",
+    "Electronic Components": "ETRON", "Semiconductors": "ETRON",
+    "Electronics & Computer Distribution": "ETRON",
+    # Energy & Resources
+    "Oil & Gas E&P": "ENERG", "Oil & Gas Integrated": "ENERG",
+    "Oil & Gas Midstream": "ENERG", "Oil & Gas Refining & Marketing": "ENERG",
+    "Utilities—Regulated Electric": "ENERG", "Utilities—Renewable": "ENERG",
+    "Utilities—Independent Power Producers": "ENERG",
+    "Utilities—Diversified": "ENERG", "Solar": "ENERG",
+    "Coal": "MINE", "Other Industrial Metals & Mining": "MINE",
+    "Copper": "MINE", "Gold": "MINE", "Silver": "MINE",
+    "Oil & Gas Equipment & Services": "ENERG",
+    # Industrials
+    "Auto Manufacturers": "AUTO", "Auto Parts": "AUTO",
+    "Specialty Chemicals": "PETRO", "Chemicals": "PETRO",
+    "Agricultural Chemicals": "PETRO",
+    "Packaging & Containers": "PKG",
+    "Paper & Paper Products": "PAPER", "Printing Services": "PAPER",
+    "Steel": "STEEL", "Aluminum": "STEEL", "Other Precious Metals & Mining": "STEEL",
+    "Industrial Materials": "IMM", "Industrial Machinery": "IMM",
+    "Specialty Industrial Machinery": "IMM", "Tools & Accessories": "IMM",
+    "Rubber & Plastics": "IMM", "Electrical Equipment & Parts": "IMM",
+    # Property & Construction
+    "Real Estate—Development": "PROP", "Residential Construction": "PROP",
+    "Real Estate—Diversified": "PROP",
+    "REIT—Retail": "PF", "REIT—Diversified": "PF", "REIT—Industrial": "PF",
+    "REIT—Office": "PF", "REIT—Residential": "PF", "REIT—Hotel & Motel": "PF",
+    "Building Materials": "CONMAT", "Building Products & Equipment": "CONMAT",
+    "Engineering & Construction": "CONS", "Infrastructure Operations": "CONS",
+    # Agriculture & Food
+    "Farm Products": "AGRI", "Agricultural Inputs": "AGRI",
+    "Farm & Heavy Construction Machinery": "AGRI",
+    "Packaged Foods": "FOOD", "Food Distribution": "FOOD",
+    "Beverages—Non-Alcoholic": "FOOD", "Beverages—Alcoholic": "FOOD",
+    "Beverages—Wineries & Distilleries": "FOOD", "Confectioners": "FOOD",
+    "Seafood": "FOOD", "Meat Products": "FOOD",
+    # Consumer
+    "Apparel Manufacturing": "FASHION", "Apparel Retail": "FASHION",
+    "Footwear & Accessories": "FASHION", "Luxury Goods": "FASHION",
+    "Furnishings, Fixtures & Appliances": "HOME", "Home Improvement Retail": "HOME",
+    "Household & Personal Products": "PERSON", "Drug Manufacturers—Specialty & Generic": "PERSON",
+    "Medical Devices": "PERSON", "Pharmaceutical Retailers": "PERSON",
+    # Services
+    "Grocery Stores": "COMM", "Department Stores": "COMM",
+    "Specialty Retail": "COMM", "Discount Stores": "COMM",
+    "Electronics Retail": "COMM",
+    "Healthcare Facilities": "HELTH", "Medical Care Facilities": "HELTH",
+    "Diagnostics & Research": "HELTH", "Health Information Services": "HELTH",
+    "Broadcasting": "MEDIA", "Advertising Agencies": "MEDIA",
+    "Publishing": "MEDIA", "Entertainment": "MEDIA",
+    "Staffing & Employment Services": "PROF", "Consulting Services": "PROF",
+    "Security & Protection Services": "PROF", "Waste Management": "PROF",
+    "Hotels & Motels": "TOURISM", "Resorts & Casinos": "TOURISM",
+    "Travel Services": "TOURISM", "Restaurants": "TOURISM",
+    "Leisure": "TOURISM",
+    "Airlines": "TRANS", "Trucking": "TRANS", "Marine Shipping": "TRANS",
+    "Railroads": "TRANS", "Integrated Freight & Logistics": "TRANS",
+    "Airport Operations": "TRANS",
+}
+
+# SET sector index tickers for yfinance
+SECTOR_INDEX_SYMBOLS: dict[str, str] = {
+    "AGRO":    "^AGRO.BK",
+    "CONSUMP": "^CONSUMP.BK",
+    "FINCIAL": "^FINCIAL.BK",
+    "INDUS":   "^INDUS.BK",
+    "PROPCON": "^PROPCON.BK",
+    "RESOURC": "^RESOURC.BK",
+    "SERVICE": "^SERVICE.BK",
+    "TECH":    "^TECH.BK",
+}
+
+# In-memory sector map — loaded from Firestore on startup, extended from SECTOR_MAP
+# Maps symbol → subsector code (e.g. "BANK", "FOOD", "ICT")
+# Use get_sector(symbol) / get_subsector(symbol) helpers below
+_dynamic_sector_map: dict[str, str] = {}  # symbol → subsector (25 codes)
+
+
+def get_sector(symbol: str) -> str:
+    """Return SET industry group (8 codes) for a symbol. Falls back to SECTOR_MAP then OTHER."""
+    subsector = _dynamic_sector_map.get(symbol, "")
+    if subsector:
+        return SUBSECTOR_TO_SECTOR.get(subsector, "OTHER")
+    return SECTOR_MAP.get(symbol, "OTHER")
+
+
+def get_subsector(symbol: str) -> str:
+    """Return SET subsector (25 codes) for a symbol, empty string if unknown."""
+    return _dynamic_sector_map.get(symbol, "")
+
+
+def fetch_sector_map_from_yfinance(symbols: list[str], batch_size: int = 50) -> dict[str, str]:
+    """Fetch sector/subsector for all symbols using yfinance .info.
+    Returns dict[symbol → subsector_code]. Slow (1–2 min for 900 stocks) — run once,
+    cache result in Firestore.
+    """
+    result: dict[str, str] = {}
+    total = len(symbols)
+    for i in range(0, total, batch_size):
+        batch = symbols[i:i + batch_size]
+        tickers_str = " ".join(f"{s}.BK" for s in batch)
+        try:
+            import yfinance as yf
+            data = yf.Tickers(tickers_str)
+            for sym in batch:
+                try:
+                    info = data.tickers.get(f"{sym}.BK", None)
+                    if info is None:
+                        continue
+                    industry = (info.info or {}).get("industry", "")
+                    subsector = _YF_INDUSTRY_TO_SUBSECTOR.get(industry, "")
+                    if subsector:
+                        result[sym] = subsector
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("fetch_sector_map_from_yfinance batch %d failed: %s", i, exc)
+        logger.info("Sector map fetch: %d/%d symbols processed (%d mapped)",
+                    min(i + batch_size, total), total, len(result))
+    return result
+
+
+def save_sector_map_to_firestore(sector_map: dict[str, str], db) -> None:
+    """Cache subsector map in Firestore sector_map/latest."""
+    if not sector_map or db is None:
+        return
+    try:
+        db.collection("sector_map").document("latest").set({
+            "stocks": sector_map,   # {symbol: subsector_code}
+            "updated_at": datetime.now(BANGKOK_TZ).isoformat(),
+            "total": len(sector_map),
+        })
+        logger.info("Saved sector map: %d symbols to Firestore", len(sector_map))
+    except Exception as exc:
+        logger.error("save_sector_map_to_firestore failed: %s", exc)
+
+
+def load_sector_map_from_firestore(db) -> dict[str, str]:
+    """Load cached subsector map from Firestore. Returns {} if missing."""
+    if db is None:
+        return {}
+    try:
+        doc = db.collection("sector_map").document("latest").get()
+        if doc.exists:
+            data = doc.to_dict() or {}
+            stocks = data.get("stocks", {})
+            logger.info("Loaded sector map from Firestore: %d symbols", len(stocks))
+            return stocks
+    except Exception as exc:
+        logger.error("load_sector_map_from_firestore failed: %s", exc)
+    return {}
+
+
+def fetch_sector_index_prices() -> dict[str, dict]:
+    """Fetch current prices for SET industry group indexes via yfinance.
+    Returns {sector_code: {close, change_pct, scanned_at}} for indexes that exist.
+    """
+    result: dict[str, dict] = {}
+    tickers_str = " ".join(SECTOR_INDEX_SYMBOLS.values())
+    try:
+        import yfinance as yf
+        data = yf.download(tickers_str, period="5d", interval="1d",
+                           group_by="ticker", progress=False, auto_adjust=True)
+        now = datetime.now(BANGKOK_TZ).isoformat()
+        for sector, ticker in SECTOR_INDEX_SYMBOLS.items():
+            try:
+                if hasattr(data, "columns") and isinstance(data.columns, pd.MultiIndex):
+                    df = data[ticker].dropna(subset=["Close"]) if ticker in data.columns.get_level_values(0) else None
+                else:
+                    df = data.dropna(subset=["Close"]) if len(SECTOR_INDEX_SYMBOLS) == 1 else None
+                if df is None or df.empty:
+                    continue
+                close = float(df["Close"].iloc[-1])
+                prev  = float(df["Close"].iloc[-2]) if len(df) >= 2 else close
+                chg_pct = round((close - prev) / prev * 100, 2) if prev else 0.0
+                result[sector] = {"close": close, "change_pct": chg_pct, "scanned_at": now}
+            except Exception:
+                pass
+        if result:
+            logger.info("Sector index prices fetched: %s", list(result.keys()))
+        else:
+            logger.info("No sector index prices available (tickers may not exist on yfinance)")
+    except Exception as exc:
+        logger.warning("fetch_sector_index_prices failed: %s", exc)
+    return result
+
 
 def resolve_symbol(text: str) -> Optional[str]:
     """
