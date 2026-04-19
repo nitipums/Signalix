@@ -38,9 +38,10 @@ from data import (
     fetch_indexes_with_history, fetch_latest_candles, get_fundamentals,
     get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
     increment_stage4_views, load_breakout_review,
+    load_latest_signals_from_bq,
     load_scan_state, load_signal_from_firestore, load_signals_from_firestore,
     log_breakout, resolve_symbol,
-    save_scan_state, save_signals_to_firestore,
+    save_scan_state, save_signals_to_bq, save_signals_to_firestore,
     sync_ath_to_firestore, tradingview_url, update_user_score,
 )
 from notifier import (
@@ -218,7 +219,7 @@ async def startup_event():
 
 
 async def _warm_from_firestore():
-    """Load all cached state from Firestore. No scan is run — data comes from last scheduled scan."""
+    """Load cached state on startup. BQ is tried first (durable), Firestore as fallback."""
     global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
     loop = asyncio.get_running_loop()
     try:
@@ -230,46 +231,52 @@ async def _warm_from_firestore():
             _ath_cache = await loop.run_in_executor(None, load_ath_cache, _db)
             logger.info("ATH cache loaded from Firestore: %d entries", len(_ath_cache))
 
-        if not FIRESTORE_AVAILABLE or not _db:
-            logger.warning("Firestore unavailable — cache will be empty until first /scan")
-            return
+        # ── Signals: BQ first (guaranteed durable), Firestore fallback ──────────
+        if BQ_AVAILABLE:
+            bq_signals = await loop.run_in_executor(None, load_latest_signals_from_bq)
+            if bq_signals:
+                _last_signals = bq_signals
+                logger.info("Signals loaded from BQ: %d stocks", len(bq_signals))
 
-        # Load scan_state (breadth + indexes + sector_trends) and signals in parallel
-        state_fut = loop.run_in_executor(None, load_scan_state, _db)
-        sigs_fut = loop.run_in_executor(None, load_signals_from_firestore, _db)
-        state, signals = await asyncio.gather(state_fut, sigs_fut)
+        if not _last_signals and FIRESTORE_AVAILABLE and _db:
+            fs_signals = await loop.run_in_executor(None, load_signals_from_firestore, _db)
+            if fs_signals:
+                _last_signals = fs_signals
+                logger.info("Signals loaded from Firestore (BQ fallback): %d stocks", len(fs_signals))
 
-        if state:
-            _last_breadth = state["breadth"]
-            _last_indexes = state["indexes"]
-            _last_sector_trends = state["sector_trends"]  # set BEFORE building card
-            try:
-                _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends, _last_indexes)
-            except Exception as exc:
-                logger.error("build_market_breadth_card failed in warmup: %s", exc)
-            try:
-                _last_scan_time = datetime.fromisoformat(state["scanned_at"]).replace(tzinfo=BANGKOK_TZ)
-            except Exception:
-                pass
-        if signals:
-            _last_signals = signals
-            # Fallback: compute derived caches from signals when scan_state is missing/incomplete
-            if not _last_breadth:
+        # ── Scan state (breadth/indexes/sectors): always from Firestore ──────────
+        if FIRESTORE_AVAILABLE and _db:
+            state = await loop.run_in_executor(None, load_scan_state, _db)
+            if state:
+                _last_breadth = state["breadth"]
+                _last_indexes = state["indexes"]
+                _last_sector_trends = state["sector_trends"]
                 try:
-                    _last_breadth = compute_market_breadth(signals)
-                    if not _last_sector_trends:
-                        _last_sector_trends = compute_sector_trends(signals)
                     _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends, _last_indexes)
-                    logger.info("Computed breadth from %d signals (scan_state missing)", len(signals))
                 except Exception as exc:
-                    logger.error("compute breadth fallback failed: %s", exc)
-            elif not _last_sector_trends:
+                    logger.error("build_market_breadth_card failed in warmup: %s", exc)
                 try:
-                    _last_sector_trends = compute_sector_trends(signals)
-                except Exception as exc:
-                    logger.error("compute sector_trends fallback failed: %s", exc)
+                    _last_scan_time = datetime.fromisoformat(state["scanned_at"]).replace(tzinfo=BANGKOK_TZ)
+                except Exception:
+                    pass
 
-        logger.info("Warmed from Firestore: %d signals, breadth=%s, indexes=%d, sectors=%d",
+        # ── Derive breadth/sectors from signals if scan_state is missing ─────────
+        if _last_signals and not _last_breadth:
+            try:
+                _last_breadth = compute_market_breadth(_last_signals)
+                if not _last_sector_trends:
+                    _last_sector_trends = compute_sector_trends(_last_signals)
+                _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends, _last_indexes)
+                logger.info("Breadth computed from signals (scan_state missing)")
+            except Exception as exc:
+                logger.error("compute breadth fallback failed: %s", exc)
+        elif _last_signals and not _last_sector_trends:
+            try:
+                _last_sector_trends = compute_sector_trends(_last_signals)
+            except Exception as exc:
+                logger.error("compute sector_trends fallback failed: %s", exc)
+
+        logger.info("Cache warm complete: %d signals, breadth=%s, indexes=%d, sectors=%d",
                     len(_last_signals), "ok" if _last_breadth else "missing",
                     len(_last_indexes), len(_last_sector_trends))
     except Exception as exc:
@@ -393,7 +400,9 @@ async def scan(
     _last_breadth_card = build_market_breadth_card(breadth, sector_trends, indexes)
     _last_indexes = indexes
 
-    # Persist to Firestore (always); BigQuery only on full mode
+    # Persist scan results: BQ on every scan (primary); Firestore always (cache)
+    if BQ_AVAILABLE:
+        loop.run_in_executor(None, save_signals_to_bq, signals)
     if FIRESTORE_AVAILABLE and _db:
         loop.run_in_executor(None, save_scan_state, _db, breadth, indexes, sector_trends, body.scan_type, body.mode)
         loop.run_in_executor(None, save_signals_to_firestore, signals, _db)

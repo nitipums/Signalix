@@ -363,8 +363,35 @@ def fetch_ohlcv(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
 
 # ─── BigQuery helpers ────────────────────────────────────────────────────────
 
+_SCAN_RESULTS_SCHEMA = [
+    ("scanned_at",        "TIMESTAMP"),
+    ("symbol",            "STRING"),
+    ("name",              "STRING"),
+    ("stage",             "INT64"),
+    ("pattern",           "STRING"),
+    ("close",             "FLOAT64"),
+    ("change_pct",        "FLOAT64"),
+    ("volume",            "INT64"),
+    ("volume_ratio",      "FLOAT64"),
+    ("sma50",             "FLOAT64"),
+    ("sma150",            "FLOAT64"),
+    ("sma200",            "FLOAT64"),
+    ("high_52w",          "FLOAT64"),
+    ("low_52w",           "FLOAT64"),
+    ("strength_score",    "FLOAT64"),
+    ("atr",               "FLOAT64"),
+    ("trade_value_m",     "FLOAT64"),
+    ("pct_from_52w_high", "FLOAT64"),
+    ("stop_loss",         "FLOAT64"),
+    ("target_price",      "FLOAT64"),
+    ("breakout_count_1y", "INT64"),
+    ("tradingview_url",   "STRING"),
+    ("breakout_details",  "STRING"),
+]
+
+
 def init_bq(project_id: str, dataset: str = "signalix") -> None:
-    """Initialize BigQuery client and ensure ohlcv table exists."""
+    """Initialize BigQuery client and ensure ohlcv + scan_results tables exist."""
     global _bq_client, _bq_project, _bq_dataset, BQ_AVAILABLE
     try:
         from google.cloud import bigquery
@@ -372,8 +399,9 @@ def init_bq(project_id: str, dataset: str = "signalix") -> None:
         _bq_project = project_id
         _bq_dataset = dataset
         _ensure_bq_table()
+        _ensure_scan_results_table()
         BQ_AVAILABLE = True
-        logger.info("BigQuery initialized: %s.%s.ohlcv", project_id, dataset)
+        logger.info("BigQuery initialized: %s.%s", project_id, dataset)
     except Exception as exc:
         logger.warning("BigQuery init failed (continuing without BQ): %s", exc)
         BQ_AVAILABLE = False
@@ -393,6 +421,95 @@ def _ensure_bq_table() -> None:
     table.clustering_fields = ["symbol", "date"]
     _bq_client.create_table(table, exists_ok=True)
     logger.info("BQ table ready: %s", table_id)
+
+
+def _ensure_scan_results_table() -> None:
+    from google.cloud import bigquery
+    schema = [bigquery.SchemaField(n, t) for n, t in _SCAN_RESULTS_SCHEMA]
+    table_id = f"{_bq_project}.{_bq_dataset}.scan_results"
+    table = bigquery.Table(table_id, schema=schema)
+    table.time_partitioning = bigquery.TimePartitioning(field="scanned_at")
+    table.clustering_fields = ["symbol"]
+    _bq_client.create_table(table, exists_ok=True)
+    logger.info("BQ table ready: %s", table_id)
+
+
+def save_signals_to_bq(signals: list) -> None:
+    """Append scan results to BQ scan_results table. Called on every scan."""
+    if not signals or _bq_client is None:
+        return
+    import json
+    scanned_at = signals[0].scanned_at  # same for all signals in this scan
+    rows = []
+    for s in signals:
+        rows.append({
+            "scanned_at": scanned_at,
+            "symbol": s.symbol, "name": s.name, "stage": s.stage,
+            "pattern": s.pattern, "close": s.close, "change_pct": s.change_pct,
+            "volume": s.volume, "volume_ratio": s.volume_ratio,
+            "sma50": s.sma50, "sma150": s.sma150, "sma200": s.sma200,
+            "high_52w": s.high_52w, "low_52w": s.low_52w,
+            "strength_score": s.strength_score, "atr": s.atr,
+            "trade_value_m": getattr(s, "trade_value_m", 0.0),
+            "pct_from_52w_high": getattr(s, "pct_from_52w_high", 0.0),
+            "stop_loss": getattr(s, "stop_loss", 0.0),
+            "target_price": getattr(s, "target_price", 0.0),
+            "breakout_count_1y": getattr(s, "breakout_count_1y", 0),
+            "tradingview_url": s.tradingview_url,
+            "breakout_details": json.dumps(getattr(s, "breakout_details", {}) or {}),
+        })
+    table_id = f"{_bq_project}.{_bq_dataset}.scan_results"
+    try:
+        errors = _bq_client.insert_rows_json(table_id, rows)
+        if errors:
+            logger.error("save_signals_to_bq insert errors: %s", errors[:3])
+        else:
+            logger.info("Saved %d signals to BQ scan_results (scanned_at=%s)", len(rows), scanned_at[:16])
+    except Exception as exc:
+        logger.error("save_signals_to_bq failed: %s", exc)
+
+
+def load_latest_signals_from_bq() -> list:
+    """Load all signals from the most recent scan stored in BQ scan_results."""
+    if _bq_client is None:
+        return []
+    import json
+    import dataclasses
+    from analyzer import StockSignal
+    valid_fields = {f.name for f in dataclasses.fields(StockSignal)}
+    query = f"""
+        SELECT * EXCEPT(scanned_at)
+        FROM `{_bq_project}.{_bq_dataset}.scan_results`
+        WHERE DATE(scanned_at) = (
+            SELECT MAX(DATE(scanned_at))
+            FROM `{_bq_project}.{_bq_dataset}.scan_results`
+        )
+        ORDER BY strength_score DESC
+    """
+    try:
+        rows = list(_bq_client.query(query).result())
+        if not rows:
+            logger.info("BQ scan_results: no rows found")
+            return []
+        signals = []
+        for row in rows:
+            d = dict(row)
+            d["breakout_details"] = json.loads(d.get("breakout_details") or "{}")
+            d["stage"] = int(d.get("stage") or 1)
+            d["volume"] = int(d.get("volume") or 0)
+            d["breakout_count_1y"] = int(d.get("breakout_count_1y") or 0)
+            filtered = {k: v for k, v in d.items() if k in valid_fields and v is not None}
+            try:
+                sig = StockSignal(**filtered)
+                if sig.symbol:
+                    signals.append(sig)
+            except Exception as e:
+                logger.debug("load_latest_signals_from_bq skip row: %s", e)
+        logger.info("Loaded %d signals from BQ scan_results", len(signals))
+        return signals
+    except Exception as exc:
+        logger.error("load_latest_signals_from_bq failed: %s", exc)
+        return []
 
 
 def _df_to_bq(symbol: str, df: pd.DataFrame) -> "pd.DataFrame":
