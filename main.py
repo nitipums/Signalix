@@ -53,6 +53,7 @@ from notifier import (
     build_index_carousel,
     build_market_breadth_card,
     build_pattern_detail_card,
+    build_pattern_overview_card,
     build_ranked_stock_list_bubble,
     build_simple_tappable_list,
     build_sector_carousel,
@@ -736,11 +737,22 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
 
     # ── Sector Trends: overview or drill-down ──
     elif cmd.startswith("sector ") and len(cmd) > 7:
-        sector_name = cmd[7:].upper().strip()
+        # Parse optional page: "sector INDUS p2"
+        rest = cmd[7:].upper().strip()
+        sec_page = 1
+        if " P" in rest:
+            parts = rest.rsplit(" P", 1)
+            rest = parts[0].strip()
+            try:
+                sec_page = int(parts[1])
+            except ValueError:
+                pass
+        sector_name = rest
         sector_sigs = [s for s in _last_signals if SECTOR_MAP.get(s.symbol) == sector_name]
         sector_sigs.sort(key=lambda s: s.strength_score, reverse=True)
         if sector_sigs:
-            _reply_stock_list(reply_token, sector_sigs, f"🏭 {sector_name} — Leaders")
+            _reply_stock_list(reply_token, sector_sigs, f"🏭 {sector_name} — Leaders",
+                              page=sec_page, base_cmd=f"sector {sector_name}")
         else:
             reply_text(reply_token, f"ไม่พบหุ้นในกลุ่ม {sector_name}\nกลุ่มที่มี: AGRO, CONSUMP, FINCIAL, INDUS, PROPCON, RESOURC, SERVICE, TECH")
 
@@ -773,6 +785,10 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     # ── Stage picker ──
     elif cmd in ("stage", "stages", "สเตจ"):
         reply_flex(reply_token, "เลือก Stage", build_stage_picker_card(_last_breadth))
+
+    # ── Pattern overview ──
+    elif cmd in ("patterns", "pattern", "รูปแบบ"):
+        reply_flex(reply_token, "รูปแบบราคา", build_pattern_overview_card(_last_signals, _last_breadth))
 
     # ── Subscribe stub ──
     elif cmd in ("subscribe", "สมัคร", "membership"):

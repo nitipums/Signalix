@@ -252,18 +252,18 @@ def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None
     stage_row = {
         "type": "box", "layout": "horizontal",
         "contents": [
-            _tappable_stage_box("Stage 2 ✅", breadth.stage2_count, "#27AE60", "stage2"),
-            _tappable_stage_box("Stage 1 ⚪", breadth.stage1_count, "#95A5A6", "stage1"),
-            _tappable_stage_box("Stage 3 ⚠️", breadth.stage3_count, "#E67E22", "stage3"),
-            _tappable_stage_box("Stage 4 ❌", breadth.stage4_count, "#E74C3C", "stage4"),
+            _tappable_stage_box("Stage 2 ✅", breadth.stage2_count, "#27AE60", "stage"),
+            _tappable_stage_box("Stage 1 ⚪", breadth.stage1_count, "#95A5A6", "stage"),
+            _tappable_stage_box("Stage 3 ⚠️", breadth.stage3_count, "#E67E22", "stage"),
+            _tappable_stage_box("Stage 4 ❌", breadth.stage4_count, "#E74C3C", "stage"),
         ],
     }
 
     signal_row = {
         "type": "box", "layout": "horizontal",
         "contents": [
-            _tappable_kv_box("Breakout", str(breadth.breakout_count), "#F39C12", "breakout"),
-            _tappable_kv_box("VCP", str(breadth.vcp_count), "#2980B9", "vcp"),
+            _tappable_kv_box("Breakout", str(breadth.breakout_count), "#F39C12", "patterns"),
+            _tappable_kv_box("VCP", str(breadth.vcp_count), "#2980B9", "patterns"),
             _kv_box("52W High", str(breadth.new_highs_52w), "#8E44AD"),
             _kv_box("52W Low", str(breadth.new_lows_52w), "#E74C3C"),
         ],
@@ -1131,18 +1131,31 @@ def build_sector_carousel(sectors: list[SectorSummary]) -> dict:
 
 
 def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
-    """Single mega bubble — each sector row is tappable, no footer buttons."""
+    """Single mega bubble — each sector row is tappable, no footer buttons.
+    Column 3 shows total stock count (matching drill-down result), not adv/decl.
+    OTHER (unmapped stocks) is hidden — it adds noise without actionable insight.
+    """
     SECTOR_COLORS = {
         "AGRO": "#27AE60", "CONSUMP": "#F39C12", "FINCIAL": "#2980B9",
         "INDUS": "#8E44AD", "PROPCON": "#E67E22", "RESOURC": "#E74C3C",
         "SERVICE": "#1ABC9C", "TECH": "#3498DB",
     }
+    SECTOR_THAI = {
+        "AGRO": "เกษตร/อาหาร", "CONSUMP": "สินค้าบริโภค", "FINCIAL": "การเงิน",
+        "INDUS": "อุตสาหกรรม", "PROPCON": "อสังหาฯ/ก่อสร้าง", "RESOURC": "ทรัพยากร",
+        "SERVICE": "บริการ", "TECH": "เทคโนโลยี",
+    }
     rows = []
-    for sec in sectors:
+    # Sort by Stage 2 %, exclude OTHER (unmapped stocks without clear sector)
+    visible = [s for s in sectors if s.sector != "OTHER"]
+    visible.sort(key=lambda s: s.stage2_pct, reverse=True)
+    for sec in visible:
         color = SECTOR_COLORS.get(sec.sector, "#95A5A6")
-        trend = "▲" if sec.advancing > sec.declining else ("▼" if sec.declining > sec.advancing else "=")
+        trend = "▲" if sec.advancing > sec.declining else ("▼" if sec.declining > sec.advancing else "─")
         trend_color = "#27AE60" if trend == "▲" else ("#E74C3C" if trend == "▼" else "#7F8C8D")
         s2_color = "#27AE60" if sec.stage2_pct >= 30 else ("#F39C12" if sec.stage2_pct >= 20 else "#7F8C8D")
+        thai = SECTOR_THAI.get(sec.sector, "")
+        name_text = f"{sec.sector}" if not thai else f"{sec.sector}  {thai}"
         rows.append({
             "type": "box",
             "layout": "horizontal",
@@ -1152,7 +1165,7 @@ def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
             "contents": [
                 {"type": "text", "text": sec.sector, "size": "sm", "weight": "bold", "color": color, "flex": 3},
                 {"type": "text", "text": f"S2:{sec.stage2_pct:.0f}%", "size": "xs", "color": s2_color, "weight": "bold", "flex": 2, "align": "end"},
-                {"type": "text", "text": f"{trend}{sec.advancing}/{sec.declining}", "size": "xs", "color": trend_color, "flex": 2, "align": "end"},
+                {"type": "text", "text": f"{trend} {sec.total}", "size": "xs", "color": trend_color, "flex": 2, "align": "end"},
             ],
         })
         rows.append({"type": "separator"})
@@ -1182,7 +1195,7 @@ def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
                     "contents": [
                         {"type": "text", "text": "Sector", "size": "xxs", "color": "#AAAAAA", "flex": 3},
                         {"type": "text", "text": "Stage2%", "size": "xxs", "color": "#AAAAAA", "flex": 2, "align": "end"},
-                        {"type": "text", "text": "▲/▼", "size": "xxs", "color": "#AAAAAA", "flex": 2, "align": "end"},
+                        {"type": "text", "text": "Trend  N", "size": "xxs", "color": "#AAAAAA", "flex": 2, "align": "end"},
                     ],
                 },
                 {"type": "separator"},
@@ -1248,6 +1261,64 @@ def build_stage_picker_card(breadth: Optional[MarketBreadth] = None) -> dict:
             },
         })
     return {"type": "carousel", "contents": bubbles}
+
+
+def build_pattern_overview_card(signals: list[StockSignal], breadth=None) -> dict:
+    """Overview card listing all patterns with counts. Each row tappable → pattern stock list."""
+    from collections import Counter
+    s2 = [s for s in signals if s.stage == 2]
+    counts = Counter(s.pattern for s in s2)
+    # consolidating can be any stage
+    consol = sum(1 for s in signals if s.pattern == "consolidating")
+
+    PATTERNS = [
+        ("breakout",      "🚀 Breakout",       "ทะลุแนวต้าน + Volume",        "#F39C12", "breakout"),
+        ("ath_breakout",  "🏆 ATH Breakout",   "New All-Time High",           "#E74C3C", "ath"),
+        ("vcp",           "🔍 VCP",            "Volatility Contraction",      "#2980B9", "vcp"),
+        ("vcp_low_cheat", "🎯 VCP Low Cheat",  "เข้าใกล้ pivot ก่อน break",    "#1ABC9C", "vcp low cheat"),
+        ("consolidating", "⚙️ Consolidating",  "Stage 2 สะสม รอสัญญาณ",     "#95A5A6", "consolidating"),
+    ]
+
+    rows: list = [
+        {
+            "type": "box", "layout": "horizontal", "paddingBottom": "4px",
+            "contents": [
+                {"type": "text", "text": "Pattern", "size": "xxs", "color": "#AAAAAA", "flex": 5},
+                {"type": "text", "text": "Description", "size": "xxs", "color": "#AAAAAA", "flex": 5},
+                {"type": "text", "text": "N", "size": "xxs", "color": "#AAAAAA", "flex": 2, "align": "end"},
+            ],
+        },
+        {"type": "separator"},
+    ]
+    for key, label, desc, color, cmd in PATTERNS:
+        cnt = consol if key == "consolidating" else counts.get(key, 0)
+        rows.append({
+            "type": "box", "layout": "horizontal",
+            "paddingTop": "8px", "paddingBottom": "8px",
+            "action": {"type": "message", "label": label[:20], "text": cmd},
+            "contents": [
+                {"type": "text", "text": label, "size": "xs", "weight": "bold", "color": color, "flex": 5},
+                {"type": "text", "text": desc, "size": "xxs", "color": "#AAAAAA", "flex": 5, "wrap": True},
+                {"type": "text", "text": str(cnt), "size": "sm", "weight": "bold", "color": color, "flex": 2, "align": "end"},
+            ],
+        })
+        rows.append({"type": "separator"})
+
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "📈 รูปแบบราคา (Patterns)", "size": "xs", "color": "#DDDDDD"},
+                {"type": "text", "text": "แตะรูปแบบเพื่อดูรายชื่อหุ้น", "size": "xxs", "color": "#BBDDFF"},
+            ],
+            "backgroundColor": "#1A237E", "paddingAll": "14px",
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "none",
+            "contents": rows, "paddingAll": "14px",
+        },
+    }
 
 
 def build_watchlist_stock_card(signal: StockSignal, fundamentals: dict) -> dict:
