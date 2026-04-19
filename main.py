@@ -372,7 +372,7 @@ async def scan(
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
 
-    global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache
+    global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache, _last_sector_indexes
 
     logger.info("Running scan: type=%s mode=%s broadcast=%s", body.scan_type, body.mode, body.broadcast)
     loop = asyncio.get_running_loop()
