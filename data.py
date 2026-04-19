@@ -470,7 +470,10 @@ def save_signals_to_bq(signals: list) -> None:
 
 
 def load_latest_signals_from_bq() -> list:
-    """Load all signals from the most recent scan stored in BQ scan_results."""
+    """Load all signals from the single most-recent scan stored in BQ scan_results.
+    Uses MAX(scanned_at) as a timestamp — not DATE — so only one scan is returned
+    even when multiple scans run on the same calendar day (4x daily schedule).
+    """
     if _bq_client is None:
         return []
     import json
@@ -480,8 +483,8 @@ def load_latest_signals_from_bq() -> list:
     query = f"""
         SELECT * EXCEPT(scanned_at)
         FROM `{_bq_project}.{_bq_dataset}.scan_results`
-        WHERE DATE(scanned_at) = (
-            SELECT MAX(DATE(scanned_at))
+        WHERE scanned_at = (
+            SELECT MAX(scanned_at)
             FROM `{_bq_project}.{_bq_dataset}.scan_results`
         )
         ORDER BY strength_score DESC
