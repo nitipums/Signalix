@@ -965,9 +965,9 @@ def GET_ALL_SYMBOLS_WITH_INDEX() -> list[str]:
 
 def fetch_latest_candles(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
     """
-    Intraday scan data fetch: load BQ history + merge with a small yfinance
-    batch download (5d) to get today's candle.  Much faster than a full 1y download.
-    Falls back to fetch_all_stocks() if BQ history is unavailable.
+    Intraday scan: BQ history (base) + Settrade recent candles + real-time quote patch.
+    Settrade is the primary source (authoritative for Thai stocks, real-time prices).
+    Falls back to yfinance 5d if Settrade is unavailable or returns < 50% coverage.
     """
     bq_data = load_all_ohlcv_from_bq(lookback_days=lookback_days) if BQ_AVAILABLE else {}
     if not bq_data:
@@ -975,40 +975,72 @@ def fetch_latest_candles(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
         return fetch_all_stocks(period="1y")
 
     all_symbols = GET_ALL_SYMBOLS_WITH_INDEX()
-    tickers = [("^SET.BK" if s == "SET" else _to_yf_ticker(s)) for s in all_symbols]
+    stock_symbols = [s for s in all_symbols if s != "SET"]  # SET index not in Settrade symbol list
 
+    # --- Step 1: Settrade recent daily candles + real-time quote patch ---
+    recent_data: dict[str, pd.DataFrame] = {}
     try:
-        raw = yf.download(
-            tickers,
-            period="5d",
-            group_by="ticker",
-            progress=False,
-            auto_adjust=True,
-            threads=True,
-        )
+        from settrade_client import get_bulk_ohlcv, get_bulk_quotes, is_api_available as _st_ok
+        if _st_ok():
+            # 1a. Last 30 daily candles (fills any gap between BQ and today)
+            recent_data = get_bulk_ohlcv(stock_symbols, period="1M", max_workers=10)
+
+            # 1b. Real-time quotes — patch today's Close/Volume with live price
+            today = pd.Timestamp.now().normalize()
+            quotes = get_bulk_quotes(stock_symbols, max_workers=10)
+            patched = 0
+            for sym, q in quotes.items():
+                last = float(q.get("last") or 0)
+                if last <= 0:
+                    continue
+                today_row = pd.DataFrame({
+                    "Open":   [last],
+                    "High":   [float(q.get("high") or last)],
+                    "Low":    [float(q.get("low") or last)],
+                    "Close":  [last],
+                    "Volume": [int(q.get("volume") or 0)],
+                }, index=[today])
+                base = recent_data.get(sym, pd.DataFrame())
+                if not base.empty:
+                    base = base[base.index < today]
+                recent_data[sym] = pd.concat([base, today_row]).sort_index() if not base.empty else today_row
+                patched += 1
+            logger.info("fetch_latest_candles: Settrade %d OHLCV + %d live quotes patched", len(recent_data), patched)
     except Exception as exc:
-        logger.error("fetch_latest_candles: yfinance 5d download failed: %s", exc)
-        return bq_data
+        logger.error("fetch_latest_candles: Settrade failed: %s", exc)
 
-    results: dict[str, pd.DataFrame] = {}
-    for symbol, ticker in zip(all_symbols, tickers):
-        bq_df = bq_data.get(symbol)
-        new_df = pd.DataFrame()
+    # --- Step 2: yfinance 5d fallback (only for symbols Settrade didn't cover) ---
+    missing = [s for s in all_symbols if s not in recent_data]
+    if len(recent_data) < len(stock_symbols) * 0.5:
+        logger.warning("fetch_latest_candles: Settrade <50%% — using yfinance 5d for all")
+        missing = all_symbols  # redo everything via yfinance
+    if missing:
+        tickers = [("^SET.BK" if s == "SET" else _to_yf_ticker(s)) for s in missing]
         try:
-            if len(tickers) == 1:
-                new_df = raw.copy()
-            else:
-                new_df = raw[ticker].copy() if ticker in raw.columns.get_level_values(0) else pd.DataFrame()
-            if not new_df.empty:
-                new_df = new_df.dropna(subset=["Close"])
-                new_df.index = pd.to_datetime(new_df.index).tz_localize(None)
-                new_df.index.name = "Date"
-                if isinstance(new_df.columns, pd.MultiIndex):
-                    new_df.columns = new_df.columns.get_level_values(0)
-                new_df.columns = [c.replace(" ", "_") for c in new_df.columns]
-        except Exception:
-            new_df = pd.DataFrame()
+            raw = yf.download(tickers, period="5d", group_by="ticker", progress=False, auto_adjust=True, threads=True)
+            multi = len(tickers) > 1
+            top_level = raw.columns.get_level_values(0) if multi else None
+            for symbol, ticker in zip(missing, tickers):
+                try:
+                    ndf = raw[ticker].copy() if (multi and ticker in top_level) else (raw.copy() if not multi else pd.DataFrame())
+                    if not ndf.empty:
+                        ndf = ndf.dropna(subset=["Close"])
+                        ndf.index = pd.to_datetime(ndf.index).tz_localize(None)
+                        ndf.index.name = "Date"
+                        if isinstance(ndf.columns, pd.MultiIndex):
+                            ndf.columns = ndf.columns.get_level_values(0)
+                        ndf.columns = [c.replace(" ", "_") for c in ndf.columns]
+                        recent_data[symbol] = ndf
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.error("fetch_latest_candles: yfinance fallback failed: %s", exc)
 
+    # --- Step 3: Merge BQ history + recent data ---
+    results: dict[str, pd.DataFrame] = {}
+    for symbol in all_symbols:
+        bq_df = bq_data.get(symbol)
+        new_df = recent_data.get(symbol, pd.DataFrame())
         if bq_df is not None and not bq_df.empty and not new_df.empty:
             combined = pd.concat([bq_df, new_df])
             combined = combined[~combined.index.duplicated(keep="last")]
@@ -1018,7 +1050,7 @@ def fetch_latest_candles(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
         elif not new_df.empty:
             results[symbol] = new_df
 
-    logger.info("fetch_latest_candles: %d symbols merged (BQ + yfinance 5d)", len(results))
+    logger.info("fetch_latest_candles: %d symbols merged (BQ + Settrade/yfinance)", len(results))
     return results
 
 

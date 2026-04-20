@@ -6,6 +6,7 @@ Docs: https://developer.settrade.com/open-api/api-reference
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import lru_cache
 from typing import Optional
@@ -122,6 +123,40 @@ def get_quote(symbol: str) -> Optional[dict]:
     except Exception as exc:
         logger.error("get_quote(%s) failed: %s", symbol, exc)
         return None
+
+
+def get_bulk_ohlcv(symbols: list[str], period: str = "1M", max_workers: int = 10) -> dict[str, pd.DataFrame]:
+    """Fetch recent OHLCV for multiple symbols in parallel via Settrade API."""
+    if not is_api_available():
+        return {}
+
+    def _fetch(sym):
+        return sym, get_ohlcv(sym, period=period)
+
+    results: dict[str, pd.DataFrame] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for sym, df in ex.map(_fetch, symbols):
+            if df is not None and not df.empty:
+                results[sym] = df
+    logger.info("get_bulk_ohlcv: %d/%d symbols fetched", len(results), len(symbols))
+    return results
+
+
+def get_bulk_quotes(symbols: list[str], max_workers: int = 10) -> dict[str, dict]:
+    """Fetch real-time quotes for multiple symbols in parallel via Settrade API."""
+    if not is_api_available():
+        return {}
+
+    def _fetch(sym):
+        return sym, get_quote(sym)
+
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for sym, q in ex.map(_fetch, symbols):
+            if q and (q.get("last") or 0) > 0:
+                results[sym] = q
+    logger.info("get_bulk_quotes: %d/%d symbols fetched", len(results), len(symbols))
+    return results
 
 
 def get_all_symbols_from_api() -> list[str]:
