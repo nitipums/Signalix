@@ -36,7 +36,7 @@ from config import get_settings
 from data import (
     SECTOR_MAP, SUBSECTOR_TO_SECTOR, SECTOR_INDEX_SYMBOLS,
     append_new_candles_to_bq, BQ_AVAILABLE,
-    fetch_indexes_with_history, fetch_latest_candles, fetch_sector_index_prices,
+    fetch_indexes_with_history, fetch_latest_candles, fetch_one_latest, fetch_sector_index_prices,
     fetch_sector_map_from_yfinance, get_fundamentals,
     get_sector, get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
     increment_stage4_views, load_breakout_review,
@@ -399,12 +399,17 @@ async def scan(
             None, functools.partial(run_full_scan, ath_cache=_ath_cache)
         )
 
-    breadth = compute_market_breadth(signals, index_df=all_data.get("SET"))
-    sector_trends = compute_sector_trends(signals)
-
-    # Always fetch full index history for MACD/RSI on all scan types
+    # Always fetch full index history for MACD/RSI on all scan types. Fetched BEFORE
+    # compute_market_breadth so it can serve as a fallback when all_data["SET"] is
+    # missing (e.g., Settrade doesn't carry SET and yfinance merge silently drops it).
     index_dfs = await loop.run_in_executor(None, fetch_indexes_with_history)
     indexes = _analyze_index_dfs(index_dfs)
+
+    set_df = all_data.get("SET")
+    if set_df is None or len(set_df) < 2:
+        set_df = index_dfs.get("SET")
+    breadth = compute_market_breadth(signals, index_df=set_df)
+    sector_trends = compute_sector_trends(signals)
     del index_dfs
 
     # Fetch SET sector index prices (AGRO, FINCIAL, TECH, etc.) — fire and forget
@@ -1066,6 +1071,25 @@ async def _reply_single_stock(reply_token: str, symbol: str, user_id: str = "") 
     if signal is None:
         reply_text(reply_token, f'ไม่พบหุ้น "{symbol}" ในระบบ\nตรวจสอบ ticker ให้ถูกต้อง เช่น ADVANC, PTT, KBANK')
         return
+
+    # Live price patch — best-effort refresh of price/high/change from Settrade so the
+    # card reflects the most recent quote rather than the cached scan snapshot.
+    # SMA/stage/strength stay cached (they require full history).
+    import copy
+    try:
+        quote = await loop.run_in_executor(None, fetch_one_latest, symbol)
+        if quote:
+            signal = copy.copy(signal)  # don't mutate the shared _last_signals / Firestore cache
+            signal.close = round(quote["last"], 2)
+            if quote["change_pct"]:
+                signal.change_pct = round(quote["change_pct"], 2)
+            signal.high_52w = round(max(signal.high_52w, quote["high"]), 2)
+            if signal.high_52w > 0:
+                signal.pct_from_52w_high = round((signal.close - signal.high_52w) / signal.high_52w * 100, 2)
+            signal.data_date = datetime.now(BANGKOK_TZ).strftime("%Y-%m-%d")
+    except Exception as exc:
+        logger.warning("live price patch for %s failed: %s", symbol, exc)
+
     reply_flex(reply_token, f"วิเคราะห์ {symbol}", build_single_stock_card(signal))
     # Gamification — fire-and-forget, never block reply
     if user_id and FIRESTORE_AVAILABLE and _db:

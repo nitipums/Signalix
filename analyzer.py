@@ -61,6 +61,7 @@ class StockSignal:
     stop_loss: float = 0.0         # ATR-based: close - 1.5 * ATR
     target_price: float = 0.0      # 2:1 risk/reward: close + 2 * (close - stop_loss)
     breakout_count_1y: int = 0     # Number of distinct breakout events in past year
+    data_date: str = ""            # Date of the last candle used (YYYY-MM-DD) — separate from scanned_at
 
 
 @dataclass
@@ -427,6 +428,11 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
     bkk = pytz.timezone("Asia/Bangkok")
     now_str = datetime.now(bkk).isoformat()
 
+    try:
+        data_date = pd.Timestamp(df.index[-1]).strftime("%Y-%m-%d")
+    except Exception:
+        data_date = ""
+
     return StockSignal(
         symbol=symbol,
         name=symbol,  # Thai name could be enriched later via SET Trade API metadata
@@ -451,6 +457,7 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
         stop_loss=stop_loss_price,
         target_price=target,
         breakout_count_1y=bo_count,
+        data_date=data_date,
     )
 
 
