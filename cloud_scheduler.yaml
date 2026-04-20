@@ -1,18 +1,14 @@
 # Cloud Scheduler job definitions for Signalix
 # Deploy with: gcloud scheduler jobs create http <name> --flags...
 #
-# All times are in Asia/Bangkok timezone (ICT, UTC+7)
-# Cloud Scheduler cron uses UTC — ICT = UTC+7
-# 10:15 ICT = 03:15 UTC → "15 3 * * 1-5"  (Mon–Fri)
-# 12:15 ICT = 05:15 UTC → "15 5 * * 1-5"
-# 15:15 ICT = 08:15 UTC → "15 8 * * 1-5"
-# 16:45 ICT = 09:45 UTC → "45 9 * * 1-5"
+# All times are Asia/Bangkok (ICT). timeZone field tells Cloud Scheduler
+# to interpret cron as local time — no UTC conversion needed.
 
 jobs:
 
   - name: signalix-morning-scan
     description: "10:15 ICT — Morning breakout scan (intraday: BQ history + latest candle)"
-    schedule: "15 3 * * 1-5"
+    schedule: "15 10 * * 1-5"
     timeZone: "Asia/Bangkok"
     httpTarget:
       uri: "${CLOUD_RUN_URL}/scan"
@@ -24,7 +20,7 @@ jobs:
 
   - name: signalix-midday-scan
     description: "12:15 ICT — Midday market breadth (intraday: BQ history + latest candle)"
-    schedule: "15 5 * * 1-5"
+    schedule: "15 12 * * 1-5"
     timeZone: "Asia/Bangkok"
     httpTarget:
       uri: "${CLOUD_RUN_URL}/scan"
@@ -36,7 +32,7 @@ jobs:
 
   - name: signalix-preclose-scan
     description: "15:15 ICT — Pre-close VCP setups (intraday: BQ history + latest candle)"
-    schedule: "15 8 * * 1-5"
+    schedule: "15 15 * * 1-5"
     timeZone: "Asia/Bangkok"
     httpTarget:
       uri: "${CLOUD_RUN_URL}/scan"
@@ -48,7 +44,7 @@ jobs:
 
   - name: signalix-postclose-report
     description: "16:45 ICT — Post-close full report + BigQuery update (full fetch + BQ write)"
-    schedule: "45 9 * * 1-5"
+    schedule: "45 16 * * 1-5"
     timeZone: "Asia/Bangkok"
     httpTarget:
       uri: "${CLOUD_RUN_URL}/scan"
