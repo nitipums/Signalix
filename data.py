@@ -1050,6 +1050,25 @@ def fetch_latest_candles(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
         elif not new_df.empty:
             results[symbol] = new_df
 
+    # Final SET backfill — index is not in Settrade and may be silently missing from
+    # yfinance fallback. Guarantee a usable DataFrame so compute_market_breadth always
+    # gets real SET numbers for the breadth card hero.
+    set_df = results.get("SET")
+    if set_df is None or len(set_df) < 2:
+        try:
+            raw = yf.download("^SET.BK", period="1mo", progress=False, auto_adjust=True)
+            if raw is not None and not raw.empty:
+                ndf = raw.dropna(subset=["Close"]).copy()
+                ndf.index = pd.to_datetime(ndf.index).tz_localize(None)
+                ndf.index.name = "Date"
+                if isinstance(ndf.columns, pd.MultiIndex):
+                    ndf.columns = ndf.columns.get_level_values(0)
+                ndf.columns = [c.replace(" ", "_") for c in ndf.columns]
+                if len(ndf) >= 2:
+                    results["SET"] = ndf
+        except Exception as exc:
+            logger.error("fetch_latest_candles: SET backfill failed: %s", exc)
+
     logger.info("fetch_latest_candles: %d symbols merged (BQ + Settrade/yfinance)", len(results))
     return results
 
@@ -1079,6 +1098,35 @@ def fetch_indexes_with_history(period: str = "1y") -> dict[str, pd.DataFrame]:
     except Exception as exc:
         logger.error("fetch_indexes_with_history failed: %s", exc)
     return result
+
+
+def fetch_one_latest(symbol: str) -> Optional[dict]:
+    """
+    Best-effort real-time quote for a single symbol via Settrade.
+    Returns None on any failure (caller should fall back to cached data).
+    """
+    if not symbol:
+        return None
+    try:
+        from settrade_client import get_quote, is_api_available as _st_ok
+        if not _st_ok():
+            return None
+        q = get_quote(symbol)
+        if not q:
+            return None
+        last = float(q.get("last") or 0)
+        if last <= 0:
+            return None
+        return {
+            "last": last,
+            "high": float(q.get("high") or last),
+            "low": float(q.get("low") or last),
+            "change_pct": float(q.get("change_pct") or 0),
+            "volume": int(q.get("volume") or 0),
+        }
+    except Exception as exc:
+        logger.warning("fetch_one_latest(%s) failed: %s", symbol, exc)
+        return None
 
 
 def get_latest_price(symbol: str) -> Optional[dict]:

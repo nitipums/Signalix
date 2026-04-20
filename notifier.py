@@ -199,6 +199,13 @@ def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None
     """Build a Flex Bubble card for market breadth summary with SET index as hero header."""
     set_close = getattr(breadth, "set_index_close", 0.0)
     set_chg = getattr(breadth, "set_index_change_pct", 0.0)
+    # Fallback: if breadth didn't capture SET, use the value from the index analysis
+    # pass so the hero number isn't blank just because all_data["SET"] was missing.
+    if (not set_close) and indexes:
+        _idx_set = indexes.get("SET") or {}
+        set_close = float(_idx_set.get("close") or 0.0)
+        if not set_chg:
+            set_chg = float(_idx_set.get("change_pct") or 0.0)
     chg_color = _pct_color(set_chg)
     chg_sign = "+" if set_chg > 0 else ""
     above_pct = getattr(breadth, "above_ma200_pct", 0.0)
@@ -670,7 +677,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
             "spacing": "sm",
             "contents": [
                 {"type": "box", "layout": "horizontal", "spacing": "sm", "contents": footer_buttons},
-                {"type": "text", "text": f"Updated: {signal.scanned_at[:16].replace('T', ' ')}", "size": "xxs", "color": "#AAAAAA", "align": "center"},
+                {"type": "text", "text": f"Data: {getattr(signal, 'data_date', '') or '—'} · Scanned: {signal.scanned_at[:16].replace('T', ' ')}", "size": "xxs", "color": "#AAAAAA", "align": "center"},
             ],
             "paddingAll": "12px",
         },
