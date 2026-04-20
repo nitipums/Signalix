@@ -8,11 +8,13 @@ Endpoints:
 """
 
 import asyncio
+import copy
 import functools
 import hashlib
 import hmac
 import logging
 import secrets
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -953,23 +955,29 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         await _reply_stock_list(reply_token, signals, "⚙️ Consolidating Stocks")
 
     # ── Advancing / Declining / Flat (tappable from market card) ──
+    # These three filter AND sort by change_pct, which is only fresh after a live
+    # Settrade patch — so we must patch the full universe BEFORE filtering, otherwise
+    # the list membership (not just the displayed prices) is stale.
     elif cmd.startswith("advancing") or cmd.startswith("up ") or cmd == "up":
         page = _parse_stage_page(cmd)
-        sigs = sorted([s for s in _last_signals if (s.change_pct or 0) > 0],
+        patched = await _patch_signals_with_live(_last_signals)
+        sigs = sorted([s for s in patched if (s.change_pct or 0) > 0],
                       key=lambda s: s.change_pct, reverse=True)
         await _reply_stock_list(reply_token, sigs, f"📈 Advancing ({len(sigs)} stocks)",
                                 page=page, base_cmd="advancing", subtitle="Sorted by % Gain")
 
     elif cmd.startswith("declining") or cmd.startswith("down ") or cmd == "down":
         page = _parse_stage_page(cmd)
-        sigs = sorted([s for s in _last_signals if (s.change_pct or 0) < 0],
+        patched = await _patch_signals_with_live(_last_signals)
+        sigs = sorted([s for s in patched if (s.change_pct or 0) < 0],
                       key=lambda s: s.change_pct)
         await _reply_stock_list(reply_token, sigs, f"📉 Declining ({len(sigs)} stocks)",
                                 page=page, base_cmd="declining", subtitle="Sorted by % Drop")
 
     elif cmd.startswith("flat"):
         page = _parse_stage_page(cmd)
-        sigs = sorted([s for s in _last_signals if (s.change_pct or 0) == 0],
+        patched = await _patch_signals_with_live(_last_signals)
+        sigs = sorted([s for s in patched if (s.change_pct or 0) == 0],
                       key=lambda s: s.strength_score, reverse=True)
         await _reply_stock_list(reply_token, sigs, f"➡️ Flat ({len(sigs)} stocks)",
                                 page=page, base_cmd="flat")
@@ -1038,7 +1046,6 @@ def _get_signals_for(pattern: Optional[str] = None, stage: Optional[int] = None)
 def _apply_live_quote(signal: StockSignal, quote: dict) -> StockSignal:
     """Return a shallow copy of signal with price fields patched from a live quote.
     SMA/stage/strength/pattern fields are NOT modified — they need full history."""
-    import copy
     patched = copy.copy(signal)
     patched.close = round(quote["last"], 2)
     if quote.get("change_pct"):
@@ -1050,18 +1057,46 @@ def _apply_live_quote(signal: StockSignal, quote: dict) -> StockSignal:
     return patched
 
 
+# Short-lived quote cache so repeated taps within a window don't re-hit Settrade.
+# 30s chosen to balance freshness with bursts of UI interaction (stage → ATH → declining).
+_QUOTE_CACHE_TTL = 30.0
+_quote_cache: dict[str, tuple[float, dict]] = {}
+
+
+async def _get_bulk_quotes_cached(symbols: list[str]) -> dict[str, dict]:
+    """Bulk-fetch Settrade quotes for the given symbols, reusing any entry cached
+    within _QUOTE_CACHE_TTL. Returns {symbol: quote_dict}."""
+    if not symbols:
+        return {}
+    now = time.monotonic()
+    result: dict[str, dict] = {}
+    missing: list[str] = []
+    for sym in symbols:
+        entry = _quote_cache.get(sym)
+        if entry and (now - entry[0]) < _QUOTE_CACHE_TTL:
+            result[sym] = entry[1]
+        else:
+            missing.append(sym)
+    if missing:
+        loop = asyncio.get_running_loop()
+        try:
+            new_quotes = await loop.run_in_executor(None, fetch_bulk_latest, missing)
+        except Exception as exc:
+            logger.warning("bulk quote refresh failed: %s", exc)
+            new_quotes = {}
+        for sym, q in new_quotes.items():
+            _quote_cache[sym] = (now, q)
+            result[sym] = q
+    return result
+
+
 async def _patch_signals_with_live(signals: list[StockSignal]) -> list[StockSignal]:
-    """Bulk-refresh a list of signals with live Settrade quotes. Signals without a live
-    quote (Settrade unavailable, symbol not found, zero last) are returned unchanged."""
+    """Bulk-refresh a list of signals with live Settrade quotes (30s-cached).
+    Signals without a live quote are returned unchanged."""
     if not signals:
         return signals
-    loop = asyncio.get_running_loop()
     symbols = [s.symbol for s in signals if s.symbol]
-    try:
-        quotes = await loop.run_in_executor(None, fetch_bulk_latest, symbols)
-    except Exception as exc:
-        logger.warning("bulk live patch failed: %s", exc)
-        return signals
+    quotes = await _get_bulk_quotes_cached(symbols)
     if not quotes:
         return signals
     return [_apply_live_quote(s, quotes[s.symbol]) if s.symbol in quotes else s for s in signals]

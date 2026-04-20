@@ -800,7 +800,14 @@ def build_ranked_stock_list_bubble(
         ],
     }
 
-    scan_ts = _fmt_scan_time(signals[0].scanned_at) if signals else ""
+    # Prefer a "live" label when rows were refreshed from Settrade today; otherwise
+    # show the scan timestamp so users can see how fresh the data is.
+    today_str = datetime.now(_BANGKOK_TZ).strftime("%Y-%m-%d")
+    live_count = sum(1 for s in signals if getattr(s, "data_date", "") == today_str) if signals else 0
+    if live_count:
+        scan_ts = "ไลฟ์ · " + datetime.now(_BANGKOK_TZ).strftime("%H:%M น. %d/%m/%y")
+    else:
+        scan_ts = _fmt_scan_time(signals[0].scanned_at) if signals else ""
 
     def _make_bubble(chunk, card_idx, start_rank, is_last):
         end_rank = start_rank + len(chunk) - 1
