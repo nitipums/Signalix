@@ -890,11 +890,11 @@ def append_new_candles_to_bq(all_data: dict[str, pd.DataFrame]) -> None:
 def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
     """
     Fetch OHLCV for all SET_STOCKS + SET index.
-    Uses BigQuery cache when available (fast), falls back to yfinance.
-
-    Returns:
-        Dict mapping clean symbol → DataFrame.
-        Symbols that failed are omitted.
+    Priority:
+      1. BigQuery cache when fresh (≤5 days stale, ≥95% symbol coverage) — fastest.
+      2. Settrade Open API for all SET stocks (primary — native Thai data, fresher).
+      3. yfinance for (a) the SET index (Settrade doesn't carry indexes) and
+         (b) any stocks Settrade didn't cover.
     """
     if BQ_AVAILABLE:
         bq_data = load_all_ohlcv_from_bq(lookback_days=400)
@@ -908,17 +908,44 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
                 if staleness_days <= 5 and symbol_count >= min_required:
                     logger.info("fetch_all_stocks: BQ hit (%d symbols, latest=%s)", symbol_count, latest.date())
                     return bq_data
-                logger.info("BQ not ready (symbols=%d/%d, staleness=%dd) — falling back to yfinance", symbol_count, min_required, staleness_days)
+                logger.info("BQ not ready (symbols=%d/%d, staleness=%dd) — falling back to Settrade",
+                            symbol_count, min_required, staleness_days)
 
     results: dict[str, pd.DataFrame] = {}
-    all_symbols = GET_ALL_SYMBOLS_WITH_INDEX()
 
-    tickers = [("^SET.BK" if s == "SET" else _to_yf_ticker(s)) for s in all_symbols]
-    logger.info("Downloading %d tickers from yfinance...", len(tickers))
+    # --- Step 1: Settrade Open API (primary for stocks) ---
+    try:
+        from settrade_client import get_bulk_ohlcv, is_api_available as _st_ok
+        if _st_ok():
+            st_period = "1Y" if period.lower() in ("1y", "1yr", "1year") else period.upper()
+            st_data = get_bulk_ohlcv(SET_STOCKS, period=st_period, max_workers=30)
+            for sym, df in st_data.items():
+                if df is None or df.empty or df["Close"].dropna().empty:
+                    continue
+                df = df.dropna(subset=["Close"]).copy()
+                df.index = pd.to_datetime(df.index).tz_localize(None)
+                df.index.name = "Date"
+                price_cols = [c for c in _PRICE_COLS if c in df.columns]
+                if price_cols:
+                    df[price_cols] = df[price_cols].astype("float32")
+                results[sym] = df
+            logger.info("fetch_all_stocks: Settrade returned %d/%d stock symbols",
+                        len(results), len(SET_STOCKS))
+        else:
+            logger.warning("fetch_all_stocks: Settrade API unavailable — using yfinance for everything")
+    except Exception as exc:
+        logger.warning("fetch_all_stocks: Settrade primary failed: %s — using yfinance", exc)
+
+    # --- Step 2: yfinance for SET index (always) + any stocks Settrade missed ---
+    missing_stocks = [s for s in SET_STOCKS if s not in results]
+    yf_targets = missing_stocks + ["SET"]
+    yf_tickers = [("^SET.BK" if s == "SET" else _to_yf_ticker(s)) for s in yf_targets]
+    logger.info("fetch_all_stocks: yfinance fallback for %d symbols (SET index + %d missing stocks)",
+                len(yf_targets), len(missing_stocks))
 
     try:
         raw = yf.download(
-            tickers,
+            yf_tickers,
             period=period,
             group_by="ticker",
             progress=False,
@@ -926,12 +953,12 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
             threads=True,
         )
     except Exception as exc:
-        logger.error("Batch download failed: %s", exc)
+        logger.error("fetch_all_stocks: yfinance batch download failed: %s", exc)
         return results
 
-    multi_ticker = len(tickers) > 1
+    multi_ticker = len(yf_tickers) > 1
     top_level = raw.columns.get_level_values(0) if multi_ticker else None
-    for symbol, ticker in zip(all_symbols, tickers):
+    for symbol, ticker in zip(yf_targets, yf_tickers):
         try:
             if not multi_ticker:
                 df = raw.copy()
@@ -941,7 +968,6 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
                 continue
 
             if df.empty or df["Close"].dropna().empty:
-                logger.warning("Empty data for %s", symbol)
                 continue
 
             df = df.dropna(subset=["Close"])
@@ -952,10 +978,10 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
             df[price_cols] = df[price_cols].astype("float32")
             results[symbol] = df
         except Exception as exc:
-            logger.warning("Could not process %s: %s", symbol, exc)
+            logger.warning("fetch_all_stocks: could not process %s: %s", symbol, exc)
 
-    del raw  # free the large multi-index download immediately
-    logger.info("Fetched data for %d/%d symbols", len(results), len(all_symbols))
+    del raw
+    logger.info("fetch_all_stocks: final coverage %d symbols (stocks+SET)", len(results))
     return results
 
 

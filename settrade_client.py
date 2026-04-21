@@ -142,9 +142,14 @@ def get_bulk_ohlcv(symbols: list[str], period: str = "1M", max_workers: int = 10
     return results
 
 
-def get_bulk_quotes(symbols: list[str], max_workers: int = 10) -> dict[str, dict]:
-    """Fetch real-time quotes for multiple symbols in parallel via Settrade API."""
+def get_bulk_quotes(symbols: list[str], max_workers: int = 30) -> dict[str, dict]:
+    """Fetch real-time quotes for multiple symbols in parallel via Settrade API.
+
+    max_workers defaults to 30 so a 900-symbol live-patch completes well inside
+    LINE's 30s webhook reply window.
+    """
     if not is_api_available():
+        logger.warning("get_bulk_quotes: Settrade API unavailable (missing creds or init failed)")
         return {}
 
     def _fetch(sym):
@@ -155,7 +160,9 @@ def get_bulk_quotes(symbols: list[str], max_workers: int = 10) -> dict[str, dict
         for sym, q in ex.map(_fetch, symbols):
             if q and (q.get("last") or 0) > 0:
                 results[sym] = q
-    logger.info("get_bulk_quotes: %d/%d symbols fetched", len(results), len(symbols))
+    coverage = (len(results) / len(symbols) * 100) if symbols else 0.0
+    logger.info("get_bulk_quotes: %d/%d symbols fetched (%.1f%% coverage)",
+                len(results), len(symbols), coverage)
     return results
 
 
