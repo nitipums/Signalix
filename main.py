@@ -314,9 +314,13 @@ async def health():
 
 
 @app.get("/test/settrade")
-async def test_settrade():
-    """Test SET Trade API connectivity and return diagnostic info."""
-    from settrade_client import _get_investor
+async def test_settrade(sample_size: int = 20):
+    """Test SET Trade API connectivity, measure bulk-quote latency + coverage.
+
+    Query param `sample_size` (default 20) controls the bulk-quote sample used to
+    verify the live-patch path that powers stage/pattern/advancing cards.
+    """
+    from settrade_client import _get_investor, get_bulk_quotes
 
     result: dict = {"api_available": False}
 
@@ -328,7 +332,7 @@ async def test_settrade():
     result["api_available"] = True
     market = investor.MarketData()
 
-    # ── Quote ──
+    # ── Single quote ──
     try:
         q = market.get_quote_symbol("PTT")
         result["quote_PTT"] = q
@@ -350,6 +354,23 @@ async def test_settrade():
             result["ohlcv_PTT"] = None
     except Exception as e:
         result["ohlcv_error"] = str(e)
+
+    # ── Bulk-quote coverage + latency (exercises the live-patch path) ──
+    try:
+        universe = get_stock_list()[:max(1, min(sample_size, 900))]
+        t0 = time.monotonic()
+        quotes = get_bulk_quotes(universe)
+        elapsed = time.monotonic() - t0
+        result["bulk_quote_sample"] = {
+            "requested": len(universe),
+            "returned": len(quotes),
+            "coverage_pct": round(len(quotes) / len(universe) * 100, 1) if universe else 0.0,
+            "elapsed_sec": round(elapsed, 2),
+            "projected_900_sec": round(elapsed * 900 / max(1, len(universe)), 1),
+            "missing_symbols": [s for s in universe if s not in quotes][:10],
+        }
+    except Exception as e:
+        result["bulk_quote_error"] = str(e)
 
     return result
 
@@ -1048,8 +1069,11 @@ def _apply_live_quote(signal: StockSignal, quote: dict) -> StockSignal:
     SMA/stage/strength/pattern fields are NOT modified — they need full history."""
     patched = copy.copy(signal)
     patched.close = round(quote["last"], 2)
-    if quote.get("change_pct"):
-        patched.change_pct = round(quote["change_pct"], 2)
+    # Always patch change_pct when the key is present — a live 0.0% is a real datapoint
+    # (truly flat today) and must overwrite the stale scan-time value; otherwise the
+    # "flat" list filter and advancing/declining membership stay wrong.
+    if "change_pct" in quote:
+        patched.change_pct = round(float(quote["change_pct"]), 2)
     patched.high_52w = round(max(patched.high_52w, quote["high"]), 2)
     if patched.high_52w > 0:
         patched.pct_from_52w_high = round((patched.close - patched.high_52w) / patched.high_52w * 100, 2)
@@ -1060,6 +1084,8 @@ def _apply_live_quote(signal: StockSignal, quote: dict) -> StockSignal:
 # Short-lived quote cache so repeated taps within a window don't re-hit Settrade.
 # 30s chosen to balance freshness with bursts of UI interaction (stage → ATH → declining).
 _QUOTE_CACHE_TTL = 30.0
+# Hard upper bound so a slow Settrade response can't push past LINE's 30s reply window.
+_LIVE_PATCH_TIMEOUT = 20.0
 _quote_cache: dict[str, tuple[float, dict]] = {}
 
 
@@ -1092,13 +1118,31 @@ async def _get_bulk_quotes_cached(symbols: list[str]) -> dict[str, dict]:
 
 async def _patch_signals_with_live(signals: list[StockSignal]) -> list[StockSignal]:
     """Bulk-refresh a list of signals with live Settrade quotes (30s-cached).
-    Signals without a live quote are returned unchanged."""
+
+    Hard-capped at _LIVE_PATCH_TIMEOUT so we never blow LINE's 30s reply ceiling.
+    Signals without a live quote are returned unchanged; on timeout we return the
+    original list, and rendering falls back to cached scan-time values with a
+    "partial/stale" footer driven by data_date on each row.
+    """
     if not signals:
         return signals
     symbols = [s.symbol for s in signals if s.symbol]
-    quotes = await _get_bulk_quotes_cached(symbols)
-    if not quotes:
+    try:
+        quotes = await asyncio.wait_for(
+            _get_bulk_quotes_cached(symbols), timeout=_LIVE_PATCH_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        logger.warning("live-patch timed out after %.1fs (%d symbols); serving cached signals",
+                       _LIVE_PATCH_TIMEOUT, len(symbols))
         return signals
+    if not quotes:
+        logger.warning("live-patch returned 0 quotes for %d symbols (Settrade down?)",
+                       len(symbols))
+        return signals
+    coverage = len(quotes) / len(symbols) * 100 if symbols else 0.0
+    if coverage < 95.0:
+        logger.warning("live-patch partial coverage: %d/%d (%.1f%%)",
+                       len(quotes), len(symbols), coverage)
     return [_apply_live_quote(s, quotes[s.symbol]) if s.symbol in quotes else s for s in signals]
 
 
