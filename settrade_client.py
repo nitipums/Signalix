@@ -145,8 +145,16 @@ def get_bulk_ohlcv(symbols: list[str], period: str = "1M", max_workers: int = 10
 def get_bulk_quotes(symbols: list[str], max_workers: int = 30) -> dict[str, dict]:
     """Fetch real-time quotes for multiple symbols in parallel via Settrade API.
 
-    max_workers defaults to 30 so a 900-symbol live-patch completes well inside
-    LINE's 30s webhook reply window.
+    Two-pass strategy:
+      1. Aggressive parallel fetch at max_workers (default 30).
+      2. Re-try any symbols the first pass missed with a smaller pool
+         (max_workers=10) — catches transient concurrency-induced failures
+         (diagnosed in prod: BBL, BDMS and other blue chips work in single
+         quotes but fall out of large parallel batches, presumably hitting
+         a Settrade rate-limit / queue bound).
+
+    Symbols still missing after the retry are returned unresolved; callers
+    should fall back to cached or yfinance data for those.
     """
     if not is_api_available():
         logger.warning("get_bulk_quotes: Settrade API unavailable (missing creds or init failed)")
@@ -155,13 +163,26 @@ def get_bulk_quotes(symbols: list[str], max_workers: int = 30) -> dict[str, dict
     def _fetch(sym):
         return sym, get_quote(sym)
 
-    results: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        for sym, q in ex.map(_fetch, symbols):
-            if q and (q.get("last") or 0) > 0:
-                results[sym] = q
+    def _pass(targets: list[str], workers: int) -> dict[str, dict]:
+        got: dict[str, dict] = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for sym, q in ex.map(_fetch, targets):
+                if q and (q.get("last") or 0) > 0:
+                    got[sym] = q
+        return got
+
+    results = _pass(symbols, max_workers)
+
+    missing = [s for s in symbols if s not in results]
+    if missing:
+        retry_workers = min(10, max_workers)
+        recovered = _pass(missing, retry_workers)
+        results.update(recovered)
+        logger.info("get_bulk_quotes: retry recovered %d/%d missed symbols (pool=%d)",
+                    len(recovered), len(missing), retry_workers)
+
     coverage = (len(results) / len(symbols) * 100) if symbols else 0.0
-    logger.info("get_bulk_quotes: %d/%d symbols fetched (%.1f%% coverage)",
+    logger.info("get_bulk_quotes: %d/%d symbols final (%.1f%% coverage)",
                 len(results), len(symbols), coverage)
     return results
 
