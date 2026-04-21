@@ -890,28 +890,23 @@ def append_new_candles_to_bq(all_data: dict[str, pd.DataFrame]) -> None:
 def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
     """
     Fetch OHLCV for all SET_STOCKS + SET index.
-    Priority:
-      1. BigQuery cache when fresh (≤5 days stale, ≥95% symbol coverage) — fastest.
-      2. Settrade Open API for all SET stocks (primary — native Thai data, fresher).
-      3. yfinance for (a) the SET index (Settrade doesn't carry indexes) and
-         (b) any stocks Settrade didn't cover.
-    """
-    if BQ_AVAILABLE:
-        bq_data = load_all_ohlcv_from_bq(lookback_days=400)
-        if bq_data:
-            all_dates = [df.index.max() for df in bq_data.values() if not df.empty]
-            if all_dates:
-                latest = max(all_dates)
-                staleness_days = (pd.Timestamp.now() - latest).days
-                symbol_count = len(bq_data)
-                min_required = int(len(SET_STOCKS) * 0.95)
-                if staleness_days <= 5 and symbol_count >= min_required:
-                    logger.info("fetch_all_stocks: BQ hit (%d symbols, latest=%s)", symbol_count, latest.date())
-                    return bq_data
-                logger.info("BQ not ready (symbols=%d/%d, staleness=%dd) — falling back to Settrade",
-                            symbol_count, min_required, staleness_days)
+    Priority (always in this order — NO short-circuit on BQ):
+      1. Settrade Open API for all SET stocks (primary — native Thai data,
+         always the freshest since it goes straight to source).
+      2. BigQuery backfill for older rows (Settrade wins on overlapping
+         dates) and as fallback for stocks Settrade missed. BQ is historical
+         supplement only — never a substitute that lets us skip Settrade.
+      3. yfinance for the SET index (not in Settrade) + stocks still missing.
 
+    Historical note: a prior version short-circuited here on "BQ ≤5d stale
+    AND ≥95% coverage" and returned BQ immediately. That caused a self-
+    reinforcing cache-rot loop — every scan saw BQ as "fresh enough",
+    skipped Settrade, wrote no new candles, and BQ stayed frozen on
+    whatever day it stopped advancing. Removed.
+    """
     results: dict[str, pd.DataFrame] = {}
+
+    bq_data = load_all_ohlcv_from_bq(lookback_days=400) if BQ_AVAILABLE else {}
 
     # --- Step 1: Settrade Open API (primary for stocks) ---
     try:
@@ -932,11 +927,33 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
             logger.info("fetch_all_stocks: Settrade returned %d/%d stock symbols",
                         len(results), len(SET_STOCKS))
         else:
-            logger.warning("fetch_all_stocks: Settrade API unavailable — using yfinance for everything")
+            logger.warning("fetch_all_stocks: Settrade API unavailable — using BQ + yfinance only")
     except Exception as exc:
-        logger.warning("fetch_all_stocks: Settrade primary failed: %s — using yfinance", exc)
+        logger.warning("fetch_all_stocks: Settrade primary failed: %s — using BQ + yfinance", exc)
 
-    # --- Step 2: yfinance for SET index (always) + any stocks Settrade missed ---
+    # --- Step 2: BQ history backfill ---
+    # Extend Settrade's 1Y window with older BQ history, keeping Settrade for
+    # overlapping dates (freshest close). For stocks Settrade didn't cover at
+    # all, use BQ as-is so the scan still has something.
+    if bq_data:
+        merged = 0
+        filled = 0
+        for sym, bq_df in bq_data.items():
+            if bq_df is None or bq_df.empty:
+                continue
+            st_df = results.get(sym)
+            if st_df is None or st_df.empty:
+                results[sym] = bq_df
+                filled += 1
+                continue
+            combined = pd.concat([bq_df, st_df])
+            combined = combined[~combined.index.duplicated(keep="last")]
+            results[sym] = combined.sort_index()
+            merged += 1
+        logger.info("fetch_all_stocks: BQ backfill — %d merged into Settrade, %d BQ-only",
+                    merged, filled)
+
+    # --- Step 3: yfinance for SET index (always) + any stocks still missing ---
     missing_stocks = [s for s in SET_STOCKS if s not in results]
     yf_targets = missing_stocks + ["SET"]
     yf_tickers = [("^SET.BK" if s == "SET" else _to_yf_ticker(s)) for s in yf_targets]
