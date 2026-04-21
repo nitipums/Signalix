@@ -8,7 +8,6 @@ Endpoints:
 """
 
 import asyncio
-import copy
 import functools
 import hashlib
 import hmac
@@ -38,7 +37,7 @@ from config import get_settings
 from data import (
     SECTOR_MAP, SUBSECTOR_TO_SECTOR, SECTOR_INDEX_SYMBOLS,
     append_new_candles_to_bq, BQ_AVAILABLE,
-    fetch_indexes_with_history, fetch_latest_candles, fetch_bulk_latest, fetch_one_latest, fetch_sector_index_prices,
+    fetch_indexes_with_history, fetch_latest_candles, fetch_sector_index_prices,
     fetch_sector_map_from_yfinance, get_fundamentals,
     get_sector, get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
     increment_stage4_views, load_breakout_review,
@@ -314,13 +313,16 @@ async def health():
 
 
 @app.get("/test/settrade")
-async def test_settrade(sample_size: int = 20):
+async def test_settrade(sample_size: int = 20, symbols: Optional[str] = None):
     """Test SET Trade API connectivity, measure bulk-quote latency + coverage.
 
-    Query param `sample_size` (default 20) controls the bulk-quote sample used to
-    verify the live-patch path that powers stage/pattern/advancing cards.
+    Query params:
+      sample_size: int (default 20) — bulk-quote sample size for latency / coverage.
+      symbols:     str — comma-separated list (e.g. "BBL,BDMS"). When provided,
+                   returns raw SDK output per symbol so we can diagnose why
+                   specific symbols fail in get_bulk_quotes.
     """
-    from settrade_client import _get_investor, get_bulk_quotes
+    from settrade_client import _get_investor, get_bulk_quotes, get_ohlcv
 
     result: dict = {"api_available": False}
 
@@ -341,7 +343,6 @@ async def test_settrade(sample_size: int = 20):
 
     # ── Candlestick (parsed) ──
     try:
-        from settrade_client import get_ohlcv
         df = get_ohlcv("PTT", period="1M")
         if df is not None:
             result["ohlcv_PTT"] = {
@@ -355,7 +356,7 @@ async def test_settrade(sample_size: int = 20):
     except Exception as e:
         result["ohlcv_error"] = str(e)
 
-    # ── Bulk-quote coverage + latency (exercises the live-patch path) ──
+    # ── Bulk-quote coverage + latency ──
     try:
         universe = get_stock_list()[:max(1, min(sample_size, 900))]
         t0 = time.monotonic()
@@ -371,6 +372,29 @@ async def test_settrade(sample_size: int = 20):
         }
     except Exception as e:
         result["bulk_quote_error"] = str(e)
+
+    # ── Per-symbol raw SDK diagnostics (for BBL/BDMS etc.) ──
+    if symbols:
+        per_symbol: dict = {}
+        for sym in [s.strip().upper() for s in symbols.split(",") if s.strip()]:
+            entry: dict = {"quote_raw": None, "quote_error": None,
+                           "ohlcv_rows": None, "ohlcv_latest": None, "ohlcv_error": None}
+            try:
+                entry["quote_raw"] = market.get_quote_symbol(sym)
+            except Exception as e:
+                entry["quote_error"] = f"{type(e).__name__}: {e}"
+            try:
+                df = get_ohlcv(sym, period="1M")
+                if df is not None and not df.empty:
+                    entry["ohlcv_rows"] = len(df)
+                    entry["ohlcv_latest"] = {
+                        "date": str(df.index[-1].date()),
+                        "close": round(float(df["Close"].iloc[-1]), 2),
+                    }
+            except Exception as e:
+                entry["ohlcv_error"] = f"{type(e).__name__}: {e}"
+            per_symbol[sym] = entry
+        result["per_symbol"] = per_symbol
 
     return result
 
@@ -839,8 +863,8 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         ]
         sector_sigs.sort(key=lambda s: s.strength_score, reverse=True)
         if sector_sigs:
-            await _reply_stock_list(reply_token, sector_sigs, f"🏭 {sector_name} — Leaders",
-                                    page=sec_page, base_cmd=f"sector {sector_name}")
+            _reply_stock_list(reply_token, sector_sigs, f"🏭 {sector_name} — Leaders",
+                              page=sec_page, base_cmd=f"sector {sector_name}")
         else:
             reply_text(reply_token, f"ไม่พบหุ้นในกลุ่ม {sector_name}\nกลุ่มที่มี: AGRO, CONSUMP, FINCIAL, INDUS, PROPCON, RESOURC, SERVICE, TECH")
 
@@ -902,7 +926,6 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         if not wl_signals:
             reply_text(reply_token, "ไม่มีข้อมูลหุ้นใน Watchlist ขณะนี้")
             return
-        wl_signals = await _patch_signals_with_live(wl_signals)
         card = build_watchlist_carousel(wl_signals)
         reply_flex(reply_token, f"📌 Watchlist ({len(wl_signals)} หุ้น)", card)
 
@@ -937,71 +960,65 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     # ── Stock lists by pattern/stage ──
     elif cmd in ("breakout", "break out", "บ้ระเอาท์"):
         signals = _get_signals_for(pattern="breakout") + _get_signals_for(pattern="ath_breakout")
-        await _reply_stock_list(reply_token, signals, "🚀 Breakout Stocks")
+        _reply_stock_list(reply_token, signals, "🚀 Breakout Stocks")
 
     elif cmd in ("ath", "all time high", "ath breakout"):
         signals = _get_signals_for(pattern="ath_breakout")
-        await _reply_stock_list(reply_token, signals, "🏆 ATH Breakout Stocks")
+        _reply_stock_list(reply_token, signals, "🏆 ATH Breakout Stocks")
 
     elif cmd in ("vcp",):
         signals = _get_signals_for(pattern="vcp") + _get_signals_for(pattern="vcp_low_cheat")
-        await _reply_stock_list(reply_token, signals, "🔍 VCP Pattern Stocks")
+        _reply_stock_list(reply_token, signals, "🔍 VCP Pattern Stocks")
 
     elif cmd in ("vcp low cheat", "vcp_low_cheat", "low cheat"):
         signals = _get_signals_for(pattern="vcp_low_cheat")
-        await _reply_stock_list(reply_token, signals, "🎯 VCP Low Cheat Stocks")
+        _reply_stock_list(reply_token, signals, "🎯 VCP Low Cheat Stocks")
 
     elif cmd.startswith("stage2") or cmd.startswith("stage 2"):
         page = _parse_stage_page(cmd)
         all_sigs = _get_signals_for(stage=2)
-        await _reply_stock_list(reply_token, all_sigs, f"🟢 Stage 2 ({len(all_sigs)} stocks)", page=page, base_cmd="stage2")
+        _reply_stock_list(reply_token, all_sigs, f"🟢 Stage 2 ({len(all_sigs)} stocks)", page=page, base_cmd="stage2")
 
     elif cmd.startswith("stage1") or cmd.startswith("stage 1"):
         page = _parse_stage_page(cmd)
         all_sigs = _get_signals_for(stage=1)
-        await _reply_stock_list(reply_token, all_sigs, f"⚪ Stage 1 ({len(all_sigs)} stocks)", page=page, base_cmd="stage1")
+        _reply_stock_list(reply_token, all_sigs, f"⚪ Stage 1 ({len(all_sigs)} stocks)", page=page, base_cmd="stage1")
 
     elif cmd.startswith("stage3") or cmd.startswith("stage 3"):
         page = _parse_stage_page(cmd)
         all_sigs = _get_signals_for(stage=3)
-        await _reply_stock_list(reply_token, all_sigs, f"🟡 Stage 3 ({len(all_sigs)} stocks)", page=page, base_cmd="stage3")
+        _reply_stock_list(reply_token, all_sigs, f"🟡 Stage 3 ({len(all_sigs)} stocks)", page=page, base_cmd="stage3")
 
     elif cmd.startswith("stage4") or cmd.startswith("stage 4"):
         page = _parse_stage_page(cmd)
         all_sigs = _get_signals_for(stage=4)
-        await _reply_stock_list(reply_token, all_sigs, f"🔴 Stage 4 ({len(all_sigs)} stocks)", page=page, base_cmd="stage4")
+        _reply_stock_list(reply_token, all_sigs, f"🔴 Stage 4 ({len(all_sigs)} stocks)", page=page, base_cmd="stage4")
 
     elif cmd in ("consolidating", "consolidate", "coil"):
         signals = _get_signals_for(pattern="consolidating")
-        await _reply_stock_list(reply_token, signals, "⚙️ Consolidating Stocks")
+        _reply_stock_list(reply_token, signals, "⚙️ Consolidating Stocks")
 
     # ── Advancing / Declining / Flat (tappable from market card) ──
-    # These three filter AND sort by change_pct, which is only fresh after a live
-    # Settrade patch — so we must patch the full universe BEFORE filtering, otherwise
-    # the list membership (not just the displayed prices) is stale.
     elif cmd.startswith("advancing") or cmd.startswith("up ") or cmd == "up":
         page = _parse_stage_page(cmd)
-        patched = await _patch_signals_with_live(_last_signals)
-        sigs = sorted([s for s in patched if (s.change_pct or 0) > 0],
+        sigs = sorted([s for s in _last_signals if (s.change_pct or 0) > 0],
                       key=lambda s: s.change_pct, reverse=True)
-        await _reply_stock_list(reply_token, sigs, f"📈 Advancing ({len(sigs)} stocks)",
-                                page=page, base_cmd="advancing", subtitle="Sorted by % Gain")
+        _reply_stock_list(reply_token, sigs, f"📈 Advancing ({len(sigs)} stocks)",
+                          page=page, base_cmd="advancing", subtitle="Sorted by % Gain")
 
     elif cmd.startswith("declining") or cmd.startswith("down ") or cmd == "down":
         page = _parse_stage_page(cmd)
-        patched = await _patch_signals_with_live(_last_signals)
-        sigs = sorted([s for s in patched if (s.change_pct or 0) < 0],
+        sigs = sorted([s for s in _last_signals if (s.change_pct or 0) < 0],
                       key=lambda s: s.change_pct)
-        await _reply_stock_list(reply_token, sigs, f"📉 Declining ({len(sigs)} stocks)",
-                                page=page, base_cmd="declining", subtitle="Sorted by % Drop")
+        _reply_stock_list(reply_token, sigs, f"📉 Declining ({len(sigs)} stocks)",
+                          page=page, base_cmd="declining", subtitle="Sorted by % Drop")
 
     elif cmd.startswith("flat"):
         page = _parse_stage_page(cmd)
-        patched = await _patch_signals_with_live(_last_signals)
-        sigs = sorted([s for s in patched if (s.change_pct or 0) == 0],
+        sigs = sorted([s for s in _last_signals if (s.change_pct or 0) == 0],
                       key=lambda s: s.strength_score, reverse=True)
-        await _reply_stock_list(reply_token, sigs, f"➡️ Flat ({len(sigs)} stocks)",
-                                page=page, base_cmd="flat")
+        _reply_stock_list(reply_token, sigs, f"➡️ Flat ({len(sigs)} stocks)",
+                          page=page, base_cmd="flat")
 
     # ── Detail: deep insight with fundamentals ──
     elif cmd.startswith("detail "):
@@ -1064,102 +1081,18 @@ def _get_signals_for(pattern: Optional[str] = None, stage: Optional[int] = None)
     return filter_signals(_last_signals, pattern=pattern, stage=stage)
 
 
-def _apply_live_quote(signal: StockSignal, quote: dict) -> StockSignal:
-    """Return a shallow copy of signal with price fields patched from a live quote.
-    SMA/stage/strength/pattern fields are NOT modified — they need full history."""
-    patched = copy.copy(signal)
-    patched.close = round(quote["last"], 2)
-    # Always patch change_pct when the key is present — a live 0.0% is a real datapoint
-    # (truly flat today) and must overwrite the stale scan-time value; otherwise the
-    # "flat" list filter and advancing/declining membership stay wrong.
-    if "change_pct" in quote:
-        patched.change_pct = round(float(quote["change_pct"]), 2)
-    patched.high_52w = round(max(patched.high_52w, quote["high"]), 2)
-    if patched.high_52w > 0:
-        patched.pct_from_52w_high = round((patched.close - patched.high_52w) / patched.high_52w * 100, 2)
-    patched.data_date = datetime.now(BANGKOK_TZ).strftime("%Y-%m-%d")
-    return patched
-
-
-# Short-lived quote cache so repeated taps within a window don't re-hit Settrade.
-# 30s chosen to balance freshness with bursts of UI interaction (stage → ATH → declining).
-_QUOTE_CACHE_TTL = 30.0
-# Hard upper bound so a slow Settrade response can't push past LINE's 30s reply window.
-_LIVE_PATCH_TIMEOUT = 20.0
-_quote_cache: dict[str, tuple[float, dict]] = {}
-
-
-async def _get_bulk_quotes_cached(symbols: list[str]) -> dict[str, dict]:
-    """Bulk-fetch Settrade quotes for the given symbols, reusing any entry cached
-    within _QUOTE_CACHE_TTL. Returns {symbol: quote_dict}."""
-    if not symbols:
-        return {}
-    now = time.monotonic()
-    result: dict[str, dict] = {}
-    missing: list[str] = []
-    for sym in symbols:
-        entry = _quote_cache.get(sym)
-        if entry and (now - entry[0]) < _QUOTE_CACHE_TTL:
-            result[sym] = entry[1]
-        else:
-            missing.append(sym)
-    if missing:
-        loop = asyncio.get_running_loop()
-        try:
-            new_quotes = await loop.run_in_executor(None, fetch_bulk_latest, missing)
-        except Exception as exc:
-            logger.warning("bulk quote refresh failed: %s", exc)
-            new_quotes = {}
-        for sym, q in new_quotes.items():
-            _quote_cache[sym] = (now, q)
-            result[sym] = q
-    return result
-
-
-async def _patch_signals_with_live(signals: list[StockSignal]) -> list[StockSignal]:
-    """Bulk-refresh a list of signals with live Settrade quotes (30s-cached).
-
-    Hard-capped at _LIVE_PATCH_TIMEOUT so we never blow LINE's 30s reply ceiling.
-    Signals without a live quote are returned unchanged; on timeout we return the
-    original list, and rendering falls back to cached scan-time values with a
-    "partial/stale" footer driven by data_date on each row.
-    """
-    if not signals:
-        return signals
-    symbols = [s.symbol for s in signals if s.symbol]
-    try:
-        quotes = await asyncio.wait_for(
-            _get_bulk_quotes_cached(symbols), timeout=_LIVE_PATCH_TIMEOUT
-        )
-    except asyncio.TimeoutError:
-        logger.warning("live-patch timed out after %.1fs (%d symbols); serving cached signals",
-                       _LIVE_PATCH_TIMEOUT, len(symbols))
-        return signals
-    if not quotes:
-        logger.warning("live-patch returned 0 quotes for %d symbols (Settrade down?)",
-                       len(symbols))
-        return signals
-    coverage = len(quotes) / len(symbols) * 100 if symbols else 0.0
-    if coverage < 95.0:
-        logger.warning("live-patch partial coverage: %d/%d (%.1f%%)",
-                       len(quotes), len(symbols), coverage)
-    return [_apply_live_quote(s, quotes[s.symbol]) if s.symbol in quotes else s for s in signals]
-
-
-
 # LINE carousel hard limit: 50KB (confirmed). 5 bubbles × 10 rows ≈ 42KB per page.
 # Pagination: each page shows 50 stocks; "ดูเพิ่มเติม ▼" button sends "stage4 p2" etc.
 _STAGE_PAGE_SIZE = 50
 
 
-async def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str,
-                            text_only: bool = False, page: int = 1, base_cmd: str = "",
-                            subtitle: str = "Sorted by Strength Score") -> None:
+def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str,
+                      text_only: bool = False, page: int = 1, base_cmd: str = "",
+                      subtitle: str = "Sorted by Strength Score") -> None:
     if not signals:
         reply_text(reply_token, f"ไม่มีหุ้นใน {title} ขณะนี้")
         return
     if text_only:
-        signals = await _patch_signals_with_live(signals)
         bubble = build_simple_tappable_list(signals, title)
         reply_flex(reply_token, title, bubble)
         return
@@ -1169,7 +1102,6 @@ async def _reply_stock_list(reply_token: str, signals: list[StockSignal], title:
     if not chunk:
         reply_text(reply_token, "ไม่มีข้อมูลเพิ่มเติมแล้วครับ")
         return
-    chunk = await _patch_signals_with_live(chunk)
     has_more = total > start + _STAGE_PAGE_SIZE
     next_cmd = f"{base_cmd} p{page + 1}" if (has_more and base_cmd) else ""
     bubble = build_ranked_stock_list_bubble(chunk, title, next_cmd=next_cmd,
@@ -1185,16 +1117,6 @@ async def _reply_single_stock(reply_token: str, symbol: str, user_id: str = "") 
     if signal is None:
         reply_text(reply_token, f'ไม่พบหุ้น "{symbol}" ในระบบ\nตรวจสอบ ticker ให้ถูกต้อง เช่น ADVANC, PTT, KBANK')
         return
-
-    # Live price patch — best-effort refresh so the card reflects the most recent
-    # Settrade quote rather than the cached scan snapshot. SMA/stage/strength stay
-    # cached (they require full history).
-    try:
-        quote = await loop.run_in_executor(None, fetch_one_latest, symbol)
-        if quote:
-            signal = _apply_live_quote(signal, quote)
-    except Exception as exc:
-        logger.warning("live price patch for %s failed: %s", symbol, exc)
 
     reply_flex(reply_token, f"วิเคราะห์ {symbol}", build_single_stock_card(signal))
     # Gamification — fire-and-forget, never block reply
@@ -1221,13 +1143,6 @@ async def _reply_detailed_stock(reply_token: str, symbol: str) -> None:
     if signal is None:
         reply_text(reply_token, f'ไม่พบหุ้น "{symbol}" ในระบบ')
         return
-    # Live price patch (same refresh as single-stock lookup)
-    try:
-        quote = await loop.run_in_executor(None, fetch_one_latest, symbol)
-        if quote:
-            signal = _apply_live_quote(signal, quote)
-    except Exception as exc:
-        logger.warning("live price patch for %s failed: %s", symbol, exc)
     fund = await loop.run_in_executor(
         None, get_fundamentals, symbol, _db if FIRESTORE_AVAILABLE else None
     )

@@ -800,20 +800,7 @@ def build_ranked_stock_list_bubble(
         ],
     }
 
-    # Three-state freshness label driven by data_date on each row:
-    #   live_count >= 90% of rows → fully live
-    #   0 < live_count < 90%      → partial live (Settrade gave us only some of the rows)
-    #   live_count == 0           → scan timestamp only (live patch timed out or Settrade down)
-    today_str = datetime.now(_BANGKOK_TZ).strftime("%Y-%m-%d")
-    total = len(signals) if signals else 0
-    live_count = sum(1 for s in signals if getattr(s, "data_date", "") == today_str) if signals else 0
-    _now_hm = datetime.now(_BANGKOK_TZ).strftime("%H:%M น. %d/%m/%y")
-    if total and live_count >= max(1, int(total * 0.9)):
-        scan_ts = f"ไลฟ์ · {_now_hm}"
-    elif live_count > 0:
-        scan_ts = f"ไลฟ์บางส่วน {live_count}/{total} · {_now_hm}"
-    else:
-        scan_ts = _fmt_scan_time(signals[0].scanned_at) if signals else ""
+    scan_ts = _fmt_scan_time(signals[0].scanned_at) if signals else ""
 
     def _make_bubble(chunk, card_idx, start_rank, is_last):
         end_rank = start_rank + len(chunk) - 1

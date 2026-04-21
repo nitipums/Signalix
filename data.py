@@ -1126,68 +1126,6 @@ def fetch_indexes_with_history(period: str = "1y") -> dict[str, pd.DataFrame]:
     return result
 
 
-def fetch_one_latest(symbol: str) -> Optional[dict]:
-    """
-    Best-effort real-time quote for a single symbol via Settrade.
-    Returns None on any failure (caller should fall back to cached data).
-    """
-    if not symbol:
-        return None
-    try:
-        from settrade_client import get_quote, is_api_available as _st_ok
-        if not _st_ok():
-            return None
-        q = get_quote(symbol)
-        if not q:
-            return None
-        last = float(q.get("last") or 0)
-        if last <= 0:
-            return None
-        return {
-            "last": last,
-            "high": float(q.get("high") or last),
-            "low": float(q.get("low") or last),
-            "change_pct": float(q.get("change_pct") or 0),
-            "volume": int(q.get("volume") or 0),
-        }
-    except Exception as exc:
-        logger.warning("fetch_one_latest(%s) failed: %s", symbol, exc)
-        return None
-
-
-def fetch_bulk_latest(symbols: list[str]) -> dict[str, dict]:
-    """
-    Best-effort real-time quotes for many symbols via Settrade, one batch.
-    Returns {symbol: quote_dict} for symbols that returned a positive last price.
-    Never raises — on failure returns {} and callers fall back to cached data.
-    """
-    if not symbols:
-        return {}
-    try:
-        from settrade_client import get_bulk_quotes, is_api_available as _st_ok
-        if not _st_ok():
-            return {}
-        raw = get_bulk_quotes(symbols)
-        result: dict[str, dict] = {}
-        for sym, q in raw.items():
-            if not q:
-                continue
-            last = float(q.get("last") or 0)
-            if last <= 0:
-                continue
-            result[sym] = {
-                "last": last,
-                "high": float(q.get("high") or last),
-                "low": float(q.get("low") or last),
-                "change_pct": float(q.get("change_pct") or 0),
-                "volume": int(q.get("volume") or 0),
-            }
-        return result
-    except Exception as exc:
-        logger.warning("fetch_bulk_latest(%d symbols) failed: %s", len(symbols), exc)
-        return {}
-
-
 def get_latest_price(symbol: str) -> Optional[dict]:
     """
     Get latest price info for a single symbol.
