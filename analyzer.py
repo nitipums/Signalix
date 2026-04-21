@@ -28,6 +28,10 @@ from data import SECTOR_MAP, fetch_all_stocks, get_sector, get_stock_list, tradi
 logger = logging.getLogger(__name__)
 
 MIN_ROWS = 200  # Minimum trading days of data required for analysis
+MAX_CANDLE_STALENESS_DAYS = 10  # Skip scans whose latest candle is older than this
+                                # — filters out suspended / untradeable tickers
+                                # (e.g. SET "Suspend" status) so they don't emit
+                                # misleading stage/pattern signals on pre-halt bars.
 
 
 # ─── Data classes ─────────────────────────────────────────────────────────────
@@ -387,6 +391,17 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
     """Analyse a single stock and return a StockSignal, or None if data is insufficient."""
     if df is None or len(df) < 60:
         return None
+
+    # Freshness gate: skip stocks whose latest candle is too old (suspended /
+    # untradeable). Compared against current Bangkok calendar date so we don't
+    # accidentally filter market-closed weekends — the gate is days, not hours.
+    try:
+        last_candle = pd.Timestamp(df.index[-1]).normalize()
+        today = pd.Timestamp.now().normalize()
+        if (today - last_candle).days > MAX_CANDLE_STALENESS_DAYS:
+            return None
+    except Exception:
+        pass  # if index isn't timestamp-like, let downstream error surface normally
 
     close = df["Close"]
     high = df["High"]
