@@ -309,6 +309,46 @@ async def health():
         "firestore": FIRESTORE_AVAILABLE,
         "bigquery": _bq_avail,
         "cached_stocks": len(_last_signals),
+        "last_scan_time": _last_scan_time.isoformat() if _last_scan_time else None,
+    }
+
+
+@app.get("/test/signal/{symbol}")
+async def test_signal(symbol: str):
+    """Return the cached StockSignal for a symbol — both in-memory and Firestore.
+
+    Useful to debug why a card shows stale data when Settrade says otherwise:
+    tells you when scan_stock last wrote this symbol and what close it recorded.
+    """
+    symbol = symbol.upper().strip()
+    result: dict = {"symbol": symbol}
+
+    in_mem = next((s for s in _last_signals if s.symbol == symbol), None)
+    result["in_memory"] = _signal_snapshot(in_mem) if in_mem else None
+
+    if FIRESTORE_AVAILABLE and _db:
+        loop = asyncio.get_running_loop()
+        fs_sig = await loop.run_in_executor(None, load_signal_from_firestore, _db, symbol)
+        result["firestore"] = _signal_snapshot(fs_sig) if fs_sig else None
+    else:
+        result["firestore"] = None
+
+    return result
+
+
+def _signal_snapshot(signal) -> dict:
+    """Minimal StockSignal view for diagnostic endpoints."""
+    return {
+        "symbol": signal.symbol,
+        "close": signal.close,
+        "change_pct": signal.change_pct,
+        "high_52w": signal.high_52w,
+        "pct_from_52w_high": signal.pct_from_52w_high,
+        "stage": signal.stage,
+        "pattern": signal.pattern,
+        "strength_score": signal.strength_score,
+        "scanned_at": signal.scanned_at,
+        "data_date": getattr(signal, "data_date", ""),
     }
 
 
