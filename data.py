@@ -1120,26 +1120,35 @@ def fetch_indexes_with_history(period: str = "1y") -> dict[str, pd.DataFrame]:
     """
     Fetch full OHLCV history DataFrames for all SET indexes.
     Used by analyze_index() for MACD/RSI calculations.
+
+    Fetch per-ticker with yf.Ticker().history() rather than batched
+    yf.download(..., group_by="ticker") because the batch path returned
+    data for only ^SET.BK and silently dropped SET50/SET100/MAI/sSET/SETESG
+    in prod — the MultiIndex top-level only contained the one ticker
+    that yfinance successfully served, and every other ticker fell
+    through to an empty DataFrame. Per-ticker calls are slightly slower
+    (6 HTTP calls instead of 1) but reliable and self-documenting.
     """
-    tickers = list(INDEX_SYMBOLS.values())
-    names = list(INDEX_SYMBOLS.keys())
     result: dict[str, pd.DataFrame] = {}
-    try:
-        raw = yf.download(tickers, period=period, group_by="ticker", progress=False, auto_adjust=False)
-        for name, ticker in zip(names, tickers):
-            try:
-                if len(tickers) == 1:
-                    df = raw.copy()
-                else:
-                    df = raw[ticker].copy() if ticker in raw.columns.get_level_values(0) else pd.DataFrame()
-                df = df.dropna(subset=["Close"])
-                if len(df) >= 30:
-                    df.index = pd.to_datetime(df.index).tz_localize(None)
-                    result[name] = df
-            except Exception:
-                pass
-    except Exception as exc:
-        logger.error("fetch_indexes_with_history failed: %s", exc)
+    for name, ticker in INDEX_SYMBOLS.items():
+        try:
+            t = yf.Ticker(ticker)
+            df = t.history(period=period, auto_adjust=False)
+            if df is None or df.empty:
+                logger.warning("fetch_indexes_with_history: %s (%s) returned empty", name, ticker)
+                continue
+            df = df.dropna(subset=["Close"])
+            if len(df) < 30:
+                logger.warning("fetch_indexes_with_history: %s (%s) only %d rows", name, ticker, len(df))
+                continue
+            df.index = pd.to_datetime(df.index).tz_localize(None)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            result[name] = df
+        except Exception as exc:
+            logger.error("fetch_indexes_with_history(%s / %s) failed: %s", name, ticker, exc)
+    logger.info("fetch_indexes_with_history: %d/%d indexes fetched",
+                len(result), len(INDEX_SYMBOLS))
     return result
 
 
@@ -1372,12 +1381,19 @@ def load_signals_from_firestore(db, max_staleness_days: int = 10) -> list:
         return []
 
 
-def load_signal_from_firestore(db, symbol: str):
-    """Load a single signal from Firestore signals/{symbol}. Returns StockSignal or None."""
+def load_signal_from_firestore(db, symbol: str, max_staleness_days: int = 10):
+    """Load a single signal from Firestore signals/{symbol}. Returns StockSignal or None.
+
+    Mirrors the staleness filter in load_signals_from_firestore: a doc whose
+    data_date is older than max_staleness_days is treated as a delisted /
+    suspended orphan (the scan-side freshness gate rejected its symbol in the
+    most recent scan but the Firestore doc is never auto-deleted).
+    """
     if db is None or not symbol:
         return None
     try:
         import dataclasses
+        from datetime import datetime, date
         from analyzer import StockSignal
         valid_fields = {f.name for f in dataclasses.fields(StockSignal)}
         doc = db.collection("signals").document(symbol).get()
@@ -1385,7 +1401,19 @@ def load_signal_from_firestore(db, symbol: str):
             return None
         data = {k: v for k, v in doc.to_dict().items() if k in valid_fields and v is not None}
         sig = StockSignal(**data)
-        return sig if sig.symbol else None
+        if not sig.symbol:
+            return None
+        data_date = getattr(sig, "data_date", "") or ""
+        if data_date:
+            try:
+                dd = datetime.strptime(data_date, "%Y-%m-%d").date()
+                if (date.today() - dd).days > max_staleness_days:
+                    logger.info("load_signal_from_firestore(%s): dropping stale doc data_date=%s",
+                                symbol, data_date)
+                    return None
+            except ValueError:
+                pass
+        return sig
     except Exception as exc:
         logger.warning("load_signal_from_firestore(%s) failed: %s", symbol, exc)
         return None
