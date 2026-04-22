@@ -49,7 +49,9 @@ def main():
     print("Baseline")
     try:
         h, dt = fetch(f"{base}/health")
-        fails += check("health/status", h.get("status") == "ok", f"{h.get('cached_stocks')} stocks, last_scan={h.get('last_scan_time','-')[:19]}  ({dt}s)")
+        last_scan = (h.get("last_scan_time") or "-")[:19]
+        fails += check("health/status", h.get("status") == "ok",
+                       f"{h.get('cached_stocks')} stocks, last_scan={last_scan}  ({dt}s)")
         fails += check("health/has_signals", (h.get("cached_stocks") or 0) > 0)
     except Exception as e:
         fails += check("health", False, f"err: {e}")
