@@ -509,6 +509,14 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
                 "advancing": getattr(b, "advancing", 0),
                 "declining": getattr(b, "declining", 0),
                 "unchanged": getattr(b, "unchanged", 0),
+                "new_highs_52w": getattr(b, "new_highs_52w", 0),
+                "new_lows_52w": getattr(b, "new_lows_52w", 0),
+                "breakout_count": getattr(b, "breakout_count", 0),
+                "vcp_count": getattr(b, "vcp_count", 0),
+                "stage1_count": getattr(b, "stage1_count", 0),
+                "stage2_count": getattr(b, "stage2_count", 0),
+                "stage3_count": getattr(b, "stage3_count", 0),
+                "stage4_count": getattr(b, "stage4_count", 0),
                 "set_index_close": getattr(b, "set_index_close", 0),
                 "set_index_change_pct": getattr(b, "set_index_change_pct", 0),
             },
@@ -540,6 +548,20 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
                 for t in trends[:5]
             ],
         }
+
+    # 52W high / low lists
+    if c in ("52wh", "52w high", "52whigh", "new highs", "new_highs"):
+        sigs = sorted(
+            [s for s in _last_signals if s.high_52w > 0 and s.close >= s.high_52w * 0.99],
+            key=lambda s: -(s.close / s.high_52w - 1),
+        )
+        return summary(sigs, "52W High")
+    if c in ("52wl", "52w low", "52wlow", "new lows", "new_lows"):
+        sigs = sorted(
+            [s for s in _last_signals if s.low_52w > 0 and s.close <= s.low_52w * 1.01],
+            key=lambda s: (s.close / s.low_52w - 1),
+        )
+        return summary(sigs, "52W Low")
 
     # Static cards — must not error even with empty state
     if c in ("guide", "คู่มือ", "explain all", "all explain"):
@@ -1632,7 +1654,41 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
 
     # ── Stage picker ──
     elif cmd in ("stage", "stages", "สเตจ"):
-        reply_flex(reply_token, "เลือก Stage", build_stage_picker_card(_last_breadth))
+        breadth = _last_breadth
+        # Lazy-load from Firestore when this Cloud Run instance hasn't warmed yet —
+        # same pattern as _last_signals. Otherwise the stage picker shows 0 per stage.
+        if breadth is None and FIRESTORE_AVAILABLE and _db:
+            state = await loop.run_in_executor(None, load_scan_state, _db)
+            if state:
+                _last_breadth = state["breadth"]
+                breadth = _last_breadth
+        # Still no breadth? Recompute from _last_signals in-memory.
+        if breadth is None and _last_signals:
+            try:
+                breadth = compute_market_breadth(_last_signals)
+                _last_breadth = breadth
+            except Exception as exc:
+                logger.error("compute_market_breadth on-demand failed: %s", exc)
+        reply_flex(reply_token, "เลือก Stage", build_stage_picker_card(breadth))
+
+    # ── 52W high / low lists (tappable from market card) ──
+    elif cmd in ("52wh", "52w high", "52whigh", "new highs", "new_highs"):
+        sigs = sorted(
+            [s for s in _last_signals if s.high_52w > 0 and s.close >= s.high_52w * 0.99],
+            key=lambda s: -(s.close / s.high_52w - 1),  # biggest break-above first
+        )
+        _reply_stock_list(reply_token, sigs, f"📈 ใกล้ 52W High ({len(sigs)} หุ้น)",
+                          base_cmd="52wh",
+                          subtitle="ราคาอยู่ภายใน 1% จาก 52W high")
+
+    elif cmd in ("52wl", "52w low", "52wlow", "new lows", "new_lows"):
+        sigs = sorted(
+            [s for s in _last_signals if s.low_52w > 0 and s.close <= s.low_52w * 1.01],
+            key=lambda s: (s.close / s.low_52w - 1),
+        )
+        _reply_stock_list(reply_token, sigs, f"📉 ใกล้ 52W Low ({len(sigs)} หุ้น)",
+                          base_cmd="52wl",
+                          subtitle="ราคาอยู่ภายใน 1% จาก 52W low")
 
     # ── Pattern overview ──
     elif cmd in ("patterns", "pattern", "รูปแบบ"):
