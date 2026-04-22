@@ -35,7 +35,7 @@ def query(base, secret, cmd):
 def check(label, ok, detail=""):
     mark = "✓" if ok else "✗"
     print(f"  {mark} {label:30s} {detail}")
-    return 1 if ok else 0
+    return 0 if ok else 1
 
 
 def main():
