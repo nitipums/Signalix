@@ -604,6 +604,87 @@ async def test_indexes(x_scan_secret: Optional[str] = Header(default=None)):
     return out
 
 
+@app.get("/test/settrade_sectors")
+async def test_settrade_sectors(symbol: str = "PTT", x_scan_secret: Optional[str] = Header(default=None)):
+    """Introspect the settrade_v2 SDK to discover sector / industry methods.
+
+    We've been classifying stocks via yfinance .info which has gaps for Thai
+    REITs / funds. If Settrade's SDK exposes sector data natively, we should
+    use that instead. This endpoint enumerates the MarketData class methods,
+    shows the raw get_quote_symbol response (including all fields, not just
+    the ones our adapter exposes), and probes likely method names.
+
+    Query param `symbol` (default PTT) is used for the per-symbol probes.
+    """
+    settings = get_settings()
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
+
+    from settrade_client import _get_investor
+    investor = _get_investor()
+    if not investor:
+        return {"error": "Settrade SDK not initialised"}
+
+    result: dict = {"symbol_tested": symbol}
+    try:
+        market = investor.MarketData()
+        # List all public methods on MarketData
+        methods = sorted(m for m in dir(market) if not m.startswith("_"))
+        result["MarketData_methods"] = methods
+
+        # Raw get_quote_symbol — show ALL fields, not our filtered adapter
+        try:
+            q = market.get_quote_symbol(symbol)
+            result["get_quote_symbol_raw_fields"] = sorted(q.keys()) if q else None
+            # Look specifically for sector/industry fields
+            if q:
+                sector_like = {k: q[k] for k in q if any(
+                    kw in k.lower() for kw in ("sector", "industry", "group", "segment", "category", "class")
+                )}
+                result["get_quote_symbol_sector_like"] = sector_like or "(none found)"
+        except Exception as e:
+            result["get_quote_symbol_error"] = f"{type(e).__name__}: {e}"
+
+        # Probe likely sector/industry method names
+        probes = [
+            "get_instrument_info", "get_instrument_by_symbol", "get_instrument",
+            "get_sector_info", "get_industry_info", "get_industry",
+            "get_symbol_info", "get_stock_info",
+            "get_market_info", "get_market_stat",
+            "get_sector_list", "get_industry_list",
+            "get_index_symbols", "get_sector_symbols",
+        ]
+        probe_results: dict = {}
+        for m in probes:
+            if hasattr(market, m):
+                try:
+                    fn = getattr(market, m)
+                    # Try no-arg first, then with symbol
+                    try:
+                        out = fn()
+                    except TypeError:
+                        try:
+                            out = fn(symbol)
+                        except Exception as e2:
+                            out = f"signature_error: {e2}"
+                    # Summarise large outputs
+                    if isinstance(out, dict):
+                        probe_results[m] = {"type": "dict", "keys": sorted(out.keys())[:20], "size": len(out)}
+                    elif isinstance(out, list):
+                        probe_results[m] = {"type": "list", "size": len(out),
+                                            "sample": out[:3] if out and len(str(out[:3])) < 800 else str(out[:1])[:400]}
+                    else:
+                        probe_results[m] = {"type": type(out).__name__, "repr": repr(out)[:400]}
+                except Exception as e:
+                    probe_results[m] = {"error": f"{type(e).__name__}: {e}"}
+            else:
+                probe_results[m] = "not_present"
+        result["probes"] = probe_results
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
 @app.get("/test/sector_coverage")
 async def test_sector_coverage(x_scan_secret: Optional[str] = Header(default=None)):
     """Sector classification coverage report.
