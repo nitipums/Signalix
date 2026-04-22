@@ -216,8 +216,17 @@ def detect_pattern(df: pd.DataFrame, stage: int, ath_override: Optional[float] =
     vol_avg_20 = float(_vol_avg(df).iloc[-1])
     volume_ratio = float(volume.iloc[-1]) / vol_avg_20 if vol_avg_20 > 0 else 1.0
 
-    # All-time high — use pre-synced cache if available, else fall back to window max
-    ath = ath_override if ath_override is not None else float(high.max())
+    # All-time high: take the max of the cached historical ATH (from Firestore via
+    # ath_override) AND the current 1Y window high. This lets the analyzer recognise
+    # new unadjusted highs set inside the scan window even if the Firestore cache
+    # hasn't been refreshed by /sync_ath, and keeps old peaks that are older than
+    # the window (e.g. pre-2024 for a 1Y scan). ATH is monotonically non-decreasing,
+    # so max() is the correct combinator.
+    window_high = float(high.max())
+    if ath_override is not None and ath_override > 0:
+        ath = max(float(ath_override), window_high)
+    else:
+        ath = window_high
 
     if stage == 4:
         return "going_down", {}
