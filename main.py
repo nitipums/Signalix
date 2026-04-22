@@ -335,7 +335,22 @@ async def _warm_from_firestore():
 
 @app.get("/health")
 async def health():
+    """Health probe. Reports in-memory cache state; lazy-reloads _last_signals
+    from BQ/Firestore when this Cloud Run instance hasn't warmed yet so the
+    reported count doesn't spuriously show 0 just because a fresh instance
+    happens to serve the probe."""
     from data import BQ_AVAILABLE as _bq_avail
+    global _last_signals
+    if not _last_signals:
+        loop = asyncio.get_running_loop()
+        if BQ_AVAILABLE:
+            bq = await loop.run_in_executor(None, load_latest_signals_from_bq)
+            if bq:
+                _last_signals = bq
+        if not _last_signals and FIRESTORE_AVAILABLE and _db:
+            fs = await loop.run_in_executor(None, load_signals_from_firestore, _db)
+            if fs:
+                _last_signals = fs
     return {
         "status": "ok",
         "time": datetime.now(BANGKOK_TZ).isoformat(),
