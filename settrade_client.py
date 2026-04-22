@@ -71,7 +71,8 @@ def get_ohlcv(symbol: str, period: str = "1Y") -> Optional[pd.DataFrame]:
             symbol=symbol,
             interval="1d",
             limit=limit,
-            normalized=True,
+            normalized=False,  # Unadjusted prices: match what users see on broker charts.
+                               # Consistent with yfinance auto_adjust=False across the codebase.
         )
         if not data or "close" not in data:
             return None

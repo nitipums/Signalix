@@ -497,7 +497,7 @@ def fetch_sector_index_prices() -> dict[str, dict]:
     try:
         import yfinance as yf
         data = yf.download(tickers_str, period="5d", interval="1d",
-                           group_by="ticker", progress=False, auto_adjust=True)
+                           group_by="ticker", progress=False, auto_adjust=False)
         now = datetime.now(BANGKOK_TZ).isoformat()
         for sector, ticker in SECTOR_INDEX_SYMBOLS.items():
             try:
@@ -587,7 +587,7 @@ def fetch_ohlcv(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
     # ── Fallback: yfinance ──
     ticker = "^SET.BK" if symbol == "SET" else _to_yf_ticker(symbol)
     try:
-        df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
+        df = yf.download(ticker, period=period, progress=False, auto_adjust=False)
         if df.empty:
             logger.warning("No data returned for %s", ticker)
             return None
@@ -966,7 +966,7 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
             period=period,
             group_by="ticker",
             progress=False,
-            auto_adjust=True,
+            auto_adjust=False,
             threads=True,
         )
     except Exception as exc:
@@ -1060,7 +1060,7 @@ def fetch_latest_candles(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
     if missing:
         tickers = [("^SET.BK" if s == "SET" else _to_yf_ticker(s)) for s in missing]
         try:
-            raw = yf.download(tickers, period="5d", group_by="ticker", progress=False, auto_adjust=True, threads=True)
+            raw = yf.download(tickers, period="5d", group_by="ticker", progress=False, auto_adjust=False, threads=True)
             multi = len(tickers) > 1
             top_level = raw.columns.get_level_values(0) if multi else None
             for symbol, ticker in zip(missing, tickers):
@@ -1099,7 +1099,7 @@ def fetch_latest_candles(lookback_days: int = 400) -> dict[str, pd.DataFrame]:
     set_df = results.get("SET")
     if set_df is None or len(set_df) < 2:
         try:
-            raw = yf.download("^SET.BK", period="1mo", progress=False, auto_adjust=True)
+            raw = yf.download("^SET.BK", period="1mo", progress=False, auto_adjust=False)
             if raw is not None and not raw.empty:
                 ndf = raw.dropna(subset=["Close"]).copy()
                 ndf.index = pd.to_datetime(ndf.index).tz_localize(None)
@@ -1125,7 +1125,7 @@ def fetch_indexes_with_history(period: str = "1y") -> dict[str, pd.DataFrame]:
     names = list(INDEX_SYMBOLS.keys())
     result: dict[str, pd.DataFrame] = {}
     try:
-        raw = yf.download(tickers, period=period, group_by="ticker", progress=False, auto_adjust=True)
+        raw = yf.download(tickers, period=period, group_by="ticker", progress=False, auto_adjust=False)
         for name, ticker in zip(names, tickers):
             try:
                 if len(tickers) == 1:
@@ -1179,30 +1179,15 @@ def fetch_ohlcv_max(symbol: str) -> Optional[pd.DataFrame]:
     """Fetch maximum available history for a symbol — used by sync_ath to compute
     the true all-time high.
 
-    Priority:
-      1. Settrade 5Y (authoritative Thai data; yfinance's Thai coverage has
-         documented gaps that missed WHAIR's real ATH in prod).
-      2. yfinance period=max as fallback for any symbol Settrade can't serve
-         (notably the SET index ^SET.BK itself, which isn't in Settrade).
+    Uses yfinance period=max with auto_adjust=False so the stored ATH is the
+    real unadjusted price peak (matches what users see on broker charts).
+    Settrade can't help here: its SDK silently rejects get_candlestick with
+    limit>=1095, capping us at ~1Y of history — not enough for stocks whose
+    real ATH is years old (e.g. PTT's ATH is 2018-04-24).
     """
-    # --- Settrade 5Y (primary for individual SET stocks) ---
-    if symbol != "SET":
-        try:
-            from settrade_client import get_ohlcv, is_api_available as _st_ok
-            if _st_ok():
-                st_df = get_ohlcv(symbol, period="5Y")
-                if st_df is not None and not st_df.empty and not st_df["Close"].dropna().empty:
-                    st_df = st_df.dropna(subset=["Close"]).copy()
-                    st_df.index = pd.to_datetime(st_df.index).tz_localize(None)
-                    st_df.index.name = "Date"
-                    return st_df
-        except Exception as exc:
-            logger.warning("fetch_ohlcv_max(%s): Settrade 5Y failed: %s — yfinance fallback", symbol, exc)
-
-    # --- yfinance period=max (fallback + SET index) ---
     ticker = "^SET.BK" if symbol == "SET" else _to_yf_ticker(symbol)
     try:
-        df = yf.download(ticker, period="max", progress=False, auto_adjust=True)
+        df = yf.download(ticker, period="max", progress=False, auto_adjust=False)
         if df.empty:
             return None
         df.index = pd.to_datetime(df.index).tz_localize(None)
