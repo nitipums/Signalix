@@ -1325,26 +1325,47 @@ def save_signals_to_firestore(signals: list, db) -> None:
         logger.error("save_signals_to_firestore failed: %s", exc)
 
 
-def load_signals_from_firestore(db) -> list:
-    """Load latest signals snapshot from Firestore signals collection."""
+def load_signals_from_firestore(db, max_staleness_days: int = 10) -> list:
+    """Load latest signals snapshot from Firestore signals collection.
+
+    Filters out orphan docs (symbols whose scans have since stopped producing
+    signals — e.g. ACAP became suspended; its Firestore doc isn't auto-deleted
+    but scan_stock now rejects it via MAX_CANDLE_STALENESS_DAYS). Without this
+    filter, load returns stale entries that leak into _last_signals and get
+    classified under bogus patterns.
+    """
     if db is None:
         return []
     try:
         import dataclasses
+        from datetime import datetime, date
         from analyzer import StockSignal
         valid_fields = {f.name for f in dataclasses.fields(StockSignal)}
+        today = date.today()
         docs = db.collection("signals").stream()
         signals = []
+        dropped_stale = 0
         for doc in docs:
             try:
                 data = {k: v for k, v in doc.to_dict().items() if k in valid_fields and v is not None}
                 sig = StockSignal(**data)
-                if sig.symbol:  # skip truly corrupt docs with no symbol
-                    signals.append(sig)
+                if not sig.symbol:
+                    continue
+                data_date = getattr(sig, "data_date", "") or ""
+                if data_date:
+                    try:
+                        dd = datetime.strptime(data_date, "%Y-%m-%d").date()
+                        if (today - dd).days > max_staleness_days:
+                            dropped_stale += 1
+                            continue
+                    except ValueError:
+                        pass  # unparseable date — let it through rather than silent drop
+                signals.append(sig)
             except Exception:
                 continue
         signals.sort(key=lambda s: s.strength_score, reverse=True)
-        logger.info("Loaded %d signals from Firestore", len(signals))
+        logger.info("Loaded %d signals from Firestore (dropped %d stale >%dd)",
+                    len(signals), dropped_stale, max_staleness_days)
         return signals
     except Exception as exc:
         logger.error("load_signals_from_firestore failed: %s", exc)

@@ -562,6 +562,37 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
     return {"kind": "unknown", "cmd": c}
 
 
+@app.get("/test/indexes")
+async def test_indexes(x_scan_secret: Optional[str] = Header(default=None)):
+    """Debug why fetch_indexes_with_history may return < all INDEX_SYMBOLS.
+
+    For each configured index, reports rows fetched and a sample of the tail.
+    """
+    settings = get_settings()
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
+
+    from data import INDEX_SYMBOLS, fetch_indexes_with_history
+    loop = asyncio.get_running_loop()
+    dfs = await loop.run_in_executor(None, fetch_indexes_with_history)
+    out: dict = {
+        "configured": INDEX_SYMBOLS,
+        "last_indexes_keys": sorted((_last_indexes or {}).keys()),
+        "fetch_result": {},
+    }
+    for name in INDEX_SYMBOLS:
+        df = dfs.get(name)
+        if df is None or df.empty:
+            out["fetch_result"][name] = None
+        else:
+            out["fetch_result"][name] = {
+                "rows": len(df),
+                "latest": str(df.index[-1].date()),
+                "latest_close": round(float(df["Close"].iloc[-1]), 2),
+            }
+    return out
+
+
 @app.get("/test/invariants")
 async def test_invariants(x_scan_secret: Optional[str] = Header(default=None)):
     """Validate invariants that should always hold on _last_signals.
