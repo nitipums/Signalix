@@ -117,6 +117,34 @@ _last_sector_indexes: dict[str, dict] = {}   # AGRO/CONSUMP/… index prices
 _last_sector_trends: list[SectorSummary] = []
 _ath_cache: dict[str, float] = {}
 
+
+def _load_ath_merged() -> dict[str, float]:
+    """Merge BQ MAX(high) and Firestore ath_cache, taking the max per symbol.
+
+    BQ's MAX(high) reflects only the rows BQ has indexed — which may be short
+    of the true historical ATH if append_new_candles_to_bq didn't accumulate
+    enough history yet. Firestore ath_cache was explicitly populated by
+    sync_ath_to_firestore using yfinance max-period data (authoritative).
+    ATH is monotonically non-decreasing, so max(BQ, Firestore) is always
+    correct and defensive against either source being truncated.
+    """
+    merged: dict[str, float] = {}
+    try:
+        if FIRESTORE_AVAILABLE and _db:
+            for sym, v in (load_ath_cache(_db) or {}).items():
+                if v and v > 0:
+                    merged[sym] = float(v)
+    except Exception as exc:
+        logger.warning("ATH load from Firestore failed: %s", exc)
+    try:
+        if BQ_AVAILABLE:
+            for sym, v in (load_ath_from_bq() or {}).items():
+                if v and v > 0:
+                    merged[sym] = max(merged.get(sym, 0.0), float(v))
+    except Exception as exc:
+        logger.warning("ATH load from BQ failed: %s", exc)
+    return merged
+
 # Static card caches (built once, never change between scans)
 _guide_carousel_cache: Optional[dict] = None
 
@@ -230,13 +258,14 @@ async def _warm_from_firestore():
     global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache, _last_sector_indexes
     loop = asyncio.get_running_loop()
     try:
-        # Load ATH non-blocking: prefer BQ, fall back to Firestore
-        if BQ_AVAILABLE:
-            _ath_cache = await loop.run_in_executor(None, load_ath_from_bq)
-            logger.info("ATH cache loaded from BQ: %d entries", len(_ath_cache))
-        elif FIRESTORE_AVAILABLE and _db:
-            _ath_cache = await loop.run_in_executor(None, load_ath_cache, _db)
-            logger.info("ATH cache loaded from Firestore: %d entries", len(_ath_cache))
+        # Load ATH from BOTH sources and take the max per symbol. BQ gives
+        # MAX(high) over whatever rows BQ happens to have (may be truncated if
+        # append_new_candles_to_bq hasn't accumulated full history); Firestore
+        # ath_cache was populated by sync_ath_to_firestore using yfinance
+        # max-period history (authoritative). ATH is monotonically non-decreasing,
+        # so max() is always correct.
+        _ath_cache = await loop.run_in_executor(None, _load_ath_merged)
+        logger.info("ATH cache loaded (merged BQ+Firestore): %d entries", len(_ath_cache))
 
         # ── Sector map: load from Firestore, wire into data module ───────────────
         if FIRESTORE_AVAILABLE and _db:
@@ -332,6 +361,16 @@ async def test_signal(symbol: str):
         result["firestore"] = _signal_snapshot(fs_sig) if fs_sig else None
     else:
         result["firestore"] = None
+
+    # ATH sources — useful for diagnosing wrong ath_breakout classifications.
+    ath_info: dict = {"in_memory_cache": _ath_cache.get(symbol)}
+    if FIRESTORE_AVAILABLE and _db:
+        try:
+            doc = _db.collection("ath_cache").document(symbol).get()
+            ath_info["firestore"] = doc.to_dict() if doc.exists else None
+        except Exception as exc:
+            ath_info["firestore_error"] = str(exc)
+    result["ath"] = ath_info
 
     return result
 
@@ -465,10 +504,7 @@ async def scan(
     loop = asyncio.get_running_loop()
 
     if not _ath_cache:
-        if BQ_AVAILABLE:
-            _ath_cache = await loop.run_in_executor(None, load_ath_from_bq)
-        elif FIRESTORE_AVAILABLE and _db:
-            _ath_cache = await loop.run_in_executor(None, load_ath_cache, _db)
+        _ath_cache = await loop.run_in_executor(None, _load_ath_merged)
 
     # Intraday mode: use BQ history + latest candle (fast). Full mode: standard fetch.
     if body.mode == "intraday":
