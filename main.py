@@ -704,7 +704,8 @@ async def test_sector_coverage(x_scan_secret: Optional[str] = Header(default=Non
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
 
     from data import (
-        _dynamic_sector_map, SECTOR_MAP, SUBSECTOR_TO_SECTOR,
+        _dynamic_sector_map, _MANUAL_SUBSECTOR_OVERRIDES,
+        SECTOR_MAP, SUBSECTOR_TO_SECTOR,
         SECTOR_INDEX_SYMBOLS, get_sector, get_subsector, get_stock_list,
     )
 
@@ -719,15 +720,20 @@ async def test_sector_coverage(x_scan_secret: Optional[str] = Header(default=Non
     symbols = get_stock_list()
     sector_counts: dict[str, int] = {}
     subsector_counts: dict[str, int] = {}
+    via_manual = 0
     via_dynamic = 0
     via_static = 0
     unmapped: list[str] = []
 
     for sym in symbols:
-        subsector = _dynamic_sector_map.get(sym, "")
-        if subsector:
+        if sym in _MANUAL_SUBSECTOR_OVERRIDES:
+            via_manual += 1
+            sub = _MANUAL_SUBSECTOR_OVERRIDES[sym]
+            subsector_counts[sub] = subsector_counts.get(sub, 0) + 1
+        elif sym in _dynamic_sector_map:
             via_dynamic += 1
-            subsector_counts[subsector] = subsector_counts.get(subsector, 0) + 1
+            sub = _dynamic_sector_map[sym]
+            subsector_counts[sub] = subsector_counts.get(sub, 0) + 1
         elif sym in SECTOR_MAP:
             via_static += 1
         else:
@@ -737,13 +743,15 @@ async def test_sector_coverage(x_scan_secret: Optional[str] = Header(default=Non
         sector_counts[sector] = sector_counts.get(sector, 0) + 1
 
     total = len(symbols)
+    subsector_mapped = via_manual + via_dynamic
     return {
         "total_symbols": total,
+        "via_manual_override": via_manual,
         "via_dynamic_subsector": via_dynamic,
         "via_static_sector_only": via_static,
         "unmapped_other": len(unmapped),
-        "coverage_pct": round((via_dynamic + via_static) / total * 100, 1) if total else 0.0,
-        "subsector_coverage_pct": round(via_dynamic / total * 100, 1) if total else 0.0,
+        "coverage_pct": round((subsector_mapped + via_static) / total * 100, 1) if total else 0.0,
+        "subsector_coverage_pct": round(subsector_mapped / total * 100, 1) if total else 0.0,
         "sector_counts": dict(sorted(sector_counts.items())),
         "subsector_counts": dict(sorted(subsector_counts.items())),
         "unmapped_sample": unmapped[:20],

@@ -407,22 +407,164 @@ SECTOR_INDEX_SYMBOLS: dict[str, str] = {
     "TECH":    "^TECH.BK",
 }
 
-# In-memory sector map — loaded from Firestore on startup, extended from SECTOR_MAP
-# Maps symbol → subsector code (e.g. "BANK", "FOOD", "ICT")
-# Use get_sector(symbol) / get_subsector(symbol) helpers below
-_dynamic_sector_map: dict[str, str] = {}  # symbol → subsector (25 codes)
+# In-memory sector map — loaded from Firestore on startup via yfinance .info mapping
+# Maps symbol → subsector code (e.g. "BANK", "FOOD", "ICT"). 28 codes total.
+# Use get_sector(symbol) / get_subsector(symbol) helpers below.
+_dynamic_sector_map: dict[str, str] = {}  # symbol → subsector
+
+
+# Hand-curated overrides for symbols that yfinance .info doesn't classify
+# (Thai REITs / infrastructure funds / property-fund tickers mostly) or
+# where the industry string falls outside our _YF_INDUSTRY_TO_SUBSECTOR map.
+# These are treated as authoritative: get_subsector checks here first.
+# Settrade's Investor SDK doesn't expose sector / industry (confirmed via
+# /test/settrade_sectors — only get_candlestick / get_quote_symbol /
+# market_url are public) so this is the only reliable path for known
+# blue chips + funds.
+_MANUAL_SUBSECTOR_OVERRIDES: dict[str, str] = {
+    # ── BANK ────────────────────────────────────────────────────────
+    "BBL": "BANK", "KBANK": "BANK", "KTB": "BANK", "SCB": "BANK",
+    "BAY": "BANK", "KKP": "BANK", "TISCO": "BANK", "LHFG": "BANK",
+    "TCAP": "BANK", "TMB": "BANK", "TTB": "BANK", "CIMBT": "BANK",
+    "UOBKH": "BANK",
+
+    # ── FIN (Finance & Securities) ─────────────────────────────────
+    "MTC": "FIN", "SAWAD": "FIN", "AEONTS": "FIN", "KTC": "FIN",
+    "TIDLOR": "FIN", "MFC": "FIN", "PHATRA": "FIN", "ASK": "FIN",
+    "CGH": "FIN", "BFIT": "FIN", "GPI": "FIN", "KGI": "FIN",
+    "ASP": "FIN", "JMART": "FIN", "JMT": "FIN", "NCAP": "FIN",
+    "CHAYO": "FIN", "BAM": "FIN",
+
+    # ── INSUR ───────────────────────────────────────────────────────
+    "AYUD": "INSUR", "BLA": "INSUR", "TQM": "INSUR", "MTI": "INSUR",
+    "MITSIB": "INSUR", "NKI": "INSUR", "THRE": "INSUR",
+    "THREL": "INSUR", "TLI": "INSUR",
+
+    # ── PROP (Property Development) ────────────────────────────────
+    "CPN": "PROP", "LH": "PROP", "AP": "PROP", "SPALI": "PROP",
+    "ORI": "PROP", "SIRI": "PROP", "PSH": "PROP", "QH": "PROP",
+    "LPN": "PROP", "NOBLE": "PROP", "MJD": "PROP", "SC": "PROP",
+    "LALIN": "PROP", "ANAN": "PROP", "NWG": "PROP", "CHEWA": "PROP",
+    "RICHY": "PROP", "SENA": "PROP", "GLAND": "PROP", "PROUD": "PROP",
+    "AMATA": "PROP", "WHA": "PROP", "ROJNA": "PROP", "MBK": "PROP",
+    "DHOUSE": "PROP", "SUTHA": "PROP",
+
+    # ── PF (Property Funds / REITs / Infra Trusts) ─────────────────
+    "CPNREIT": "PF", "WHART": "PF", "FTREIT": "PF", "DREIT": "PF",
+    "DIF": "PF", "BTSGIF": "PF", "LHHOTEL": "PF", "3BBIF": "PF",
+    "AIMCG": "PF", "AIMIRT": "PF", "AMATAR": "PF", "AMATAV": "PF",
+    "LHSC": "PF", "CPTGF": "PF", "FUTUREPF": "PF", "GVREIT": "PF",
+    "TLGF": "PF", "URBNPF": "PF", "HREIT": "PF", "IMPACT": "PF",
+    "JASIF": "PF", "TFUND": "PF", "SPF": "PF", "TPRIME": "PF",
+    "WHABT": "PF", "B-WORK": "PF", "SIRIP": "PF", "M-STOR": "PF",
+    "CTARAF": "PF", "DIGI": "PF", "LUXF": "PF", "POPF": "PF",
+    "SHREIT": "PF", "SRIPANWA": "PF", "LHPF": "PF", "CPTREIT": "PF",
+    "QHHRREIT": "PF", "QHOP": "PF", "QHPF": "PF", "BKKCP": "PF",
+    "GAHREIT": "PF", "INETREIT": "PF", "KTBSTMR": "PF", "SPRIME": "PF",
+
+    # ── CONS (Construction Services) ───────────────────────────────
+    "STEC": "CONS", "ITD": "CONS", "PREB": "CONS", "SEAFCO": "CONS",
+    "NWR": "CONS", "SYNTEC": "CONS", "STECON": "CONS", "CK": "CONS",
+    "DCON": "CONS", "UNIQ": "CONS",
+
+    # ── CONMAT (Construction Materials) ────────────────────────────
+    "SCC": "CONMAT", "SCGD": "CONMAT", "SCGP": "CONMAT",
+    "TPIPL": "CONMAT", "TPI": "CONMAT", "DRT": "CONMAT",
+    "VNG": "CONMAT", "DCC": "CONMAT",
+
+    # ── ENERG (Energy & Utilities) ─────────────────────────────────
+    "PTT": "ENERG", "PTTEP": "ENERG", "BANPU": "ENERG",
+    "RATCH": "ENERG", "BCPG": "ENERG", "BCP": "ENERG",
+    "EGCO": "ENERG", "GPSC": "ENERG", "GULF": "ENERG",
+    "GUNKUL": "ENERG", "EA": "ENERG", "TOP": "ENERG",
+    "ESSO": "ENERG", "SPRC": "ENERG", "PTG": "ENERG",
+    "OR": "ENERG", "BBGI": "ENERG", "TPIPP": "ENERG",
+    "TPCH": "ENERG", "DEMCO": "ENERG", "SPCG": "ENERG",
+    "EPG": "ENERG", "EASTW": "ENERG", "TTW": "ENERG",
+
+    # ── MINE ────────────────────────────────────────────────────────
+    "LANNA": "MINE",
+
+    # ── PETRO ──────────────────────────────────────────────────────
+    "PTTGC": "PETRO", "IRPC": "PETRO", "TASCO": "PETRO",
+    "GC": "PETRO", "GGC": "PETRO",
+
+    # ── ICT (Information & Communication Tech) ─────────────────────
+    "ADVANC": "ICT", "TRUE": "ICT", "INTUCH": "ICT", "JAS": "ICT",
+    "ITEL": "ICT", "THCOM": "ICT", "INSET": "ICT", "NETBAY": "ICT",
+    "INET": "ICT", "DTAC": "ICT",
+
+    # ── ETRON (Electronics) ────────────────────────────────────────
+    "HANA": "ETRON", "KCE": "ETRON", "DELTA": "ETRON",
+    "SVI": "ETRON", "SMT": "ETRON", "STARK": "ETRON",
+
+    # ── COMM (Commerce Retail/Wholesale) ───────────────────────────
+    "CPALL": "COMM", "CRC": "COMM", "DOHOME": "COMM", "HMPRO": "COMM",
+    "COM7": "COMM", "GLOBAL": "COMM", "MAKRO": "COMM", "SPVI": "COMM",
+    "SYNEX": "COMM", "SIS": "COMM", "ADVICE": "COMM",
+
+    # ── HELTH (Healthcare) ─────────────────────────────────────────
+    "BDMS": "HELTH", "BH": "HELTH", "CHG": "HELTH", "BCH": "HELTH",
+    "RJH": "HELTH", "VIH": "HELTH", "PRINC": "HELTH", "VIBHA": "HELTH",
+    "EKH": "HELTH", "NTV": "HELTH", "LPH": "HELTH", "THG": "HELTH",
+    "M-CHAI": "HELTH", "KDH": "HELTH",
+
+    # ── TRANS (Transportation & Logistics) ─────────────────────────
+    "AOT": "TRANS", "AAV": "TRANS", "BA": "TRANS", "NOK": "TRANS",
+    "BTS": "TRANS", "BEM": "TRANS", "BMCL": "TRANS", "TMILL": "TRANS",
+    "PSL": "TRANS", "RCL": "TRANS", "NCL": "TRANS", "WICE": "TRANS",
+    "LEO": "TRANS", "TTA": "TRANS",
+
+    # ── MEDIA ──────────────────────────────────────────────────────
+    "MAJOR": "MEDIA", "MCOT": "MEDIA", "BEC": "MEDIA",
+    "WORK": "MEDIA", "RS": "MEDIA", "GRAMMY": "MEDIA",
+    "MONO": "MEDIA", "ONEE": "MEDIA", "NATION": "MEDIA",
+    "VGI": "MEDIA", "PLANB": "MEDIA",
+
+    # ── TOURISM ────────────────────────────────────────────────────
+    "MINT": "TOURISM", "DUSIT": "TOURISM", "ERW": "TOURISM",
+    "AWC": "TOURISM", "CENTEL": "TOURISM",
+
+    # ── FOOD (incl. beverages) ─────────────────────────────────────
+    "CPF": "FOOD", "GFPT": "FOOD", "TU": "FOOD", "BR": "FOOD",
+    "MALEE": "FOOD", "SAPPE": "FOOD", "TFG": "FOOD",
+    "CFRESH": "FOOD", "CHOTI": "FOOD", "TFMAMA": "FOOD",
+    "TIPCO": "FOOD", "NRF": "FOOD", "OISHI": "FOOD",
+    "OSP": "FOOD", "CBG": "FOOD", "ICHI": "FOOD",
+    "M": "FOOD", "MK": "FOOD", "S&P": "FOOD",
+
+    # ── AGRI (Agricultural products) ───────────────────────────────
+    "KSL": "AGRI", "KTIS": "AGRI", "KASET": "AGRI",
+    "STA": "AGRI", "PPM": "AGRI", "SUSCO": "AGRI", "CGD": "AGRI",
+
+    # ── AUTO ───────────────────────────────────────────────────────
+    "STANLY": "AUTO", "SAT": "AUTO", "IHL": "AUTO",
+    "PTECH": "AUTO", "TKN": "AUTO", "SNC": "AUTO",
+
+    # ── FASHION / HOME / PERSON ────────────────────────────────────
+    "SABINA": "FASHION", "BEAUTY": "FASHION",
+    "JUBILE": "FASHION", "MC": "FASHION", "WARRIX": "FASHION",
+}
 
 
 def get_sector(symbol: str) -> str:
     """Return SET industry group (8 codes) for a symbol. Falls back to SECTOR_MAP then OTHER."""
-    subsector = _dynamic_sector_map.get(symbol, "")
+    subsector = get_subsector(symbol)
     if subsector:
         return SUBSECTOR_TO_SECTOR.get(subsector, "OTHER")
     return SECTOR_MAP.get(symbol, "OTHER")
 
 
 def get_subsector(symbol: str) -> str:
-    """Return SET subsector (25 codes) for a symbol, empty string if unknown."""
+    """Return SET subsector code (28 codes) for a symbol, empty string if unknown.
+
+    Lookup order: manual override (hand-curated, authoritative) →
+    _dynamic_sector_map (yfinance .info derived). Manual wins so a wrong
+    yfinance classification never hides our curated choice.
+    """
+    override = _MANUAL_SUBSECTOR_OVERRIDES.get(symbol)
+    if override:
+        return override
     return _dynamic_sector_map.get(symbol, "")
 
 
