@@ -1137,9 +1137,17 @@ def build_sector_carousel(sectors: list[SectorSummary]) -> dict:
     return {"type": "carousel", "contents": bubbles}
 
 
-def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
+def build_sector_overview_card(sectors: list[SectorSummary],
+                               sector_indexes: Optional[dict] = None) -> dict:
     """Single mega bubble — each sector row is tappable, no footer buttons.
-    Column 3 shows total stock count (matching drill-down result), not adv/decl.
+
+    Columns: Sector | Index price/Δ% (NEW) | Stage2% | Trend N
+    sector_indexes is the {sector_code: {close, change_pct, ...}} dict
+    populated by data.fetch_sector_index_prices and cached in
+    main._last_sector_indexes. When absent or per-sector empty, the index
+    column shows '—' and the row still renders so users can still tap the
+    sector for the drill-down.
+
     OTHER (unmapped stocks) is hidden — it adds noise without actionable insight.
     """
     SECTOR_COLORS = {
@@ -1152,8 +1160,8 @@ def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
         "INDUS": "อุตสาหกรรม", "PROPCON": "อสังหาฯ/ก่อสร้าง", "RESOURC": "ทรัพยากร",
         "SERVICE": "บริการ", "TECH": "เทคโนโลยี",
     }
+    sector_indexes = sector_indexes or {}
     rows = []
-    # Sort by Stage 2 %, exclude OTHER (unmapped stocks without clear sector)
     visible = [s for s in sectors if s.sector != "OTHER"]
     visible.sort(key=lambda s: s.stage2_pct, reverse=True)
     for sec in visible:
@@ -1161,16 +1169,23 @@ def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
         trend = "▲" if sec.advancing > sec.declining else ("▼" if sec.declining > sec.advancing else "─")
         trend_color = "#27AE60" if trend == "▲" else ("#E74C3C" if trend == "▼" else "#7F8C8D")
         s2_color = "#27AE60" if sec.stage2_pct >= 30 else ("#F39C12" if sec.stage2_pct >= 20 else "#7F8C8D")
-        thai = SECTOR_THAI.get(sec.sector, "")
-        name_text = f"{sec.sector}" if not thai else f"{sec.sector}  {thai}"
+
+        idx = sector_indexes.get(sec.sector) or {}
+        idx_close = idx.get("close") or 0.0
+        idx_chg = idx.get("change_pct") or 0.0
+        idx_color = "#27AE60" if idx_chg > 0 else ("#E74C3C" if idx_chg < 0 else "#7F8C8D")
+        if idx_close > 0:
+            idx_text = f"{idx_close:,.0f} {'+' if idx_chg > 0 else ''}{idx_chg:.1f}%"
+        else:
+            idx_text = "—"
+
         rows.append({
-            "type": "box",
-            "layout": "horizontal",
-            "paddingTop": "6px",
-            "paddingBottom": "6px",
+            "type": "box", "layout": "horizontal",
+            "paddingTop": "6px", "paddingBottom": "6px",
             "action": {"type": "message", "label": sec.sector, "text": f"sector {sec.sector}"},
             "contents": [
                 {"type": "text", "text": sec.sector, "size": "sm", "weight": "bold", "color": color, "flex": 3},
+                {"type": "text", "text": idx_text, "size": "xs", "color": idx_color, "flex": 4, "align": "end"},
                 {"type": "text", "text": f"S2:{sec.stage2_pct:.0f}%", "size": "xs", "color": s2_color, "weight": "bold", "flex": 2, "align": "end"},
                 {"type": "text", "text": f"{trend} {sec.total}", "size": "xs", "color": trend_color, "flex": 2, "align": "end"},
             ],
@@ -1181,28 +1196,24 @@ def build_sector_overview_card(sectors: list[SectorSummary]) -> dict:
         "type": "bubble",
         "size": "mega",
         "header": {
-            "type": "box",
-            "layout": "vertical",
+            "type": "box", "layout": "vertical",
             "contents": [
                 {"type": "text", "text": "🏭 Sector Overview", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
-                {"type": "text", "text": "แตะชื่อกลุ่มเพื่อดูรายชื่อหุ้น", "size": "xxs", "color": "#CCCCCC"},
+                {"type": "text", "text": "แตะชื่อกลุ่มเพื่อดูรายชื่อหุ้น · Index | S2% | Trend", "size": "xxs", "color": "#CCCCCC"},
             ],
             "backgroundColor": "#0D0D1A",
             "paddingAll": "14px",
         },
         "body": {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "none",
+            "type": "box", "layout": "vertical", "spacing": "none",
             "contents": [
                 {
-                    "type": "box",
-                    "layout": "horizontal",
-                    "paddingBottom": "4px",
+                    "type": "box", "layout": "horizontal", "paddingBottom": "4px",
                     "contents": [
                         {"type": "text", "text": "Sector", "size": "xxs", "color": "#AAAAAA", "flex": 3},
-                        {"type": "text", "text": "Stage2%", "size": "xxs", "color": "#AAAAAA", "flex": 2, "align": "end"},
-                        {"type": "text", "text": "Trend  N", "size": "xxs", "color": "#AAAAAA", "flex": 2, "align": "end"},
+                        {"type": "text", "text": "Index Δ%", "size": "xxs", "color": "#AAAAAA", "flex": 4, "align": "end"},
+                        {"type": "text", "text": "S2%", "size": "xxs", "color": "#AAAAAA", "flex": 2, "align": "end"},
+                        {"type": "text", "text": "Trend N", "size": "xxs", "color": "#AAAAAA", "flex": 2, "align": "end"},
                     ],
                 },
                 {"type": "separator"},
@@ -1504,7 +1515,9 @@ def build_guide_carousel() -> dict:
                 {"type": "separator"},
                 _cmd_row("index", "SET50/MAI/sSET"),
                 {"type": "separator"},
-                _cmd_row("sector", "Sector Trends"),
+                _cmd_row("sector", "Sector Trends + Indexes"),
+                {"type": "separator"},
+                _cmd_row("subsector", "Subsector Breakdown (25 codes)"),
                 {"type": "separator"},
                 _cmd_row("breakout", "Breakout Stocks"),
                 {"type": "separator"},

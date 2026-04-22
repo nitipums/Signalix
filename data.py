@@ -491,34 +491,33 @@ def load_sector_map_from_firestore(db) -> dict[str, str]:
 def fetch_sector_index_prices() -> dict[str, dict]:
     """Fetch current prices for SET industry group indexes via yfinance.
     Returns {sector_code: {close, change_pct, scanned_at}} for indexes that exist.
+
+    Per-ticker fetch — same reasoning as fetch_indexes_with_history: the
+    bulk yf.download(..., group_by='ticker') silently dropped 5/6 Thai
+    indexes in prod, leaving sector cards with no price data at all
+    (live_sector_indexes was {}). yf.Ticker().history() per ticker is
+    slower (8 calls) but reliable.
     """
+    import yfinance as yf
     result: dict[str, dict] = {}
-    tickers_str = " ".join(SECTOR_INDEX_SYMBOLS.values())
-    try:
-        import yfinance as yf
-        data = yf.download(tickers_str, period="5d", interval="1d",
-                           group_by="ticker", progress=False, auto_adjust=False)
-        now = datetime.now(BANGKOK_TZ).isoformat()
-        for sector, ticker in SECTOR_INDEX_SYMBOLS.items():
-            try:
-                if hasattr(data, "columns") and isinstance(data.columns, pd.MultiIndex):
-                    df = data[ticker].dropna(subset=["Close"]) if ticker in data.columns.get_level_values(0) else None
-                else:
-                    df = data.dropna(subset=["Close"]) if len(SECTOR_INDEX_SYMBOLS) == 1 else None
-                if df is None or df.empty:
-                    continue
-                close = float(df["Close"].iloc[-1])
-                prev  = float(df["Close"].iloc[-2]) if len(df) >= 2 else close
-                chg_pct = round((close - prev) / prev * 100, 2) if prev else 0.0
-                result[sector] = {"close": close, "change_pct": chg_pct, "scanned_at": now}
-            except Exception:
-                pass
-        if result:
-            logger.info("Sector index prices fetched: %s", list(result.keys()))
-        else:
-            logger.info("No sector index prices available (tickers may not exist on yfinance)")
-    except Exception as exc:
-        logger.warning("fetch_sector_index_prices failed: %s", exc)
+    now = datetime.now(BANGKOK_TZ).isoformat()
+    for sector, ticker in SECTOR_INDEX_SYMBOLS.items():
+        try:
+            df = yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=False)
+            if df is None or df.empty:
+                logger.warning("fetch_sector_index_prices: %s (%s) returned empty", sector, ticker)
+                continue
+            df = df.dropna(subset=["Close"])
+            if df.empty:
+                continue
+            close = float(df["Close"].iloc[-1])
+            prev = float(df["Close"].iloc[-2]) if len(df) >= 2 else close
+            chg_pct = round((close - prev) / prev * 100, 2) if prev else 0.0
+            result[sector] = {"close": close, "change_pct": chg_pct, "scanned_at": now}
+        except Exception as exc:
+            logger.warning("fetch_sector_index_prices(%s / %s) failed: %s", sector, ticker, exc)
+    logger.info("fetch_sector_index_prices: %d/%d indexes fetched (%s)",
+                len(result), len(SECTOR_INDEX_SYMBOLS), list(result.keys()))
     return result
 
 
