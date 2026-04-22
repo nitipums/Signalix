@@ -394,6 +394,122 @@ def _signal_snapshot(signal) -> dict:
     }
 
 
+@app.get("/test/query")
+async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=None)):
+    """E2E probe: runs the same filter logic as _handle_text_query for list-type
+    commands and returns a JSON summary instead of pushing to LINE.
+
+    Gated by x-scan-secret. Designed for scripts/e2e_check.py to exercise every
+    user-facing card path after deploys without touching real LINE users.
+    """
+    settings = get_settings()
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
+
+    global _last_signals
+    loop = asyncio.get_running_loop()
+    if not _last_signals:
+        if BQ_AVAILABLE:
+            bq_sigs = await loop.run_in_executor(None, load_latest_signals_from_bq)
+            if bq_sigs:
+                _last_signals = bq_sigs
+        if not _last_signals and FIRESTORE_AVAILABLE and _db:
+            fs_sigs = await loop.run_in_executor(None, load_signals_from_firestore, _db)
+            if fs_sigs:
+                _last_signals = fs_sigs
+
+    c = cmd.lower().strip()
+
+    def summary(sigs, title):
+        return {
+            "kind": "list",
+            "title": title,
+            "count": len(sigs),
+            "first_5": [
+                {"symbol": s.symbol, "close": s.close, "change_pct": s.change_pct,
+                 "stage": s.stage, "pattern": s.pattern, "strength": s.strength_score}
+                for s in sigs[:5]
+            ],
+        }
+
+    # Advance / decline / flat
+    if c.startswith("advancing") or c.startswith("up ") or c == "up":
+        sigs = sorted([s for s in _last_signals if (s.change_pct or 0) > 0],
+                      key=lambda s: s.change_pct, reverse=True)
+        return summary(sigs, "Advancing")
+    if c.startswith("declining") or c.startswith("down ") or c == "down":
+        sigs = sorted([s for s in _last_signals if (s.change_pct or 0) < 0],
+                      key=lambda s: s.change_pct)
+        return summary(sigs, "Declining")
+    if c.startswith("flat"):
+        sigs = sorted([s for s in _last_signals if (s.change_pct or 0) == 0],
+                      key=lambda s: s.strength_score, reverse=True)
+        return summary(sigs, "Flat")
+
+    # Stage lists
+    for n in (1, 2, 3, 4):
+        if c.startswith(f"stage{n}") or c.startswith(f"stage {n}"):
+            sigs = [s for s in _last_signals if s.stage == n]
+            sigs.sort(key=lambda s: s.strength_score, reverse=True)
+            return summary(sigs, f"Stage {n}")
+
+    # Pattern lists
+    if c in ("breakout", "break out"):
+        sigs = [s for s in _last_signals if s.pattern in ("breakout", "ath_breakout")]
+        sigs.sort(key=lambda s: s.strength_score, reverse=True)
+        return summary(sigs, "Breakout")
+    if c in ("ath", "all time high", "ath breakout"):
+        sigs = [s for s in _last_signals if s.pattern == "ath_breakout"]
+        sigs.sort(key=lambda s: s.strength_score, reverse=True)
+        return summary(sigs, "ATH Breakout")
+    if c == "vcp":
+        sigs = [s for s in _last_signals if s.pattern in ("vcp", "vcp_low_cheat")]
+        sigs.sort(key=lambda s: s.strength_score, reverse=True)
+        return summary(sigs, "VCP")
+    if c in ("consolidating", "consolidate", "coil"):
+        sigs = [s for s in _last_signals if s.pattern == "consolidating"]
+        sigs.sort(key=lambda s: s.strength_score, reverse=True)
+        return summary(sigs, "Consolidating")
+
+    # Sector list (e.g. "sector FINCIAL")
+    if c.startswith("sector ") and len(c) > 7:
+        sector_name = c[7:].strip().upper()
+        from data import get_sector, get_subsector
+        sigs = [s for s in _last_signals
+                if get_sector(s.symbol) == sector_name or get_subsector(s.symbol) == sector_name]
+        sigs.sort(key=lambda s: s.strength_score, reverse=True)
+        return summary(sigs, f"Sector {sector_name}")
+
+    # Market breadth summary
+    if c in ("market", "breadth", "ตลาด"):
+        if _last_breadth is None:
+            return {"kind": "breadth", "breadth": None}
+        b = _last_breadth
+        return {
+            "kind": "breadth",
+            "breadth": {
+                "scanned_at": getattr(b, "scanned_at", None),
+                "total_stocks": getattr(b, "total_stocks", 0),
+                "advancing": getattr(b, "advancing", 0),
+                "declining": getattr(b, "declining", 0),
+                "unchanged": getattr(b, "unchanged", 0),
+                "set_index_close": getattr(b, "set_index_close", 0),
+                "set_index_change_pct": getattr(b, "set_index_change_pct", 0),
+            },
+        }
+
+    # Single stock lookup (any recognised ticker)
+    from data import resolve_symbol
+    sym = resolve_symbol(c)
+    if sym:
+        signal = next((s for s in _last_signals if s.symbol == sym), None)
+        if signal is None and FIRESTORE_AVAILABLE and _db:
+            signal = await loop.run_in_executor(None, load_signal_from_firestore, _db, sym)
+        return {"kind": "single_stock", "signal": _signal_snapshot(signal) if signal else None}
+
+    return {"kind": "unknown", "cmd": c}
+
+
 @app.get("/test/ath/{symbol}")
 async def test_ath(symbol: str):
     """Compare ATH sources for a symbol: Settrade 5Y vs yfinance max vs cached.
@@ -953,12 +1069,29 @@ async def _handle_follow(user_id: Optional[str], reply_token: Optional[str]) -> 
 
 
 async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Optional[str]) -> None:
-    global _last_breadth, _last_breadth_card, _last_indexes, _last_sector_trends
+    global _last_breadth, _last_breadth_card, _last_indexes, _last_sector_trends, _last_signals
     if not reply_token:
         return
 
     loop = asyncio.get_running_loop()
     cmd = text.lower().strip()
+
+    # Lazy reload of _last_signals on webhook instances that haven't populated it
+    # yet (cold Cloud Run instance after scale-up, or warmup raced with an early
+    # request). List handlers (advancing/declining/flat/stage/pattern) filter from
+    # _last_signals directly — an empty list here produces "no stock" cards even
+    # though Firestore/BQ have fresh signals.
+    if not _last_signals:
+        if BQ_AVAILABLE:
+            bq_sigs = await loop.run_in_executor(None, load_latest_signals_from_bq)
+            if bq_sigs:
+                _last_signals = bq_sigs
+                logger.info("_handle_text_query: lazy-reloaded %d signals from BQ", len(bq_sigs))
+        if not _last_signals and FIRESTORE_AVAILABLE and _db:
+            fs_sigs = await loop.run_in_executor(None, load_signals_from_firestore, _db)
+            if fs_sigs:
+                _last_signals = fs_sigs
+                logger.info("_handle_text_query: lazy-reloaded %d signals from Firestore", len(fs_sigs))
 
     # ── Explain metric ⓘ ──
     if cmd.startswith("explain "):
