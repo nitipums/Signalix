@@ -271,8 +271,8 @@ def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None
         "contents": [
             _tappable_kv_box("Breakout", str(breadth.breakout_count), "#F39C12", "patterns"),
             _tappable_kv_box("VCP", str(breadth.vcp_count), "#2980B9", "patterns"),
-            _kv_box("52W High", str(breadth.new_highs_52w), "#8E44AD"),
-            _kv_box("52W Low", str(breadth.new_lows_52w), "#E74C3C"),
+            _kv_box("52W High", str(breadth.new_highs_52w), "#8E44AD", "52wh"),
+            _kv_box("52W Low", str(breadth.new_lows_52w), "#E74C3C", "52wl"),
         ],
     }
 

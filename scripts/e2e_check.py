@@ -120,6 +120,25 @@ def suite_market_breadth(base, secret):
     except Exception as e:
         fails += check("market", False, f"err: {e}")
 
+    # 52W high / low lists — should run (count can be 0 on flat market days)
+    # and the count should match the breadth card's new_highs_52w /
+    # new_lows_52w so the drill-down and the summary don't contradict.
+    for cmd, label, breadth_key in (
+        ("52wh", "52W_high", "new_highs_52w"),
+        ("52wl", "52W_low",  "new_lows_52w"),
+    ):
+        try:
+            q, _ = query(base, secret, cmd)
+            fails += check(f"{label}/dispatched", q.get("kind") == "list",
+                           f"count={q.get('count')} first={[r.get('symbol') for r in q.get('first_5', [])]}")
+            breadth_val = (b or {}).get(breadth_key)
+            if breadth_val is not None:
+                fails += check(f"{label}/matches_breadth",
+                               q.get("count") == breadth_val,
+                               f"list={q.get('count')} breadth={breadth_val}")
+        except Exception as e:
+            fails += check(label, False, f"err: {e}")
+
     # Indexes — yfinance only carries ^SET.BK for Thai indexes; the 5 sub-indexes
     # (SET50/SET100/MAI/sSET/SETESG) silently return empty from both yf.download and
     # yf.Ticker.history. This is an upstream Yahoo coverage gap, not a code bug.
@@ -189,13 +208,20 @@ def suite_stage_lists(base, secret):
             fails += check(f"stage{n}/stage_consistent", stage_ok)
         except Exception as e:
             fails += check(f"stage{n}", False, f"err: {e}")
-    # Cross-check against breadth
+    # Cross-check against breadth — stage list counts must match the breadth
+    # fields that feed build_stage_picker_card, otherwise the stage picker
+    # shows a different number than the drill-down.
     try:
         q, _ = query(base, secret, "market")
         b = q.get("breadth") or {}
         total = sum(counts.values())
         fails += check("stages/sum_matches_total", total == (b.get("total_stocks") or 0),
                        f"Σ={total} total={b.get('total_stocks')}")
+        for n in (1, 2, 3, 4):
+            bkey = f"stage{n}_count"
+            fails += check(f"stages/picker==list s{n}",
+                           counts.get(n) == b.get(bkey),
+                           f"list={counts.get(n)} breadth[{bkey}]={b.get(bkey)}")
     except Exception as e:
         fails += check("stages/cross_check", False, f"err: {e}")
     return fails
