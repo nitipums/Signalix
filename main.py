@@ -593,6 +593,65 @@ async def test_indexes(x_scan_secret: Optional[str] = Header(default=None)):
     return out
 
 
+@app.get("/test/sector_coverage")
+async def test_sector_coverage(x_scan_secret: Optional[str] = Header(default=None)):
+    """Sector classification coverage report.
+
+    Tells us:
+      - How many SET stocks have a yfinance-derived subsector mapping in
+        _dynamic_sector_map vs how many fall through to the static SECTOR_MAP.
+      - How many end up as "OTHER" (no classification).
+      - Per-sector count of stocks (8 main + OTHER).
+      - Per-subsector count (25 codes used).
+      - Sector index prices currently in _last_sector_indexes.
+
+    Used by scripts/e2e_check.py to assert coverage doesn't regress.
+    """
+    settings = get_settings()
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
+
+    from data import (
+        _dynamic_sector_map, SECTOR_MAP, SUBSECTOR_TO_SECTOR,
+        SECTOR_INDEX_SYMBOLS, get_sector, get_subsector, get_stock_list,
+    )
+
+    symbols = get_stock_list()
+    sector_counts: dict[str, int] = {}
+    subsector_counts: dict[str, int] = {}
+    via_dynamic = 0
+    via_static = 0
+    unmapped: list[str] = []
+
+    for sym in symbols:
+        subsector = _dynamic_sector_map.get(sym, "")
+        if subsector:
+            via_dynamic += 1
+            subsector_counts[subsector] = subsector_counts.get(subsector, 0) + 1
+        elif sym in SECTOR_MAP:
+            via_static += 1
+        else:
+            unmapped.append(sym)
+
+        sector = get_sector(sym)
+        sector_counts[sector] = sector_counts.get(sector, 0) + 1
+
+    total = len(symbols)
+    return {
+        "total_symbols": total,
+        "via_dynamic_subsector": via_dynamic,
+        "via_static_sector_only": via_static,
+        "unmapped_other": len(unmapped),
+        "coverage_pct": round((via_dynamic + via_static) / total * 100, 1) if total else 0.0,
+        "subsector_coverage_pct": round(via_dynamic / total * 100, 1) if total else 0.0,
+        "sector_counts": dict(sorted(sector_counts.items())),
+        "subsector_counts": dict(sorted(subsector_counts.items())),
+        "unmapped_sample": unmapped[:20],
+        "configured_sector_indexes": SECTOR_INDEX_SYMBOLS,
+        "live_sector_indexes": _last_sector_indexes,
+    }
+
+
 @app.get("/test/invariants")
 async def test_invariants(x_scan_secret: Optional[str] = Header(default=None)):
     """Validate invariants that should always hold on _last_signals.
