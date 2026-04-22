@@ -1176,7 +1176,30 @@ def tradingview_url(symbol: str) -> str:
 
 
 def fetch_ohlcv_max(symbol: str) -> Optional[pd.DataFrame]:
-    """Fetch maximum available history for a symbol via yfinance (for ATH calculation)."""
+    """Fetch maximum available history for a symbol — used by sync_ath to compute
+    the true all-time high.
+
+    Priority:
+      1. Settrade 5Y (authoritative Thai data; yfinance's Thai coverage has
+         documented gaps that missed WHAIR's real ATH in prod).
+      2. yfinance period=max as fallback for any symbol Settrade can't serve
+         (notably the SET index ^SET.BK itself, which isn't in Settrade).
+    """
+    # --- Settrade 5Y (primary for individual SET stocks) ---
+    if symbol != "SET":
+        try:
+            from settrade_client import get_ohlcv, is_api_available as _st_ok
+            if _st_ok():
+                st_df = get_ohlcv(symbol, period="5Y")
+                if st_df is not None and not st_df.empty and not st_df["Close"].dropna().empty:
+                    st_df = st_df.dropna(subset=["Close"]).copy()
+                    st_df.index = pd.to_datetime(st_df.index).tz_localize(None)
+                    st_df.index.name = "Date"
+                    return st_df
+        except Exception as exc:
+            logger.warning("fetch_ohlcv_max(%s): Settrade 5Y failed: %s — yfinance fallback", symbol, exc)
+
+    # --- yfinance period=max (fallback + SET index) ---
     ticker = "^SET.BK" if symbol == "SET" else _to_yf_ticker(symbol)
     try:
         df = yf.download(ticker, period="max", progress=False, auto_adjust=True)

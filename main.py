@@ -17,6 +17,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
+import pandas as pd
 import pytz
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -389,6 +390,74 @@ def _signal_snapshot(signal) -> dict:
         "scanned_at": signal.scanned_at,
         "data_date": getattr(signal, "data_date", ""),
     }
+
+
+@app.get("/test/ath/{symbol}")
+async def test_ath(symbol: str):
+    """Compare ATH sources for a symbol: Settrade 5Y vs yfinance max vs cached.
+
+    Helps diagnose false ath_breakout classifications caused by a data
+    provider that doesn't have enough history (yfinance has documented gaps
+    for Thai stocks; Settrade goes back 5Y directly from SET).
+    """
+    symbol = symbol.upper().strip()
+    result: dict = {"symbol": symbol}
+
+    # --- Settrade 5Y ---
+    try:
+        from settrade_client import get_ohlcv
+        st_df = get_ohlcv(symbol, period="5Y")
+        if st_df is not None and not st_df.empty:
+            st_high = st_df["High"].max()
+            st_high_date = st_df["High"].idxmax()
+            result["settrade_5y"] = {
+                "rows": len(st_df),
+                "earliest": str(st_df.index.min().date()),
+                "latest": str(st_df.index.max().date()),
+                "max_high": round(float(st_high), 4),
+                "max_high_date": str(pd.Timestamp(st_high_date).date()),
+            }
+        else:
+            result["settrade_5y"] = None
+    except Exception as e:
+        result["settrade_5y_error"] = f"{type(e).__name__}: {e}"
+
+    # --- yfinance max (for comparison) ---
+    try:
+        from data import fetch_ohlcv_max, _to_yf_ticker
+        import yfinance as _yf
+        ticker = "^SET.BK" if symbol == "SET" else _to_yf_ticker(symbol)
+        yf_df = _yf.download(ticker, period="max", progress=False, auto_adjust=True)
+        if yf_df is not None and not yf_df.empty:
+            if isinstance(yf_df.columns, pd.MultiIndex):
+                yf_df.columns = yf_df.columns.get_level_values(0)
+            yf_df = yf_df.dropna(subset=["Close"])
+            yf_high = yf_df["High"].max()
+            yf_high_date = yf_df["High"].idxmax()
+            result["yfinance_max"] = {
+                "rows": len(yf_df),
+                "earliest": str(pd.Timestamp(yf_df.index.min()).date()),
+                "latest": str(pd.Timestamp(yf_df.index.max()).date()),
+                "max_high": round(float(yf_high), 4),
+                "max_high_date": str(pd.Timestamp(yf_high_date).date()),
+            }
+        else:
+            result["yfinance_max"] = None
+    except Exception as e:
+        result["yfinance_max_error"] = f"{type(e).__name__}: {e}"
+
+    # --- Current cached ATH ---
+    result["cached"] = {
+        "in_memory": _ath_cache.get(symbol),
+    }
+    if FIRESTORE_AVAILABLE and _db:
+        try:
+            doc = _db.collection("ath_cache").document(symbol).get()
+            result["cached"]["firestore"] = doc.to_dict() if doc.exists else None
+        except Exception as e:
+            result["cached"]["firestore_error"] = str(e)
+
+    return result
 
 
 @app.get("/test/settrade")
