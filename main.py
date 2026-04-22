@@ -532,6 +532,16 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
         return {"kind": "static", "handler": "stage_picker"}
     if c in ("patterns", "pattern", "รูปแบบ"):
         return {"kind": "static", "handler": "pattern_overview"}
+    if c in ("subsector", "subsectors", "หมวดย่อย"):
+        from collections import Counter
+        from data import SUBSECTOR_TO_SECTOR, get_subsector
+        counts = Counter((get_subsector(s.symbol) or "—") for s in _last_signals)
+        return {
+            "kind": "subsector",
+            "configured_codes": sorted(SUBSECTOR_TO_SECTOR.keys()),
+            "counts": dict(sorted(counts.items())),
+            "unmapped": counts.get("—", 0),
+        }
     if c in ("help", "ช่วย", "คำสั่ง", "?"):
         return {"kind": "static", "handler": "help"}
     if c.startswith("explain "):
@@ -1420,10 +1430,19 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         ]
         sector_sigs.sort(key=lambda s: s.strength_score, reverse=True)
         if sector_sigs:
+            # Subsector breakdown for the header — most-common first, top 5
+            from collections import Counter
+            subs = Counter((get_subsector(s.symbol) or "—") for s in sector_sigs)
+            breakdown = " · ".join(f"{code}:{n}" for code, n in subs.most_common(5))
+            subtitle = f"Subsector: {breakdown}" if subs else "Sorted by Strength Score"
             _reply_stock_list(reply_token, sector_sigs, f"🏭 {sector_name} — Leaders",
-                              page=sec_page, base_cmd=f"sector {sector_name}")
+                              page=sec_page, base_cmd=f"sector {sector_name}",
+                              subtitle=subtitle)
         else:
-            reply_text(reply_token, f"ไม่พบหุ้นในกลุ่ม {sector_name}\nกลุ่มที่มี: AGRO, CONSUMP, FINCIAL, INDUS, PROPCON, RESOURC, SERVICE, TECH")
+            reply_text(reply_token,
+                       f"ไม่พบหุ้นในกลุ่ม {sector_name}\n"
+                       f"กลุ่มหลัก: AGRO, CONSUMP, FINCIAL, INDUS, PROPCON, RESOURC, SERVICE, TECH\n"
+                       f"กลุ่มย่อย: ลองพิมพ์ 'subsector' เพื่อดูรหัสทั้งหมด")
 
     elif cmd in ("sector", "sectors", "เซกเตอร์", "กลุ่มหุ้น"):
         sector_trends = _last_sector_trends
@@ -1441,8 +1460,42 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         if not sector_trends:
             reply_text(reply_token, "ยังไม่มีข้อมูลกลุ่มหุ้น กรุณารอการสแกนครั้งถัดไป")
             return
-        card = build_sector_overview_card(sector_trends)
+        card = build_sector_overview_card(sector_trends, sector_indexes=_last_sector_indexes)
         reply_flex(reply_token, "แนวโน้มกลุ่มอุตสาหกรรม", card)
+
+    # ── Subsector breakdown ──
+    elif cmd in ("subsector", "subsectors", "หมวดย่อย"):
+        from collections import Counter
+        from data import SUBSECTOR_TO_SECTOR, get_subsector
+        SUB_THAI = {
+            "AGRI": "เกษตร", "FOOD": "อาหาร/เครื่องดื่ม",
+            "FASHION": "แฟชั่น", "HOME": "ของใช้ในบ้าน", "PERSON": "ของใช้ส่วนตัว/ยา",
+            "BANK": "ธนาคาร", "FIN": "การเงิน/หลักทรัพย์", "INSUR": "ประกันภัย",
+            "AUTO": "ยานยนต์", "IMM": "วัสดุ/เครื่องจักร", "PAPER": "กระดาษ",
+            "PETRO": "ปิโตรเคมี", "PKG": "บรรจุภัณฑ์", "STEEL": "เหล็ก",
+            "CONMAT": "วัสดุก่อสร้าง", "CONS": "รับเหมาก่อสร้าง",
+            "PF": "กองทุน/REIT", "PROP": "อสังหาฯ",
+            "ENERG": "พลังงาน", "MINE": "เหมืองแร่",
+            "COMM": "ค้าปลีก/ส่ง", "HELTH": "การแพทย์", "MEDIA": "สื่อ",
+            "PROF": "บริการเฉพาะ", "TOURISM": "ท่องเที่ยว", "TRANS": "ขนส่ง",
+            "ETRON": "ชิ้นส่วนอิเล็กทรอนิกส์", "ICT": "ICT/โทรคมนาคม",
+        }
+        counts = Counter((get_subsector(s.symbol) or "—") for s in _last_signals)
+        # Group by main sector for readable layout
+        rows = ["📂 Subsector breakdown (รหัส · ชื่อ · จำนวนหุ้น)\n"]
+        sector_groups: dict[str, list[tuple[str, int]]] = {}
+        for sub, sector in SUBSECTOR_TO_SECTOR.items():
+            sector_groups.setdefault(sector, []).append((sub, counts.get(sub, 0)))
+        for sector in sorted(sector_groups.keys()):
+            rows.append(f"\n▸ {sector}")
+            for sub, n in sector_groups[sector]:
+                thai = SUB_THAI.get(sub, "")
+                rows.append(f"  {sub:8s} {thai:18s} {n:>3d}")
+        unmapped = counts.get("—", 0)
+        if unmapped:
+            rows.append(f"\n— ไม่ระบุ: {unmapped}")
+        rows.append("\nพิมพ์ 'sector BANK' เพื่อดูรายชื่อหุ้นกลุ่มย่อย")
+        reply_text(reply_token, "\n".join(rows))
 
     # ── Guide ──
     elif cmd in ("guide", "คู่มือ", "explain all", "all explain"):

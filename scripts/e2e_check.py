@@ -224,7 +224,7 @@ def suite_patterns(base, secret):
 
 
 def suite_sector_drill(base, secret):
-    section("List cards — sector drill-down")
+    section("List cards — sector drill-down + subsector breakdown")
     fails = 0
     for sector in ("FINCIAL", "TECH", "RESOURC"):
         try:
@@ -233,6 +233,44 @@ def suite_sector_drill(base, secret):
             fails += check(f"sector_{sector}/non_empty", cnt > 0, f"count={cnt}")
         except Exception as e:
             fails += check(f"sector_{sector}", False, f"err: {e}")
+
+    # Subsector list endpoint
+    try:
+        q, _ = query(base, secret, "subsector")
+        codes = q.get("configured_codes") or []
+        counts = q.get("counts") or {}
+        used = sum(1 for c in codes if counts.get(c, 0) > 0)
+        fails += check("subsector/has_25_codes", len(codes) == 25,
+                       f"got {len(codes)} configured codes")
+        fails += check("subsector/used_codes>=15", used >= 15,
+                       f"{used}/25 codes have stocks")
+        # Subsector drill-down: querying a subsector code should also work
+        q2, _ = query(base, secret, "sector BANK")
+        fails += check("sector_BANK_subsector/non_empty",
+                       (q2.get("count") or 0) > 0,
+                       f"count={q2.get('count')}")
+    except Exception as e:
+        fails += check("subsector", False, f"err: {e}")
+    return fails
+
+
+def suite_sector_coverage(base, secret):
+    section("Sector classification coverage")
+    fails = 0
+    try:
+        d, _ = fetch(f"{base}/test/sector_coverage", headers={"x-scan-secret": secret}, timeout=60)
+        cov = d.get("coverage_pct", 0)
+        sub_cov = d.get("subsector_coverage_pct", 0)
+        live = d.get("live_sector_indexes") or {}
+        fails += check("coverage/main_sector>=70%", cov >= 70,
+                       f"{cov}% mapped, {d.get('unmapped_other')} OTHER")
+        fails += check("coverage/subsector>=60%", sub_cov >= 60,
+                       f"{sub_cov}% have subsector code")
+        fails += check("sector_indexes/live_non_empty",
+                       len(live) >= 4,
+                       f"got {len(live)}/8 live sector indexes: {sorted(live.keys())}")
+    except Exception as e:
+        fails += check("sector_coverage", False, f"err: {e}")
     return fails
 
 
@@ -372,6 +410,7 @@ def main():
     total_fails += suite_stage_lists(base, secret)
     total_fails += suite_patterns(base, secret)
     total_fails += suite_sector_drill(base, secret)
+    total_fails += suite_sector_coverage(base, secret)
     total_fails += suite_single_stock(base, secret)
     total_fails += suite_static_cards(base, secret)
     total_fails += suite_ath_regression(base, secret)
