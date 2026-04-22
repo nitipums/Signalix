@@ -298,6 +298,7 @@ async def _warm_from_firestore():
                 _last_breadth = state["breadth"]
                 _last_indexes = state["indexes"]
                 _last_sector_trends = state["sector_trends"]
+                _last_sector_indexes = state.get("sector_indexes") or {}
                 try:
                     _last_breadth_card = build_market_breadth_card(_last_breadth, _last_sector_trends, _last_indexes)
                 except Exception as exc:
@@ -625,6 +626,14 @@ async def test_sector_coverage(x_scan_secret: Optional[str] = Header(default=Non
         _dynamic_sector_map, SECTOR_MAP, SUBSECTOR_TO_SECTOR,
         SECTOR_INDEX_SYMBOLS, get_sector, get_subsector, get_stock_list,
     )
+
+    # Lazy-load sector_indexes from Firestore if this instance hasn't scanned yet
+    global _last_sector_indexes
+    if not _last_sector_indexes and FIRESTORE_AVAILABLE and _db:
+        loop = asyncio.get_running_loop()
+        state = await loop.run_in_executor(None, load_scan_state, _db)
+        if state:
+            _last_sector_indexes = state.get("sector_indexes") or {}
 
     symbols = get_stock_list()
     sector_counts: dict[str, int] = {}
@@ -1009,7 +1018,12 @@ async def scan(
     if BQ_AVAILABLE:
         loop.run_in_executor(None, save_signals_to_bq, signals)
     if FIRESTORE_AVAILABLE and _db:
-        loop.run_in_executor(None, save_scan_state, _db, breadth, indexes, sector_trends, body.scan_type, body.mode)
+        loop.run_in_executor(
+            None, functools.partial(
+                save_scan_state, _db, breadth, indexes, sector_trends,
+                body.scan_type, body.mode, sector_indexes=sector_indexes,
+            ),
+        )
         loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
         # Log new Stage-2 breakouts for performance review
         for _sig in signals:
@@ -1445,12 +1459,20 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
                        f"กลุ่มย่อย: ลองพิมพ์ 'subsector' เพื่อดูรหัสทั้งหมด")
 
     elif cmd in ("sector", "sectors", "เซกเตอร์", "กลุ่มหุ้น"):
+        global _last_sector_indexes
         sector_trends = _last_sector_trends
-        if not sector_trends and FIRESTORE_AVAILABLE and _db:
+        sector_indexes = _last_sector_indexes
+        # Lazy-load both from Firestore when this Cloud Run instance hasn't
+        # seen a /scan yet — same multi-instance pattern as _last_signals.
+        if (not sector_trends or not sector_indexes) and FIRESTORE_AVAILABLE and _db:
             state = await loop.run_in_executor(None, load_scan_state, _db)
             if state:
-                sector_trends = state.get("sector_trends", [])
-                _last_sector_trends = sector_trends
+                if not sector_trends:
+                    sector_trends = state.get("sector_trends", [])
+                    _last_sector_trends = sector_trends
+                if not sector_indexes:
+                    sector_indexes = state.get("sector_indexes") or {}
+                    _last_sector_indexes = sector_indexes
         if not sector_trends and _last_signals:
             try:
                 sector_trends = compute_sector_trends(_last_signals)
@@ -1460,7 +1482,7 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         if not sector_trends:
             reply_text(reply_token, "ยังไม่มีข้อมูลกลุ่มหุ้น กรุณารอการสแกนครั้งถัดไป")
             return
-        card = build_sector_overview_card(sector_trends, sector_indexes=_last_sector_indexes)
+        card = build_sector_overview_card(sector_trends, sector_indexes=sector_indexes)
         reply_flex(reply_token, "แนวโน้มกลุ่มอุตสาหกรรม", card)
 
     # ── Subsector breakdown ──

@@ -1255,8 +1255,17 @@ def load_ath_cache(db) -> dict[str, float]:
         return {}
 
 
-def save_scan_state(db, breadth, indexes: dict, sector_trends: list, scan_type: str, mode: str) -> None:
-    """Persist full scan state to scan_state/latest for warm startup."""
+def save_scan_state(db, breadth, indexes: dict, sector_trends: list, scan_type: str, mode: str,
+                    sector_indexes: dict | None = None) -> None:
+    """Persist full scan state to scan_state/latest for warm startup.
+
+    sector_indexes: {sector_code: {close, change_pct, scanned_at}} — the 8
+    SET industry indexes fetched by fetch_sector_index_prices. Persisting
+    these survives multi-instance Cloud Run state loss: if instance A runs
+    /scan and populates _last_sector_indexes in RAM, instance B (serving a
+    LINE webhook moments later) can warm from this Firestore doc instead
+    of showing empty index prices on the sector overview card.
+    """
     if db is None:
         return
     try:
@@ -1270,9 +1279,11 @@ def save_scan_state(db, breadth, indexes: dict, sector_trends: list, scan_type: 
             "breadth": breadth.__dict__,
             "indexes": stamped_indexes,
             "sector_trends": [s.__dict__ for s in sector_trends],
+            "sector_indexes": sector_indexes or {},
         }
         db.collection("scan_state").document("latest").set(doc)
-        logger.info("Saved scan_state/latest (type=%s, mode=%s)", scan_type, mode)
+        logger.info("Saved scan_state/latest (type=%s, mode=%s, sector_indexes=%d)",
+                    scan_type, mode, len(sector_indexes or {}))
     except Exception as exc:
         logger.error("save_scan_state failed: %s", exc)
 
@@ -1305,6 +1316,7 @@ def load_scan_state(db) -> "dict | None":
             "breadth": breadth,
             "indexes": data.get("indexes", {}),
             "sector_trends": sector_trends,
+            "sector_indexes": data.get("sector_indexes", {}),
             "scanned_at": data.get("scanned_at", ""),
             "scan_type": data.get("scan_type", ""),
         }
