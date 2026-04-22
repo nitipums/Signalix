@@ -403,48 +403,52 @@ async def test_ath(symbol: str):
     symbol = symbol.upper().strip()
     result: dict = {"symbol": symbol}
 
-    # --- Settrade 5Y ---
-    try:
-        from settrade_client import get_ohlcv
-        st_df = get_ohlcv(symbol, period="5Y")
-        if st_df is not None and not st_df.empty:
-            st_high = st_df["High"].max()
-            st_high_date = st_df["High"].idxmax()
-            result["settrade_5y"] = {
-                "rows": len(st_df),
-                "earliest": str(st_df.index.min().date()),
-                "latest": str(st_df.index.max().date()),
-                "max_high": round(float(st_high), 4),
-                "max_high_date": str(pd.Timestamp(st_high_date).date()),
-            }
-        else:
-            result["settrade_5y"] = None
-    except Exception as e:
-        result["settrade_5y_error"] = f"{type(e).__name__}: {e}"
+    # --- Settrade: try multiple periods to diagnose SDK limit behaviour ---
+    from settrade_client import get_ohlcv
+    result["settrade"] = {}
+    for period in ("5Y", "3Y", "1Y"):
+        try:
+            st_df = get_ohlcv(symbol, period=period)
+            if st_df is not None and not st_df.empty:
+                st_high = st_df["High"].max()
+                st_high_date = st_df["High"].idxmax()
+                result["settrade"][period] = {
+                    "rows": len(st_df),
+                    "earliest": str(st_df.index.min().date()),
+                    "latest": str(st_df.index.max().date()),
+                    "max_high": round(float(st_high), 4),
+                    "max_high_date": str(pd.Timestamp(st_high_date).date()),
+                }
+            else:
+                result["settrade"][period] = None
+        except Exception as e:
+            result["settrade"][period] = {"error": f"{type(e).__name__}: {e}"}
 
-    # --- yfinance max (for comparison) ---
-    try:
-        from data import fetch_ohlcv_max, _to_yf_ticker
-        import yfinance as _yf
-        ticker = "^SET.BK" if symbol == "SET" else _to_yf_ticker(symbol)
-        yf_df = _yf.download(ticker, period="max", progress=False, auto_adjust=True)
-        if yf_df is not None and not yf_df.empty:
-            if isinstance(yf_df.columns, pd.MultiIndex):
-                yf_df.columns = yf_df.columns.get_level_values(0)
-            yf_df = yf_df.dropna(subset=["Close"])
-            yf_high = yf_df["High"].max()
-            yf_high_date = yf_df["High"].idxmax()
-            result["yfinance_max"] = {
-                "rows": len(yf_df),
-                "earliest": str(pd.Timestamp(yf_df.index.min()).date()),
-                "latest": str(pd.Timestamp(yf_df.index.max()).date()),
-                "max_high": round(float(yf_high), 4),
-                "max_high_date": str(pd.Timestamp(yf_high_date).date()),
-            }
-        else:
-            result["yfinance_max"] = None
-    except Exception as e:
-        result["yfinance_max_error"] = f"{type(e).__name__}: {e}"
+    # --- yfinance adjusted AND unadjusted max (for split-aware comparison) ---
+    from data import _to_yf_ticker
+    import yfinance as _yf
+    ticker = "^SET.BK" if symbol == "SET" else _to_yf_ticker(symbol)
+
+    for label, adjust in (("yfinance_adjusted", True), ("yfinance_unadjusted", False)):
+        try:
+            yf_df = _yf.download(ticker, period="max", progress=False, auto_adjust=adjust)
+            if yf_df is not None and not yf_df.empty:
+                if isinstance(yf_df.columns, pd.MultiIndex):
+                    yf_df.columns = yf_df.columns.get_level_values(0)
+                yf_df = yf_df.dropna(subset=["Close"])
+                yf_high = yf_df["High"].max()
+                yf_high_date = yf_df["High"].idxmax()
+                result[label] = {
+                    "rows": len(yf_df),
+                    "earliest": str(pd.Timestamp(yf_df.index.min()).date()),
+                    "latest": str(pd.Timestamp(yf_df.index.max()).date()),
+                    "max_high": round(float(yf_high), 4),
+                    "max_high_date": str(pd.Timestamp(yf_high_date).date()),
+                }
+            else:
+                result[label] = None
+        except Exception as e:
+            result[label] = {"error": f"{type(e).__name__}: {e}"}
 
     # --- Current cached ATH ---
     result["cached"] = {
