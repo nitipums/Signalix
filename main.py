@@ -648,8 +648,17 @@ async def sync_ath_endpoint(
     x_scan_secret: Optional[str] = Header(default=None),
     chunk: int = 0,
     chunk_size: int = 20,
+    symbol: Optional[str] = None,
 ):
-    """One-time ATH sync endpoint. Call with ?chunk=0&chunk_size=20, increment chunk until next_chunk=null."""
+    """Sync all-time high cache from yfinance max-period history into Firestore.
+
+    Modes:
+      - ?symbol=WHAIR — sync just one symbol (seconds). Useful for targeted
+        refresh when you know one ATH is stale.
+      - ?chunk=N&chunk_size=M — sync symbols[N*M:(N+1)*M]. Increment chunk
+        until next_chunk=null. Default chunk_size=20 keeps each request
+        well under Cloud Run's 5-min timeout.
+    """
     settings = get_settings()
     if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
@@ -657,6 +666,12 @@ async def sync_ath_endpoint(
         raise HTTPException(status_code=503, detail="Firestore not available")
 
     global _ath_cache
+    if symbol:
+        sym = symbol.upper().strip()
+        synced = sync_ath_to_firestore(_db, [sym], chunk=0, chunk_size=1)
+        _ath_cache.update(synced)
+        return {"synced": synced, "mode": "single_symbol"}
+
     symbols = get_stock_list()
     synced = sync_ath_to_firestore(_db, symbols, chunk=chunk, chunk_size=chunk_size)
     _ath_cache.update(synced)
