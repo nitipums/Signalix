@@ -117,6 +117,7 @@ _last_indexes: dict[str, dict] = {}          # SET/SET50/MAI/sSET/SETESG index a
 _last_sector_indexes: dict[str, dict] = {}   # AGRO/CONSUMP/… index prices
 _last_sector_trends: list[SectorSummary] = []
 _ath_cache: dict[str, float] = {}
+_ath_cache_loaded_date: Optional[str] = None  # YYYY-MM-DD in BANGKOK_TZ; drives daily reload
 
 
 def _load_ath_merged() -> dict[str, float]:
@@ -256,7 +257,7 @@ async def startup_event():
 
 async def _warm_from_firestore():
     """Load cached state on startup. BQ is tried first (durable), Firestore as fallback."""
-    global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache, _last_sector_indexes
+    global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache, _ath_cache_loaded_date, _last_sector_indexes
     loop = asyncio.get_running_loop()
     try:
         # Load ATH from BOTH sources and take the max per symbol. BQ gives
@@ -266,6 +267,7 @@ async def _warm_from_firestore():
         # max-period history (authoritative). ATH is monotonically non-decreasing,
         # so max() is always correct.
         _ath_cache = await loop.run_in_executor(None, _load_ath_merged)
+        _ath_cache_loaded_date = datetime.now(BANGKOK_TZ).strftime("%Y-%m-%d")
         logger.info("ATH cache loaded (merged BQ+Firestore): %d entries", len(_ath_cache))
 
         # ── Sector map: load from Firestore, wire into data module ───────────────
@@ -571,13 +573,19 @@ async def scan(
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
 
-    global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache, _last_sector_indexes
+    global _last_signals, _last_breadth, _last_breadth_card, _last_scan_time, _last_indexes, _last_sector_trends, _ath_cache, _ath_cache_loaded_date, _last_sector_indexes
 
     logger.info("Running scan: type=%s mode=%s broadcast=%s", body.scan_type, body.mode, body.broadcast)
     loop = asyncio.get_running_loop()
 
-    if not _ath_cache:
+    # Daily ATH reload — refresh _ath_cache once per calendar day (BKK) so /sync_ath
+    # writes propagate to running Cloud Run instances without restart, but we don't
+    # hit Firestore on every scan. Also covers first-scan-after-boot.
+    today_bkk = datetime.now(BANGKOK_TZ).strftime("%Y-%m-%d")
+    if not _ath_cache or _ath_cache_loaded_date != today_bkk:
         _ath_cache = await loop.run_in_executor(None, _load_ath_merged)
+        _ath_cache_loaded_date = today_bkk
+        logger.info("ATH cache reloaded for %s: %d entries", today_bkk, len(_ath_cache))
 
     # Intraday mode: use BQ history + latest candle (fast). Full mode: standard fetch.
     if body.mode == "intraday":
