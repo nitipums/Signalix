@@ -26,11 +26,30 @@ DEFAULT_BASE = "https://signalix-563764992953.asia-southeast1.run.app"
 
 # ── Fetch helpers ──────────────────────────────────────────────────────────
 
-def fetch(url, headers=None, timeout=60):
-    req = urllib.request.Request(url, headers=headers or {})
-    t0 = time.time()
-    r = urllib.request.urlopen(req, timeout=timeout)
-    return json.loads(r.read()), round(time.time() - t0, 2)
+def fetch(url, headers=None, timeout=60, retries=4):
+    """Cloud Run in asia-southeast1 cold-starts aggressively. Retry 5xx with
+    exponential backoff so transient instance churn doesn't mask real
+    regressions in the e2e output."""
+    last_err = None
+    for attempt in range(retries):
+        req = urllib.request.Request(url, headers=headers or {})
+        t0 = time.time()
+        try:
+            r = urllib.request.urlopen(req, timeout=timeout)
+            return json.loads(r.read()), round(time.time() - t0, 2)
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code >= 500 and attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+        except urllib.error.URLError as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+    raise last_err
 
 
 def query(base, secret, cmd):
