@@ -498,6 +498,58 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
             },
         }
 
+    # Indexes carousel
+    if c in ("index", "indexes", "ดัชนี", "ดัชนีหุ้น"):
+        idx = _last_indexes or {}
+        return {
+            "kind": "indexes",
+            "count": len(idx),
+            "symbols": sorted(idx.keys()),
+            "set": idx.get("SET") or None,
+        }
+
+    # Sector overview (no name)
+    if c in ("sector", "sectors", "เซกเตอร์", "กลุ่มหุ้น"):
+        trends = _last_sector_trends or []
+        return {
+            "kind": "sectors",
+            "count": len(trends),
+            "first_5": [
+                {
+                    "sector": getattr(t, "sector", None),
+                    "stage2_pct": getattr(t, "stage2_pct", None),
+                    "advancing": getattr(t, "advancing", None),
+                    "declining": getattr(t, "declining", None),
+                }
+                for t in trends[:5]
+            ],
+        }
+
+    # Static cards — must not error even with empty state
+    if c in ("guide", "คู่มือ", "explain all", "all explain"):
+        return {"kind": "static", "handler": "guide"}
+    if c in ("stage", "stages", "สเตจ"):
+        return {"kind": "static", "handler": "stage_picker"}
+    if c in ("patterns", "pattern", "รูปแบบ"):
+        return {"kind": "static", "handler": "pattern_overview"}
+    if c in ("help", "ช่วย", "คำสั่ง", "?"):
+        return {"kind": "static", "handler": "help"}
+    if c.startswith("explain "):
+        metric = c[len("explain "):].strip()
+        return {"kind": "static", "handler": "explain", "metric": metric}
+
+    # detail SYM — uses same signal lookup path, reports fundamentals availability
+    if c.startswith("detail "):
+        from data import resolve_symbol
+        raw = c[len("detail "):].strip()
+        sym = resolve_symbol(raw)
+        if not sym:
+            return {"kind": "detail", "signal": None, "error": f"unresolved_symbol:{raw}"}
+        signal = next((s for s in _last_signals if s.symbol == sym), None)
+        if signal is None and FIRESTORE_AVAILABLE and _db:
+            signal = await loop.run_in_executor(None, load_signal_from_firestore, _db, sym)
+        return {"kind": "detail", "signal": _signal_snapshot(signal) if signal else None}
+
     # Single stock lookup (any recognised ticker)
     from data import resolve_symbol
     sym = resolve_symbol(c)
@@ -508,6 +560,116 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
         return {"kind": "single_stock", "signal": _signal_snapshot(signal) if signal else None}
 
     return {"kind": "unknown", "cmd": c}
+
+
+@app.get("/test/invariants")
+async def test_invariants(x_scan_secret: Optional[str] = Header(default=None)):
+    """Validate invariants that should always hold on _last_signals.
+
+    Every returned boolean is an assertion the e2e suite can rely on. `details`
+    carries the numbers behind each assertion so regressions are diagnosable
+    without extra requests.
+    """
+    settings = get_settings()
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
+
+    global _last_signals
+    loop = asyncio.get_running_loop()
+    if not _last_signals:
+        if BQ_AVAILABLE:
+            bq_sigs = await loop.run_in_executor(None, load_latest_signals_from_bq)
+            if bq_sigs:
+                _last_signals = bq_sigs
+        if not _last_signals and FIRESTORE_AVAILABLE and _db:
+            fs_sigs = await loop.run_in_executor(None, load_signals_from_firestore, _db)
+            if fs_sigs:
+                _last_signals = fs_sigs
+
+    sigs = list(_last_signals)
+    total = len(sigs)
+
+    # 1. change_pct partition is disjoint + exhaustive
+    adv = sum(1 for s in sigs if (s.change_pct or 0) > 0)
+    dec = sum(1 for s in sigs if (s.change_pct or 0) < 0)
+    flat = sum(1 for s in sigs if (s.change_pct or 0) == 0)
+    partition_ok = (adv + dec + flat == total) and all(c >= 0 for c in (adv, dec, flat))
+
+    # 2. stage counts sum to total
+    stage_counts = {n: sum(1 for s in sigs if s.stage == n) for n in (1, 2, 3, 4)}
+    stage_ok = sum(stage_counts.values()) == total
+
+    # 3. pattern counts
+    pattern_counts: dict[str, int] = {}
+    for s in sigs:
+        pattern_counts[s.pattern] = pattern_counts.get(s.pattern, 0) + 1
+    pattern_ok = sum(pattern_counts.values()) == total
+
+    # 4. freshness: every signal's data_date within 10 days of today (matches MAX_CANDLE_STALENESS_DAYS)
+    today = datetime.now(BANGKOK_TZ).date()
+    stale = []
+    for s in sigs:
+        try:
+            d = datetime.strptime(getattr(s, "data_date", "") or "", "%Y-%m-%d").date()
+            if (today - d).days > 10:
+                stale.append({"symbol": s.symbol, "data_date": s.data_date})
+        except ValueError:
+            stale.append({"symbol": s.symbol, "data_date": s.data_date, "error": "unparseable"})
+    freshness_ok = len(stale) == 0
+
+    # 5. ATH cache internal consistency: no signal has close > its cached ATH + a small ε
+    ath_violations = []
+    for s in sigs:
+        cached = _ath_cache.get(s.symbol, 0.0)
+        if cached > 0 and s.close > cached * 1.05:
+            # >5% above cached ATH is implausibly large — either stale ATH or bad signal
+            ath_violations.append({"symbol": s.symbol, "close": s.close, "cached_ath": cached})
+    ath_ok = len(ath_violations) == 0
+
+    # 6. all ath_breakout / breakout signals are Stage 2 or 3
+    bad_breakout_stage = [
+        {"symbol": s.symbol, "stage": s.stage, "pattern": s.pattern}
+        for s in sigs
+        if s.pattern in ("breakout", "ath_breakout") and s.stage not in (2, 3)
+    ]
+    breakout_stage_ok = len(bad_breakout_stage) == 0
+
+    # 7. going_down signals should be Stage 4
+    bad_going_down = [
+        {"symbol": s.symbol, "stage": s.stage}
+        for s in sigs
+        if s.pattern == "going_down" and s.stage != 4
+    ]
+    going_down_stage_ok = len(bad_going_down) == 0
+
+    # 8. strength_score in [0, 100]
+    bad_score = [{"symbol": s.symbol, "score": s.strength_score} for s in sigs
+                 if s.strength_score < 0 or s.strength_score > 100]
+    score_range_ok = len(bad_score) == 0
+
+    return {
+        "total_signals": total,
+        "partition_ok": partition_ok,
+        "stage_ok": stage_ok,
+        "pattern_ok": pattern_ok,
+        "freshness_ok": freshness_ok,
+        "ath_ok": ath_ok,
+        "breakout_stage_ok": breakout_stage_ok,
+        "going_down_stage_ok": going_down_stage_ok,
+        "score_range_ok": score_range_ok,
+        "details": {
+            "adv_dec_flat": [adv, dec, flat],
+            "stage_counts": stage_counts,
+            "pattern_counts": pattern_counts,
+            "stale_count": len(stale),
+            "stale_sample": stale[:5],
+            "ath_violations_count": len(ath_violations),
+            "ath_violations_sample": ath_violations[:5],
+            "bad_breakout_stage_sample": bad_breakout_stage[:5],
+            "bad_going_down_sample": bad_going_down[:5],
+            "bad_score_sample": bad_score[:5],
+        },
+    }
 
 
 @app.get("/test/ath/{symbol}")

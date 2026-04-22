@@ -22,3 +22,9 @@ LINE Bot for Thai SET stock market scanning using Minervini stage analysis.
 - Scan `mode="intraday"` uses BQ history + yfinance 5d merge (no BQ write)
 - Scan `mode="full"` does full fetch + BigQuery append (16:45 ICT only)
 - All new `StockSignal` fields must have default values for Firestore backward compat
+
+## Testing policy
+- **Every new feature or behaviour change must extend `scripts/e2e_check.py`** with assertions that cover the positive path, the empty/error path, and any new invariant the feature introduces.
+- If the feature touches a text command or card that the LINE user sees, also extend `/test/query` in `main.py` so the e2e script can probe it without hitting the real LINE webhook.
+- After deploying any change that affects scan, cards, or data flow: wait for Cloud Run rollout, run `python3 scripts/e2e_check.py`, and only hand the change back to the user once all assertions pass. Report the pass/fail table and any deliberate skips.
+- Prefer adding a test before shipping the feature (so a red test marks the gap); at minimum, ship feature + test together in the same commit or the immediate follow-up.

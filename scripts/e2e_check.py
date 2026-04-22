@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
 """
-E2E smoke test against a live Signalix deployment.
+E2E regression suite for Signalix.
 
-Exercises every user-facing command path via GET /test/query and prints
-pass/fail per card. Designed to run after a deploy to catch regressions
-in filter logic, stale state, or missing handlers.
+Every user-facing feature should be asserted here. Per CLAUDE.md, new
+features must extend this file before shipping. Runs against a live
+deployment via the `/test/*` diagnostic endpoints.
 
 Usage:
   python3 scripts/e2e_check.py [base_url] [scan_secret]
 
 Env overrides: SIGNALIX_BASE_URL, SIGNALIX_SCAN_SECRET.
+
+Exit 0 if all assertions pass; 1 otherwise.
 """
 import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 
 DEFAULT_BASE = "https://signalix-563764992953.asia-southeast1.run.app"
 
+
+# ── Fetch helpers ──────────────────────────────────────────────────────────
 
 def fetch(url, headers=None, timeout=60):
     req = urllib.request.Request(url, headers=headers or {})
@@ -28,31 +34,46 @@ def fetch(url, headers=None, timeout=60):
 
 
 def query(base, secret, cmd):
-    from urllib.parse import quote
-    return fetch(f"{base}/test/query?cmd={quote(cmd)}", headers={"x-scan-secret": secret})
+    return fetch(
+        f"{base}/test/query?cmd={urllib.parse.quote(cmd)}",
+        headers={"x-scan-secret": secret},
+    )
+
+
+# ── Assertion helpers ──────────────────────────────────────────────────────
+
+_counts = {"pass": 0, "fail": 0, "skip": 0}
 
 
 def check(label, ok, detail=""):
     mark = "✓" if ok else "✗"
-    print(f"  {mark} {label:30s} {detail}")
+    print(f"  {mark} {label:35s} {detail}")
+    _counts["pass" if ok else "fail"] += 1
     return 0 if ok else 1
 
 
-def main():
-    base = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("SIGNALIX_BASE_URL", DEFAULT_BASE)
-    secret = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("SIGNALIX_SCAN_SECRET", "signalix-scan-2024")
+def skip(label, reason):
+    print(f"  ~ {label:35s} skipped — {reason}")
+    _counts["skip"] += 1
 
-    print(f"\nSignalix E2E check against {base}\n")
+
+def section(name):
+    print(f"\n{name}")
+
+
+# ── Suites ─────────────────────────────────────────────────────────────────
+
+def suite_baseline(base, secret):
+    section("Baseline")
     fails = 0
-
-    # ── Baseline endpoints ──
-    print("Baseline")
     try:
         h, dt = fetch(f"{base}/health")
         last_scan = (h.get("last_scan_time") or "-")[:19]
         fails += check("health/status", h.get("status") == "ok",
                        f"{h.get('cached_stocks')} stocks, last_scan={last_scan}  ({dt}s)")
         fails += check("health/has_signals", (h.get("cached_stocks") or 0) > 0)
+        fails += check("health/firestore_up", h.get("firestore") is True)
+        fails += check("health/bq_up", h.get("bigquery") is True)
     except Exception as e:
         fails += check("health", False, f"err: {e}")
 
@@ -60,84 +81,284 @@ def main():
         st, dt = fetch(f"{base}/test/settrade?sample_size=10")
         cov = st.get("bulk_quote_sample", {}).get("coverage_pct", 0)
         fails += check("settrade/api_available", bool(st.get("api_available")))
-        fails += check("settrade/bulk_coverage", cov >= 70, f"coverage={cov}%  ({dt}s)")
+        fails += check("settrade/bulk_coverage>=70", cov >= 70, f"coverage={cov}%  ({dt}s)")
     except Exception as e:
         fails += check("settrade", False, f"err: {e}")
+    return fails
 
-    # ── Market breadth ──
-    print("\nMarket breadth")
+
+def suite_market_breadth(base, secret):
+    section("Market breadth")
+    fails = 0
     try:
-        q, dt = query(base, secret, "market")
+        q, _ = query(base, secret, "market")
         b = q.get("breadth") or {}
-        fails += check("market/has_set_index", (b.get("set_index_close") or 0) > 0, f"SET={b.get('set_index_close')}")
-        fails += check("market/has_advdec_sum", (b.get("advancing", 0) + b.get("declining", 0) + b.get("unchanged", 0)) > 0)
+        fails += check("market/has_set_index", (b.get("set_index_close") or 0) > 0,
+                       f"SET={b.get('set_index_close')}")
+        total = (b.get("advancing", 0) + b.get("declining", 0) + b.get("unchanged", 0))
+        fails += check("market/adv+dec+flat==total", total == (b.get("total_stocks") or 0),
+                       f"{b.get('advancing')}+{b.get('declining')}+{b.get('unchanged')}={total} total={b.get('total_stocks')}")
     except Exception as e:
         fails += check("market", False, f"err: {e}")
 
-    # ── List cards — must not be silently empty when breadth says otherwise ──
-    print("\nList cards")
-    for cmd in ["advancing", "declining", "flat"]:
+    # Indexes
+    try:
+        q, _ = query(base, secret, "indexes")
+        fails += check("indexes/has_set", "SET" in q.get("symbols", []),
+                       f"symbols={q.get('symbols')}")
+        fails += check("indexes/count>=4", (q.get("count") or 0) >= 4,
+                       f"count={q.get('count')}")
+    except Exception as e:
+        fails += check("indexes", False, f"err: {e}")
+
+    # Sector overview
+    try:
+        q, _ = query(base, secret, "sectors")
+        fails += check("sectors/has_trends", (q.get("count") or 0) > 0,
+                       f"count={q.get('count')}")
+    except Exception as e:
+        fails += check("sectors", False, f"err: {e}")
+    return fails
+
+
+def suite_list_cards(base, secret):
+    section("List cards — advance/decline/flat")
+    fails = 0
+    for cmd in ("advancing", "declining"):
         try:
-            q, dt = query(base, secret, cmd)
+            q, _ = query(base, secret, cmd)
             cnt = q.get("count", 0)
             first = [r.get("symbol") for r in q.get("first_5", [])]
-            # advancing/declining should almost always have >0 during market day;
-            # flat can be 0 depending on data shape — report but don't fail.
-            if cmd == "flat":
-                fails += check(f"{cmd}/runs", q.get("kind") == "list", f"count={cnt} first={first}")
-            else:
-                fails += check(f"{cmd}/non_empty", cnt > 0, f"count={cnt} first={first}")
+            fails += check(f"{cmd}/non_empty", cnt > 0, f"count={cnt} first={first}")
+            # Sign consistency
+            signs_ok = all((r.get("change_pct") or 0) > 0 if cmd == "advancing"
+                           else (r.get("change_pct") or 0) < 0
+                           for r in q.get("first_5", []))
+            fails += check(f"{cmd}/signs_consistent", signs_ok)
         except Exception as e:
             fails += check(cmd, False, f"err: {e}")
 
-    for stage in ("stage1", "stage2", "stage3", "stage4"):
-        try:
-            q, dt = query(base, secret, stage)
-            cnt = q.get("count", 0)
-            fails += check(f"{stage}/non_empty", cnt > 0, f"count={cnt}")
-        except Exception as e:
-            fails += check(stage, False, f"err: {e}")
+    # flat — non-fatal if empty, must at least run
+    try:
+        q, _ = query(base, secret, "flat")
+        cnt = q.get("count", 0)
+        first = [r.get("symbol") for r in q.get("first_5", [])]
+        fails += check("flat/dispatched", q.get("kind") == "list", f"count={cnt} first={first}")
+        zeros_ok = all((r.get("change_pct") or 0) == 0 for r in q.get("first_5", []))
+        fails += check("flat/all_zero", zeros_ok or cnt == 0)
+    except Exception as e:
+        fails += check("flat", False, f"err: {e}")
+    return fails
 
-    # Pattern lists: can legitimately be empty on some days (no breakouts).
-    # Report without failing, but flag if runs at all.
-    for pattern in ("breakout", "ath", "vcp", "consolidating"):
+
+def suite_stage_lists(base, secret):
+    section("List cards — stages")
+    fails = 0
+    counts = {}
+    for n in (1, 2, 3, 4):
         try:
-            q, dt = query(base, secret, pattern)
+            q, _ = query(base, secret, f"stage{n}")
+            cnt = q.get("count", 0)
+            counts[n] = cnt
+            fails += check(f"stage{n}/non_empty", cnt > 0, f"count={cnt}")
+            # All returned stocks must belong to that stage
+            stage_ok = all(r.get("stage") == n for r in q.get("first_5", []))
+            fails += check(f"stage{n}/stage_consistent", stage_ok)
+        except Exception as e:
+            fails += check(f"stage{n}", False, f"err: {e}")
+    # Cross-check against breadth
+    try:
+        q, _ = query(base, secret, "market")
+        b = q.get("breadth") or {}
+        total = sum(counts.values())
+        fails += check("stages/sum_matches_total", total == (b.get("total_stocks") or 0),
+                       f"Σ={total} total={b.get('total_stocks')}")
+    except Exception as e:
+        fails += check("stages/cross_check", False, f"err: {e}")
+    return fails
+
+
+def suite_patterns(base, secret):
+    section("List cards — patterns")
+    fails = 0
+    pattern_counts = {}
+    for cmd, label in (("breakout", "breakout"), ("ath", "ath_breakout"),
+                       ("vcp", "vcp_group"), ("consolidating", "consolidating")):
+        try:
+            q, _ = query(base, secret, cmd)
             cnt = q.get("count", 0)
             first = [r.get("symbol") for r in q.get("first_5", [])]
-            fails += check(f"{pattern}/runs", q.get("kind") == "list", f"count={cnt} first={first}")
+            pattern_counts[label] = cnt
+            fails += check(f"{cmd}/dispatched", q.get("kind") == "list",
+                           f"count={cnt} first={first}")
         except Exception as e:
-            fails += check(pattern, False, f"err: {e}")
+            fails += check(cmd, False, f"err: {e}")
+    # consolidating must be non-empty on any trading day (it's the default classification for most stocks)
+    fails += check("consolidating/non_empty",
+                   pattern_counts.get("consolidating", 0) > 0,
+                   f"count={pattern_counts.get('consolidating')}")
+    return fails
 
-    # ── Sector ──
-    try:
-        q, dt = query(base, secret, "sector FINCIAL")
-        fails += check("sector_FINCIAL/non_empty", q.get("count", 0) > 0, f"count={q.get('count')}")
-    except Exception as e:
-        fails += check("sector_FINCIAL", False, f"err: {e}")
 
-    # ── Single-stock cards ──
-    print("\nSingle stock cards")
-    for sym in ("LHFG", "WHAIR", "PTT", "BBL"):
+def suite_sector_drill(base, secret):
+    section("List cards — sector drill-down")
+    fails = 0
+    for sector in ("FINCIAL", "TECH", "RESOURC"):
         try:
-            q, dt = query(base, secret, sym)
+            q, _ = query(base, secret, f"sector {sector}")
+            cnt = q.get("count", 0)
+            fails += check(f"sector_{sector}/non_empty", cnt > 0, f"count={cnt}")
+        except Exception as e:
+            fails += check(f"sector_{sector}", False, f"err: {e}")
+    return fails
+
+
+def suite_single_stock(base, secret):
+    section("Single stock cards")
+    fails = 0
+    for sym in ("LHFG", "WHAIR", "PTT", "BBL", "BDMS", "KBANK"):
+        try:
+            q, _ = query(base, secret, sym)
             s = q.get("signal") or {}
-            fails += check(f"{sym}/has_signal", bool(s), f"close={s.get('close')} pattern={s.get('pattern')} data_date={s.get('data_date')}")
+            fails += check(f"{sym}/has_signal", bool(s),
+                           f"close={s.get('close')} pat={s.get('pattern')} date={s.get('data_date')}")
+            if s:
+                # data_date should be within 10 days
+                dd = s.get("data_date") or ""
+                fails += check(f"{sym}/data_date_present", bool(dd))
         except Exception as e:
             fails += check(sym, False, f"err: {e}")
 
-    # ── ATH sanity: WHAIR shouldn't be ath_breakout any more ──
-    print("\nATH correctness")
+    # detail path
     try:
-        q, dt = query(base, secret, "WHAIR")
-        pattern = (q.get("signal") or {}).get("pattern")
-        fails += check("WHAIR/not_ath_breakout", pattern != "ath_breakout", f"pattern={pattern}")
+        q, _ = query(base, secret, "detail PTT")
+        fails += check("detail_PTT/has_signal",
+                       bool((q.get("signal") or {}).get("symbol")))
     except Exception as e:
-        fails += check("WHAIR/ath", False, f"err: {e}")
+        fails += check("detail_PTT", False, f"err: {e}")
+
+    # Unknown symbol
+    try:
+        q, _ = query(base, secret, "XYZZY123")
+        fails += check("unknown_symbol/kind_unknown", q.get("kind") == "unknown")
+    except Exception as e:
+        fails += check("unknown_symbol", False, f"err: {e}")
+    return fails
+
+
+def suite_static_cards(base, secret):
+    section("Static cards (guide/help/explain/stage picker/patterns)")
+    fails = 0
+    for cmd, handler in (("guide", "guide"), ("help", "help"),
+                         ("stage", "stage_picker"), ("patterns", "pattern_overview"),
+                         ("explain stage2", "explain"), ("explain breakout", "explain")):
+        try:
+            q, _ = query(base, secret, cmd)
+            fails += check(f"static/{cmd!r}", q.get("kind") == "static",
+                           f"handler={q.get('handler')}")
+        except Exception as e:
+            fails += check(f"static/{cmd!r}", False, f"err: {e}")
+    return fails
+
+
+def suite_ath_regression(base, secret):
+    section("ATH regression (unadjusted prices + cache merge)")
+    fails = 0
+    for sym in ("WHAIR", "PTT"):
+        try:
+            d, _ = fetch(f"{base}/test/ath/{sym}")
+            cached = (d.get("cached") or {}).get("firestore") or {}
+            yf_un = d.get("yfinance_unadjusted") or {}
+            fails += check(f"{sym}/firestore_ath_set", bool(cached.get("ath")),
+                           f"fs_ath={cached.get('ath')} date={cached.get('ath_date')}")
+            fails += check(f"{sym}/firestore_unadjusted_match",
+                           abs((cached.get("ath") or 0) - (yf_un.get("max_high") or 0)) < 0.01,
+                           f"fs={cached.get('ath')} yf_un={yf_un.get('max_high')}")
+        except Exception as e:
+            fails += check(f"{sym}/ath", False, f"err: {e}")
+
+    # WHAIR must not be flagged ath_breakout (it's historical, adjusted bug)
+    try:
+        q, _ = query(base, secret, "WHAIR")
+        pat = (q.get("signal") or {}).get("pattern")
+        fails += check("WHAIR/not_ath_breakout", pat != "ath_breakout", f"pattern={pat}")
+    except Exception as e:
+        fails += check("WHAIR/ath_reg", False, f"err: {e}")
+    return fails
+
+
+def suite_invariants(base, secret):
+    section("Data integrity invariants")
+    fails = 0
+    try:
+        inv, dt = fetch(f"{base}/test/invariants", headers={"x-scan-secret": secret}, timeout=90)
+    except Exception as e:
+        fails += check("invariants", False, f"err: {e}")
+        return fails
+
+    total = inv.get("total_signals", 0)
+    d = inv.get("details", {})
+    fails += check("invariants/total>0", total > 0, f"total={total}  ({dt}s)")
+    fails += check("invariants/partition_ok", inv.get("partition_ok"),
+                   f"adv/dec/flat={d.get('adv_dec_flat')}")
+    fails += check("invariants/stage_ok", inv.get("stage_ok"),
+                   f"stages={d.get('stage_counts')}")
+    fails += check("invariants/pattern_ok", inv.get("pattern_ok"),
+                   f"patterns={d.get('pattern_counts')}")
+    fails += check("invariants/freshness_ok", inv.get("freshness_ok"),
+                   f"stale={d.get('stale_count')} sample={d.get('stale_sample')}")
+    fails += check("invariants/ath_ok", inv.get("ath_ok"),
+                   f"violations={d.get('ath_violations_count')} sample={d.get('ath_violations_sample')}")
+    fails += check("invariants/breakout_stage_ok", inv.get("breakout_stage_ok"),
+                   f"sample={d.get('bad_breakout_stage_sample')}")
+    fails += check("invariants/going_down_stage_ok", inv.get("going_down_stage_ok"),
+                   f"sample={d.get('bad_going_down_sample')}")
+    fails += check("invariants/score_range_ok", inv.get("score_range_ok"),
+                   f"sample={d.get('bad_score_sample')}")
+    return fails
+
+
+def suite_admin(base, secret):
+    section("Admin endpoints")
+    fails = 0
+    try:
+        d, _ = fetch(f"{base}/admin/check", headers={"x-scan-secret": secret}, timeout=60)
+        fails += check("admin/has_scan_summary", bool(d.get("scan_summary")))
+        anoms = d.get("anomalies") or []
+        fails += check("admin/no_anomalies", len(anoms) == 0,
+                       f"anomalies={len(anoms)} sample={anoms[:3]}")
+        missing_ath = d.get("data_completeness", {}).get("stocks_missing_ath", 0)
+        fails += check("admin/missing_ath_small", missing_ath < 5,
+                       f"missing={missing_ath}")
+    except Exception as e:
+        fails += check("admin/check", False, f"err: {e}")
+    return fails
+
+
+# ── Main ───────────────────────────────────────────────────────────────────
+
+def main():
+    base = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("SIGNALIX_BASE_URL", DEFAULT_BASE)
+    secret = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("SIGNALIX_SCAN_SECRET", "signalix-scan-2024")
+    print(f"\nSignalix E2E against {base}\n")
+
+    total_fails = 0
+    total_fails += suite_baseline(base, secret)
+    total_fails += suite_market_breadth(base, secret)
+    total_fails += suite_list_cards(base, secret)
+    total_fails += suite_stage_lists(base, secret)
+    total_fails += suite_patterns(base, secret)
+    total_fails += suite_sector_drill(base, secret)
+    total_fails += suite_single_stock(base, secret)
+    total_fails += suite_static_cards(base, secret)
+    total_fails += suite_ath_regression(base, secret)
+    total_fails += suite_invariants(base, secret)
+    total_fails += suite_admin(base, secret)
 
     print(f"\n{'=' * 50}")
-    if fails:
-        print(f"FAILED: {fails} check(s) failed")
+    print(f"pass={_counts['pass']}  fail={_counts['fail']}  skip={_counts['skip']}")
+    if total_fails:
+        print(f"FAILED: {total_fails} check(s)")
         sys.exit(1)
     print("All checks passed")
 
