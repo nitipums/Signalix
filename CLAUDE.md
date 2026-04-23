@@ -28,3 +28,9 @@ LINE Bot for Thai SET stock market scanning using Minervini stage analysis.
 - If the feature touches a text command or card that the LINE user sees, also extend `/test/query` in `main.py` so the e2e script can probe it without hitting the real LINE webhook.
 - After deploying any change that affects scan, cards, or data flow: wait for Cloud Run rollout, run `python3 scripts/e2e_check.py`, and only hand the change back to the user once all assertions pass. Report the pass/fail table and any deliberate skips.
 - Prefer adding a test before shipping the feature (so a red test marks the gap); at minimum, ship feature + test together in the same commit or the immediate follow-up.
+
+## Deploy pipeline
+- `cloudbuild.yaml` runs two steps: (1) `gcloud run deploy` with `--min-instances=1 --cpu-boost`, (2) post-deploy `POST /scan` with the `SCAN_SECRET` to warm the new revision's in-memory cache.
+- Automated via a Cloud Build GitHub trigger — `scripts/setup_cloud_build_trigger.sh` registers it one time. Every push to `main` thereafter auto-deploys.
+- First-time setup needs the Cloud Build GitHub App installed on `nitipums/Signalix` (https://github.com/apps/google-cloud-build). Run `bash scripts/setup_cloud_build_trigger.sh` once after that.
+- `main.py` startup event must stay synchronous (`await _warm_from_firestore()`) so Cloud Run only marks an instance ready after warmup — don't convert back to `asyncio.create_task`.
