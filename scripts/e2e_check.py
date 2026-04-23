@@ -98,9 +98,19 @@ def suite_baseline(base, secret):
 
     try:
         st, dt = fetch(f"{base}/test/settrade?sample_size=10")
-        cov = st.get("bulk_quote_sample", {}).get("coverage_pct", 0)
         fails += check("settrade/api_available", bool(st.get("api_available")))
-        fails += check("settrade/bulk_coverage>=70", cov >= 70, f"coverage={cov}%  ({dt}s)")
+        # bulk_coverage is a live-trading signal: during pre-market /
+        # post-market / holidays Settrade returns last=null for most
+        # symbols and coverage collapses to 0 (the `last > 0` filter in
+        # get_bulk_quotes correctly drops them). Only assert coverage
+        # when the canary PTT actually has a live last price.
+        ptt_last = (st.get("quote_PTT") or {}).get("last") or 0
+        if ptt_last > 0:
+            cov = st.get("bulk_quote_sample", {}).get("coverage_pct", 0)
+            fails += check("settrade/bulk_coverage>=70", cov >= 70,
+                           f"coverage={cov}%  ({dt}s)")
+        else:
+            skip("settrade/bulk_coverage", "market closed (PTT.last=null)")
     except Exception as e:
         fails += check("settrade", False, f"err: {e}")
     return fails
