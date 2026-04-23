@@ -1,6 +1,9 @@
 steps:
-  # Build and deploy to Cloud Run
+  # 1. Build + deploy revision. --min-instances=1 keeps at least one replica
+  #    always warm so scale-to-zero never forces a user to wait for Python
+  #    import + warmup. --cpu-boost shortens the boot itself.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy
     args:
       - gcloud
       - run
@@ -10,9 +13,49 @@ steps:
       - --region=asia-southeast1
       - --allow-unauthenticated
       - --memory=1Gi
+      - --cpu-boost
+      - --min-instances=1
       - --timeout=900
       - --update-secrets=LINE_CHANNEL_ACCESS_TOKEN=LINE_CHANNEL_ACCESS_TOKEN:latest,LINE_CHANNEL_SECRET=LINE_CHANNEL_SECRET:latest,SCAN_SECRET=SCAN_SECRET:latest,SETTRADE_APP_ID=SETTRADE_APP_ID:latest,SETTRADE_APP_SECRET=SETTRADE_APP_SECRET:latest,SETTRADE_BROKER_ID=SETTRADE_BROKER_ID:latest,SETTRADE_APP_CODE=SETTRADE_APP_CODE:latest
       - --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,ENVIRONMENT=production,BQ_DATASET=signalix
+
+  # 2. Post-deploy warm-up scan. Cloud Run has already rolled traffic to the
+  #    new revision by this point (deploy step returned), and our startup event
+  #    synchronously warms from BQ/Firestore — but BQ holds the previous scan's
+  #    snapshot. Running a full /scan here refreshes _last_signals /
+  #    _last_breadth / sector_indexes to match NOW, so the very first user
+  #    request on the new revision sees current data. broadcast=false keeps
+  #    LINE quiet (no duplicate cards pushed to subscribers per deploy).
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: warmup-scan
+    waitFor: ['deploy']
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        URL=$(gcloud run services describe signalix \
+          --region=asia-southeast1 --format='value(status.url)')
+        SECRET=$(gcloud secrets versions access latest --secret=SCAN_SECRET)
+        echo "Triggering warmup scan at $URL/scan"
+        # Retry — the new revision may still be rolling out or
+        # finishing its first scan when we arrive.
+        for i in 1 2 3 4 5; do
+          code=$(curl -sS -o /tmp/scan.out -w "%{http_code}" -X POST "$URL/scan" \
+            -H "x-scan-secret: $SECRET" \
+            -H "content-type: application/json" \
+            --max-time 300 \
+            -d '{"scan_type":"full","mode":"full","broadcast":false}' || echo "curl_err")
+          echo "attempt=$i http=$code"
+          if [ "$code" = "200" ]; then
+            cat /tmp/scan.out
+            exit 0
+          fi
+          sleep 15
+        done
+        echo "Warm-up scan did not succeed after 5 attempts — deploy is live, next Cloud Scheduler tick will refresh."
+        # Don't fail the build — deploy is live and Cloud Scheduler will warm it shortly.
+        exit 0
 
 options:
   logging: CLOUD_LOGGING_ONLY
