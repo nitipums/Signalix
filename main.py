@@ -246,13 +246,23 @@ _EXPLANATIONS: dict[str, str] = {
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize singletons then warm in-memory cache from Firestore (no scan on startup)."""
+    """Initialise singletons + synchronously warm the in-memory cache before
+    Cloud Run routes traffic to this instance.
+
+    Previously `_warm_from_firestore` was scheduled via asyncio.create_task, so
+    uvicorn accepted requests before warmup finished — the first user tap on a
+    new revision hit an instance with empty _last_signals / _last_breadth and
+    ate the lazy-reload cost. Blocking here delays startup by a few seconds
+    (BQ/Firestore reads) but guarantees every request sees a fully warmed
+    process. Combined with --min-instances=1 in cloudbuild.yaml, no user ever
+    experiences a cold start.
+    """
     loop = asyncio.get_running_loop()
     settings = get_settings()
     if settings.gcp_project_id:
         await loop.run_in_executor(None, init_bq, settings.gcp_project_id, settings.bq_dataset)
     init_notifier(settings.line_channel_access_token)
-    asyncio.create_task(_warm_from_firestore())
+    await _warm_from_firestore()
 
 
 async def _warm_from_firestore():
