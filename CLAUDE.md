@@ -30,7 +30,8 @@ LINE Bot for Thai SET stock market scanning using Minervini stage analysis.
 - Prefer adding a test before shipping the feature (so a red test marks the gap); at minimum, ship feature + test together in the same commit or the immediate follow-up.
 
 ## Deploy pipeline
-- `cloudbuild.yaml` runs two steps: (1) `gcloud run deploy` with `--min-instances=1 --cpu-boost`, (2) post-deploy `POST /scan` with the `SCAN_SECRET` to warm the new revision's in-memory cache.
+- `cloudbuild.yaml` runs two steps: (1) `gcloud run deploy` with `--cpu-boost`, (2) post-deploy `POST /scan` (broadcast=false) to pre-warm the new revision's in-memory cache.
 - Automated via a Cloud Build GitHub trigger — `scripts/setup_cloud_build_trigger.sh` registers it one time. Every push to `main` thereafter auto-deploys.
 - First-time setup needs the Cloud Build GitHub App installed on `nitipums/Signalix` (https://github.com/apps/google-cloud-build). Run `bash scripts/setup_cloud_build_trigger.sh` once after that.
 - `main.py` startup event must stay synchronous (`await _warm_from_firestore()`) so Cloud Run only marks an instance ready after warmup — don't convert back to `asyncio.create_task`.
+- Pre-launch cost posture: **no `--min-instances`** — Cloud Run scales to zero when idle; cold start re-hydrates from Firestore in ~5s. When the bot launches publicly, add `--min-instances=1` to `cloudbuild.yaml` (see commented hint in that file) to keep a replica always warm.

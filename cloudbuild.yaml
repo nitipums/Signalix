@@ -1,7 +1,16 @@
 steps:
-  # 1. Build + deploy revision. --min-instances=1 keeps at least one replica
-  #    always warm so scale-to-zero never forces a user to wait for Python
-  #    import + warmup. --cpu-boost shortens the boot itself.
+  # 1. Build + deploy revision.
+  #
+  # Pre-launch posture: --min-instances is OMITTED so Cloud Run scales to
+  # zero when idle → zero idle cost. Synchronous warmup in main.py
+  # (startup_event awaits _warm_from_firestore) keeps the cold-start
+  # window tight when a request does land on a brand-new instance.
+  # --cpu-boost still shortens the boot itself at negligible cost
+  # (billed only during the ~3-10s container start, not steady state).
+  #
+  # At launch: add back `      - --min-instances=1` below to keep one
+  # replica always warm so the first user per hour never pays cold
+  # start. ~$20-30/mo extra at 1Gi memory.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: deploy
     args:
@@ -14,7 +23,6 @@ steps:
       - --allow-unauthenticated
       - --memory=1Gi
       - --cpu-boost
-      - --min-instances=1
       - --timeout=900
       - --update-secrets=LINE_CHANNEL_ACCESS_TOKEN=LINE_CHANNEL_ACCESS_TOKEN:latest,LINE_CHANNEL_SECRET=LINE_CHANNEL_SECRET:latest,SCAN_SECRET=SCAN_SECRET:latest,SETTRADE_APP_ID=SETTRADE_APP_ID:latest,SETTRADE_APP_SECRET=SETTRADE_APP_SECRET:latest,SETTRADE_BROKER_ID=SETTRADE_BROKER_ID:latest,SETTRADE_APP_CODE=SETTRADE_APP_CODE:latest
       - --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,ENVIRONMENT=production,BQ_DATASET=signalix
