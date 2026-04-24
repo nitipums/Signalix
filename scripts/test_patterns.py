@@ -35,7 +35,7 @@ os.environ.setdefault("GCP_PROJECT_ID", "x")
 import numpy as np
 import pandas as pd
 
-from analyzer import _detect_vcp, detect_pattern
+from analyzer import _detect_vcp, detect_pattern, scan_stock
 
 
 fails = 0
@@ -202,6 +202,58 @@ df_noise = _mk_df(list(noise_highs), lows=list(noise_lows),
 noise_result, _ = _detect_vcp(df_noise)
 expect("random noise does NOT produce false VCP", noise_result, "none",
        "random walk shouldn't satisfy decreasing depths+vols")
+
+# ── Stage-2 weakening modifier ───────────────────────────────────────────────
+print("\nstage_weakening modifier")
+
+# Positive: long rising uptrend, then close slips below SMA50 while SMA150 /
+# SMA200 alignment still holds. Stage should be 2, stage_weakening True.
+def _build_uptrend_with_dip():
+    # 240 bars so SMA200 has 20 bars of history for the "rising" check.
+    # Steady rise 50 → 100 for 210 bars, then a dip on last 30 bars that
+    # takes close below SMA50 but leaves SMA150/200 rising + alignment intact.
+    rise = list(np.linspace(50, 100, 210))
+    dip = list(np.linspace(100, 95, 30))
+    prices = rise + dip
+    highs = [p + 0.5 for p in prices]
+    lows = [p - 0.5 for p in prices]
+    return _mk_df(highs, lows=lows, closes=prices, volumes=[1_000_000] * len(prices))
+
+df_weak = _build_uptrend_with_dip()
+sig_weak = scan_stock("WEAKTEST", df_weak)
+expect("uptrend with recent dip below SMA50: stage == 2",
+       sig_weak.stage, 2, f"sma50={sig_weak.sma50}, close={sig_weak.close}")
+expect("uptrend with recent dip below SMA50: stage_weakening == True",
+       sig_weak.stage_weakening, True,
+       f"close={sig_weak.close} sma50={sig_weak.sma50}")
+
+# Negative: strong rising uptrend, close well above SMA50. Weakening = False.
+def _build_strong_uptrend():
+    prices = list(np.linspace(50, 100, 240))
+    highs = [p + 0.5 for p in prices]
+    lows = [p - 0.5 for p in prices]
+    return _mk_df(highs, lows=lows, closes=prices, volumes=[1_000_000] * len(prices))
+
+df_strong = _build_strong_uptrend()
+sig_strong = scan_stock("STRONGTEST", df_strong)
+expect("strong uptrend: stage_weakening == False",
+       sig_strong.stage_weakening, False,
+       f"stage={sig_strong.stage} close={sig_strong.close} sma50={sig_strong.sma50}")
+
+# Stage != 2: weakening flag must stay False even if close < sma50.
+# Build a bear-market shape: high then long decline. Stage should be 4 and
+# weakening always False outside stage 2.
+def _build_downtrend():
+    prices = list(np.linspace(100, 50, 240))
+    highs = [p + 0.5 for p in prices]
+    lows = [p - 0.5 for p in prices]
+    return _mk_df(highs, lows=lows, closes=prices, volumes=[1_000_000] * len(prices))
+
+df_bear = _build_downtrend()
+sig_bear = scan_stock("BEARTEST", df_bear)
+expect("downtrend: stage != 2 → weakening False",
+       sig_bear.stage_weakening, False,
+       f"stage={sig_bear.stage}")
 
 print()
 if fails == 0:

@@ -69,6 +69,12 @@ class StockSignal:
     target_price: float = 0.0      # 2:1 risk/reward: close + 2 * (close - stop_loss)
     breakout_count_1y: int = 0     # Number of distinct breakout events in past year
     data_date: str = ""            # Date of the last candle used (YYYY-MM-DD) — separate from scanned_at
+    # Stage-2 weakening modifier: True when stage == 2 AND close < SMA50.
+    # Minervini's stage-2 template (MA150/200 alignment) can stay true while
+    # near-term momentum rolls over below SMA50 — a classic precursor to a
+    # stage-3 transition. The flag lets the UI distinguish "fresh uptrend"
+    # from "uptrend faltering" without changing the stage integer itself.
+    stage_weakening: bool = False
 
 
 @dataclass
@@ -511,6 +517,11 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
     sma150 = float(_sma(close, 150).iloc[-1]) if len(df) >= 150 else float("nan")
     sma200 = float(_sma(close, 200).iloc[-1]) if len(df) >= 200 else float("nan")
 
+    # Stage-2 weakening: Minervini template still passes but short-term
+    # momentum has rolled over below SMA50. Signals a potential stage-3
+    # transition without changing the stage integer itself.
+    stage_weakening = (stage == 2 and not np.isnan(sma50) and c < sma50)
+
     score = _strength_score(df, stage, pattern, volume_ratio)
 
     # Risk/reward calculations
@@ -558,6 +569,7 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
         target_price=target,
         breakout_count_1y=bo_count,
         data_date=data_date,
+        stage_weakening=bool(stage_weakening),
     )
 
 

@@ -420,6 +420,8 @@ def _signal_snapshot(signal) -> dict:
         "strength_score": signal.strength_score,
         "scanned_at": signal.scanned_at,
         "data_date": getattr(signal, "data_date", ""),
+        "sma50": getattr(signal, "sma50", 0.0),
+        "stage_weakening": getattr(signal, "stage_weakening", False),
     }
 
 
