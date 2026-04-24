@@ -292,6 +292,36 @@ def suite_sector_drill(base, secret):
     return fails
 
 
+def suite_global(base, secret):
+    """Phase 1 global watchlist — curated non-SET assets via yfinance."""
+    section("Global watchlist (indexes / ETFs / US stocks / crypto)")
+    fails = 0
+    try:
+        q, dt = query(base, secret, "global")
+        fails += check("global/dispatched", q.get("kind") == "global",
+                       f"kind={q.get('kind')}")
+        configured = q.get("configured") or 0
+        got = q.get("count") or 0
+        fails += check("global/configured>=20", configured >= 20,
+                       f"GLOBAL_SYMBOLS has {configured} entries")
+        # yfinance occasionally fails on individual tickers — require at
+        # least 75% of the curated list to return so the card isn't empty.
+        fails += check("global/coverage>=75%",
+                       got >= int(configured * 0.75) if configured else False,
+                       f"got {got}/{configured} ({round(got/configured*100 if configured else 0)}%)  ({dt}s)")
+        # Must have representation from every asset class. If one class is
+        # completely missing, something's structurally wrong (not just a
+        # yfinance hiccup on one ticker).
+        top = (q.get("top_5_up") or []) + (q.get("top_5_down") or [])
+        classes = {row.get("class") for row in top}
+        fails += check("global/all_classes_present",
+                       classes.issuperset({"index", "etf", "stock", "crypto"}),
+                       f"classes in top/bottom 10: {sorted(classes)}")
+    except Exception as e:
+        fails += check("global", False, f"err: {e}")
+    return fails
+
+
 def suite_sector_coverage(base, secret):
     section("Sector classification coverage")
     fails = 0
@@ -449,6 +479,7 @@ def main():
     total_fails += suite_patterns(base, secret)
     total_fails += suite_sector_drill(base, secret)
     total_fails += suite_sector_coverage(base, secret)
+    total_fails += suite_global(base, secret)
     total_fails += suite_single_stock(base, secret)
     total_fails += suite_static_cards(base, secret)
     total_fails += suite_ath_regression(base, secret)

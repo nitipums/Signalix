@@ -663,6 +663,101 @@ def fetch_sector_index_prices() -> dict[str, dict]:
     return result
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Global watchlist (non-SET). Separate namespace from SET tickers so users
+# can tap "SPX" / "BTC" / "GOOG" from the `global` command and get the same
+# single-asset card flow. yfinance is the one source we use for everything
+# here — Settrade doesn't cover non-Thai assets and the curated list is
+# small enough (~28 symbols) that per-ticker fetches are cheap.
+# ──────────────────────────────────────────────────────────────────────────
+
+GLOBAL_SYMBOLS: dict[str, dict] = {
+    # ── World / Asia-Pacific indexes ──
+    "SPX":     {"yf": "^GSPC",      "name": "S&P 500",                  "class": "index"},
+    "NDX":     {"yf": "^NDX",       "name": "Nasdaq 100",               "class": "index"},
+    "DJI":     {"yf": "^DJI",       "name": "Dow Jones",                "class": "index"},
+    "KOSPI":   {"yf": "^KS11",      "name": "KOSPI (Korea)",            "class": "index"},
+    "NI225":   {"yf": "^N225",      "name": "Nikkei 225 (Japan)",       "class": "index"},
+    "HSI":     {"yf": "^HSI",       "name": "Hang Seng (Hong Kong)",    "class": "index"},
+    "VNINDEX": {"yf": "^VNI",       "name": "VN-Index (Vietnam)",       "class": "index"},
+    "SSE":     {"yf": "000001.SS",  "name": "SSE Composite (Shanghai)", "class": "index"},
+
+    # ── ETFs ──
+    "QQQ":     {"yf": "QQQ",        "name": "Invesco QQQ (Nasdaq 100)",    "class": "etf"},
+    "SPY":     {"yf": "SPY",        "name": "SPDR S&P 500 ETF",            "class": "etf"},
+    "VOO":     {"yf": "VOO",        "name": "Vanguard S&P 500 ETF",        "class": "etf"},
+    "SMH":     {"yf": "SMH",        "name": "VanEck Semiconductor ETF",    "class": "etf"},
+    "ARKW":    {"yf": "ARKW",       "name": "ARK Next Gen Internet ETF",   "class": "etf"},
+    "DAPP":    {"yf": "DAPP",       "name": "VanEck Digital Transform",    "class": "etf"},
+
+    # ── US large-cap stocks ──
+    "AAPL":    {"yf": "AAPL",       "name": "Apple",           "class": "stock"},
+    "MSFT":    {"yf": "MSFT",       "name": "Microsoft",       "class": "stock"},
+    "NVDA":    {"yf": "NVDA",       "name": "NVIDIA",          "class": "stock"},
+    "TSLA":    {"yf": "TSLA",       "name": "Tesla",           "class": "stock"},
+    "GOOG":    {"yf": "GOOG",       "name": "Alphabet",        "class": "stock"},
+    "META":    {"yf": "META",       "name": "Meta Platforms",  "class": "stock"},
+    "GEV":     {"yf": "GEV",        "name": "GE Vernova",      "class": "stock"},
+    "FSLY":    {"yf": "FSLY",       "name": "Fastly",          "class": "stock"},
+    "NFLX":    {"yf": "NFLX",       "name": "Netflix",         "class": "stock"},
+
+    # ── Crypto (USD pricing — THB pairs deferred to Phase 3) ──
+    "BTC":     {"yf": "BTC-USD",    "name": "Bitcoin",   "class": "crypto"},
+    "ETH":     {"yf": "ETH-USD",    "name": "Ethereum",  "class": "crypto"},
+    "SOL":     {"yf": "SOL-USD",    "name": "Solana",    "class": "crypto"},
+}
+
+
+def fetch_global_snapshot() -> dict[str, dict]:
+    """Fetch latest price + change% for every asset in GLOBAL_SYMBOLS.
+
+    Per-ticker yf.Ticker().history(period='5d') in a thread pool — mirrors
+    fetch_indexes_with_history / fetch_sector_index_prices pattern because
+    batch yf.download is unreliable for mixed US + Asian tickers. ~28 symbols
+    in parallel → ~3-5s wall time.
+
+    Returns:
+        {code: {name, class, close, change_pct, scanned_at}} for symbols that
+        returned data; failures are logged and silently dropped.
+    """
+    import yfinance as yf
+    from concurrent.futures import ThreadPoolExecutor
+
+    result: dict[str, dict] = {}
+    now = datetime.now(BANGKOK_TZ).isoformat()
+
+    def _fetch(item):
+        code, meta = item
+        try:
+            df = yf.Ticker(meta["yf"]).history(period="5d", auto_adjust=False)
+            if df is None or df.empty:
+                return code, None
+            df = df.dropna(subset=["Close"])
+            if df.empty:
+                return code, None
+            close = float(df["Close"].iloc[-1])
+            prev = float(df["Close"].iloc[-2]) if len(df) >= 2 else close
+            chg = round((close - prev) / prev * 100, 2) if prev else 0.0
+            return code, {
+                "name": meta["name"],
+                "class": meta["class"],
+                "close": close,
+                "change_pct": chg,
+                "scanned_at": now,
+            }
+        except Exception as exc:
+            logger.warning("fetch_global_snapshot(%s / %s) failed: %s", code, meta["yf"], exc)
+            return code, None
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for code, data in ex.map(_fetch, GLOBAL_SYMBOLS.items()):
+            if data:
+                result[code] = data
+
+    logger.info("fetch_global_snapshot: %d/%d assets fetched", len(result), len(GLOBAL_SYMBOLS))
+    return result
+
+
 def resolve_symbol(text: str) -> Optional[str]:
     """
     Resolve user input to a valid SET symbol.
