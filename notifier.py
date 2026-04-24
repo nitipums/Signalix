@@ -548,6 +548,11 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
     pcolor = PATTERN_COLOR.get(signal.pattern, "#7F8C8D")
     pattern_label = PATTERN_LABEL.get(signal.pattern, signal.pattern)
     stage_label = STAGE_LABEL.get(signal.stage, f"Stage {signal.stage}")
+    # Weakening modifier: Minervini template passes but close < SMA50.
+    # Appended to the stage label so users see the nuance without losing
+    # the clean int-stage taxonomy.
+    if getattr(signal, "stage_weakening", False):
+        stage_label = f"{stage_label} ⚠ Weakening"
     chg_color = _pct_color(signal.change_pct)
     chg_sign = "+" if signal.change_pct > 0 else ""
 
@@ -1579,8 +1584,11 @@ def build_pattern_overview_card(signals: list[StockSignal], breadth=None) -> dic
 def build_watchlist_stock_card(signal: StockSignal, fundamentals: dict) -> dict:
     """Deep insight card: Technical + Fundamental data for watchlist view."""
     pcolor = PATTERN_COLOR.get(signal.pattern, "#7F8C8D")
+    # Weakening suffix applied identically to the single-stock card.
     pattern_label = PATTERN_LABEL.get(signal.pattern, signal.pattern)
     stage_label = STAGE_LABEL.get(signal.stage, f"Stage {signal.stage}")
+    if getattr(signal, "stage_weakening", False):
+        stage_label = f"{stage_label} ⚠ Weakening"
     chg_color = _pct_color(signal.change_pct)
     chg_sign = "+" if signal.change_pct > 0 else ""
 

@@ -126,11 +126,13 @@ def dump_stock(code: str, name: str, yf_tk: str, df) -> dict:
             mark = "[?]"
         print(f"    {mark} {label:<30s}  {detail}")
     print()
-    print(f"  >>> SCANNER DECISION: stage={sig.stage}  pattern={sig.pattern}")
+    weak = " ⚠ WEAKENING (close < SMA50)" if getattr(sig, "stage_weakening", False) else ""
+    print(f"  >>> SCANNER DECISION: stage={sig.stage}{weak}  pattern={sig.pattern}")
     if sig.breakout_details:
         print(f"      breakout_details: {sig.breakout_details}")
     return {"code": code, "stage": sig.stage, "pattern": sig.pattern,
-            "data_date": sig.data_date, "close": sig.close}
+            "data_date": sig.data_date, "close": sig.close,
+            "weakening": getattr(sig, "stage_weakening", False)}
 
 
 def dump_index(code: str, name: str, yf_tk: str, df) -> dict:
@@ -179,7 +181,8 @@ def main():
     print(f"  {'SYMBOL':<8s} {'STAGE':<6s} {'PATTERN':<16s} {'CLOSE':>12s}   DATA DATE")
     print(f"  {'-' * 8} {'-' * 6} {'-' * 16} {'-' * 12}   {'-' * 10}")
     for r in results:
-        stg = str(r["stage"]) if r["stage"] is not None else "—"
+        stg_raw = str(r["stage"]) if r["stage"] is not None else "—"
+        stg = f"{stg_raw}⚠" if r.get("weakening") else stg_raw
         pat = r["pattern"] or "—"
         close = f"{r['close']:,.2f}" if r.get("close") else "—"
         date = r.get("data_date") or ""

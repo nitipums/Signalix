@@ -259,6 +259,55 @@ def suite_patterns(base, secret):
     return fails
 
 
+def suite_stage_weakening(base, secret):
+    """Invariant coverage for the stage_weakening modifier shipped
+    alongside breakout_attempt + unclosed-VCP. Works by probing a
+    random in-cache signal — doesn't care WHICH stock weakens, only
+    that when the flag is True it's consistent with the definition."""
+    section("stage_weakening invariant (stage==2 AND close < sma50)")
+    fails = 0
+    try:
+        # Pull a broad list of live signals via the breakout / consolidating
+        # / vcp paths — any /test/query list returns first_5 with symbols,
+        # which we then individually resolve via single-stock lookup to see
+        # if any carry stage_weakening=True.
+        probe_symbols = []
+        for cmd in ("consolidating", "breakout"):
+            q, _ = query(base, secret, cmd)
+            probe_symbols.extend(r.get("symbol") for r in q.get("first_5", []) if r.get("symbol"))
+        probe_symbols = list(dict.fromkeys(probe_symbols))[:8]  # dedupe, cap at 8
+
+        any_weakening_seen = False
+        for sym in probe_symbols:
+            q, _ = query(base, secret, sym)
+            sig = q.get("signal") or {}
+            weak = sig.get("stage_weakening")
+            if weak is None:
+                continue  # old-schema signal, skip silently
+            stage = sig.get("stage")
+            close = sig.get("close") or 0
+            sma50 = sig.get("sma50") or 0
+            if weak:
+                any_weakening_seen = True
+                # Invariant: weakening → stage == 2 AND close < sma50
+                fails += check(f"{sym}/weak→stage2", stage == 2,
+                               f"got stage={stage}")
+                if sma50 > 0:
+                    fails += check(f"{sym}/weak→close<sma50", close < sma50,
+                                   f"close={close} sma50={sma50}")
+        # Soft-pass if nothing weakened — market might just be strong.
+        # The field presence alone is the critical check (confirms the
+        # new field survives the Firestore round-trip + serialization).
+        fails += check("stage_weakening/field_present",
+                       any(q.get("signal", {}).get("stage_weakening") is not None
+                           for q in [query(base, secret, s)[0] for s in probe_symbols[:2]]),
+                       f"probed {len(probe_symbols[:2])} symbols; "
+                       "weakening observed in wider probe" if any_weakening_seen else "no weakening seen")
+    except Exception as e:
+        fails += check("stage_weakening", False, f"err: {e}")
+    return fails
+
+
 def suite_sector_drill(base, secret):
     section("List cards — sector drill-down + subsector breakdown")
     fails = 0
@@ -595,6 +644,7 @@ def main():
     total_fails += suite_list_cards(base, secret)
     total_fails += suite_stage_lists(base, secret)
     total_fails += suite_patterns(base, secret)
+    total_fails += suite_stage_weakening(base, secret)
     total_fails += suite_sector_drill(base, secret)
     total_fails += suite_sector_coverage(base, secret)
     total_fails += suite_global(base, secret)
