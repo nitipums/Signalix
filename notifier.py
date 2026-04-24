@@ -942,6 +942,84 @@ def _ma_row(label: str, value: float, close: float) -> dict:
     ]}
 
 
+def build_global_snapshot_card(snapshot: dict[str, dict]) -> dict:
+    """Single mega bubble — one row per global asset, TradingView-style.
+
+    Rows sorted by change_pct descending (biggest gainers at top, losers at
+    bottom). Each row is tappable → sends the code as a text message so the
+    single-asset handler can render a detail card.
+
+    snapshot shape: {code: {name, class, close, change_pct, scanned_at}}
+    produced by data.fetch_global_snapshot().
+    """
+    CLASS_ICON = {"index": "📊", "etf": "📈", "stock": "🏢", "crypto": "₿"}
+
+    items = sorted(
+        snapshot.items(),
+        key=lambda kv: -(kv[1].get("change_pct") or 0),
+    )
+    rows: list = []
+    for code, d in items:
+        chg = d.get("change_pct") or 0.0
+        color = "#27AE60" if chg > 0 else ("#E74C3C" if chg < 0 else "#7F8C8D")
+        sign = "+" if chg > 0 else ""
+        icon = CLASS_ICON.get(d.get("class"), "•")
+        close = d.get("close") or 0.0
+        # Price formatting: crypto shows 2 decimals for high-value BTC/ETH, 4 for SOL/ALT
+        if (d.get("class") == "crypto") and close < 100:
+            price_text = f"{close:,.4f}"
+        else:
+            price_text = f"{close:,.2f}"
+        rows.append({
+            "type": "box", "layout": "horizontal",
+            "action": {"type": "message", "label": code[:20], "text": code},
+            "paddingTop": "6px", "paddingBottom": "6px",
+            "contents": [
+                {"type": "text", "text": f"{icon} {code}", "flex": 3, "size": "sm",
+                 "weight": "bold", "color": "#FFFFFF"},
+                {"type": "text", "text": d.get("name", ""), "flex": 5, "size": "xxs",
+                 "color": "#AAAAAA", "wrap": False},
+                {"type": "text", "text": price_text, "flex": 3, "size": "xs",
+                 "color": "#FFFFFF", "align": "end"},
+                {"type": "text", "text": f"{sign}{chg:.2f}%", "flex": 2, "size": "xs",
+                 "color": color, "weight": "bold", "align": "end"},
+            ],
+        })
+        rows.append({"type": "separator"})
+
+    hdr_subtitle = f"{len(items)} assets · sorted by % change"
+    if items:
+        ts = next(iter(snapshot.values())).get("scanned_at", "")
+        if ts:
+            try:
+                dt = datetime.fromisoformat(ts)
+                hdr_subtitle += f" · {dt.strftime('%H:%M %d/%m/%y')}"
+            except Exception:
+                pass
+
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "🌏 Global Snapshot", "weight": "bold",
+                 "size": "lg", "color": "#FFFFFF"},
+                {"type": "text", "text": hdr_subtitle, "size": "xxs", "color": "#CCCCCC"},
+            ],
+            "backgroundColor": "#0D0D1A",
+            "paddingAll": "14px",
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "none",
+            "contents": rows if rows else [
+                {"type": "text", "text": "ไม่มีข้อมูลขณะนี้",
+                 "size": "sm", "color": "#7F8C8D", "align": "center"},
+            ],
+            "paddingAll": "12px",
+        },
+    }
+
+
 def build_index_carousel(indexes: dict[str, dict]) -> dict:
     """Build a carousel of index bubbles with full stock-like analysis for all indexes."""
     INDEX_COLORS = {

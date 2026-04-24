@@ -38,7 +38,7 @@ from config import get_settings
 from data import (
     SECTOR_MAP, SUBSECTOR_TO_SECTOR, SECTOR_INDEX_SYMBOLS,
     append_new_candles_to_bq, BQ_AVAILABLE,
-    fetch_indexes_with_history, fetch_latest_candles, fetch_sector_index_prices,
+    fetch_global_snapshot, fetch_indexes_with_history, fetch_latest_candles, fetch_sector_index_prices,
     fetch_sector_map_from_yfinance, get_fundamentals,
     get_sector, get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
     increment_stage4_views, load_breakout_review,
@@ -56,6 +56,7 @@ from notifier import (
     build_compact_stock_carousel,
     build_explain_card,
     build_guide_carousel,
+    build_global_snapshot_card,
     build_index_carousel,
     build_market_breadth_card,
     build_pattern_detail_card,
@@ -505,6 +506,26 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
                 if get_sector(s.symbol) == sector_name or get_subsector(s.symbol) == sector_name]
         sigs.sort(key=lambda s: s.strength_score, reverse=True)
         return summary(sigs, f"Sector {sector_name}")
+
+    # Global watchlist (US + Asia indexes + ETFs + US stocks + crypto)
+    if c in ("global", "world", "g", "ตลาดโลก", "กลอบอล"):
+        snap = await loop.run_in_executor(None, fetch_global_snapshot)
+        ordered = sorted(snap.items(), key=lambda kv: -(kv[1].get("change_pct") or 0))
+        return {
+            "kind": "global",
+            "count": len(snap),
+            "configured": len(__import__("data").GLOBAL_SYMBOLS),
+            "top_5_up": [
+                {"code": code, "class": d["class"], "close": d["close"],
+                 "change_pct": d["change_pct"]}
+                for code, d in ordered[:5]
+            ],
+            "top_5_down": [
+                {"code": code, "class": d["class"], "close": d["close"],
+                 "change_pct": d["change_pct"]}
+                for code, d in ordered[-5:][::-1]
+            ],
+        }
 
     # Market breadth summary
     if c in ("market", "breadth", "ตลาด"):
@@ -1546,6 +1567,17 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             return
         carousel = build_index_carousel(indexes)
         reply_flex(reply_token, "ดัชนีหุ้นไทย", carousel)
+
+    # ── Global Snapshot (US + Asia indexes + ETFs + US stocks + crypto) ──
+    # On-demand only — each call pulls ~28 yfinance quotes in parallel (~3-5s).
+    # No scheduled broadcast; this is a "check the world" watchlist view.
+    elif cmd in ("global", "world", "g", "ตลาดโลก", "กลอบอล"):
+        snapshot = await loop.run_in_executor(None, fetch_global_snapshot)
+        if not snapshot:
+            reply_text(reply_token, "ดึงข้อมูลตลาดโลกไม่สำเร็จ ลองใหม่อีกครั้ง")
+            return
+        card = build_global_snapshot_card(snapshot)
+        reply_flex(reply_token, "🌏 Global Snapshot", card)
 
     # ── Sector Trends: overview or drill-down ──
     elif cmd.startswith("sector ") and len(cmd) > 7:
