@@ -59,6 +59,7 @@ def init_notifier(token: str) -> None:
 PATTERN_LABEL = {
     "breakout": "Breakout",
     "ath_breakout": "ATH Breakout",
+    "breakout_attempt": "Breakout Attempt",
     "vcp": "VCP",
     "vcp_low_cheat": "VCP Low Cheat",
     "consolidating": "Consolidating",
@@ -68,6 +69,7 @@ PATTERN_LABEL = {
 PATTERN_COLOR = {
     "breakout": "#27AE60",
     "ath_breakout": "#F39C12",
+    "breakout_attempt": "#16A085",  # teal — weaker than breakout green, still positive
     "vcp": "#2980B9",
     "vcp_low_cheat": "#1ABC9C",
     "consolidating": "#95A5A6",
