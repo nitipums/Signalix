@@ -17,10 +17,12 @@ venv/
 .venv/
 env/
 
-# GCP credentials
+# GCP credentials — NEVER commit these
 *-credentials.json
 service-account*.json
 gcloud-key*.json
+.gcp-*.json
+**/deploy-key.json
 
 # IDE
 .idea/
