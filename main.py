@@ -1361,31 +1361,20 @@ def _broadcast_breadth(breadth: MarketBreadth) -> None:
 
 
 def _broadcast_full_report(breadth: MarketBreadth, signals: list[StockSignal]) -> None:
-    # 1. Market breadth bubble (tappable — all stage/sector links inside)
+    # ─────────────────────────────────────────────────────────────────
+    # Pre-launch posture: broadcast ONLY the market breadth card per
+    # scheduled scan — LINE free-tier push quota conservation. The
+    # breakout/fallen list broadcasts and the per-user watchlist
+    # multicast are intentionally omitted; users still get those views
+    # on demand via text commands (`breakout`, `vcp`, `watchlist`),
+    # which use reply_flex and don't count against broadcast quota.
+    #
+    # On launch, re-enable the fuller body (git log for 'cost: limit
+    # broadcast to breadth-only'). See CLAUDE.md "Deploy pipeline".
+    # `signals` kept in the signature so the call site doesn't need
+    # to change when we expand this back out.
+    # ─────────────────────────────────────────────────────────────────
     _broadcast_breadth(breadth)
-
-    # 2. Breakout + ATH breakout
-    breakouts = sorted(
-        [s for s in signals if s.stage == 2 and s.pattern in ("breakout", "ath_breakout")],
-        key=lambda s: s.strength_score, reverse=True,
-    )[:20]
-    if breakouts:
-        bubble = build_ranked_stock_list_bubble(breakouts, "🚀 Breaking Out")
-        broadcast_flex("Breaking Out", bubble)
-
-    # 3. Trend-change / fallen stocks (Stage 3-4 with negative day)
-    fallen = sorted(
-        [s for s in signals if s.stage in (3, 4) and s.change_pct < -1.5],
-        key=lambda s: s.change_pct,
-    )[:20]
-    if fallen:
-        bubble = build_ranked_stock_list_bubble(fallen, "⚠️ Trend Change Alert")
-        broadcast_flex("Trend Change Alert", bubble)
-
-    # 4. Per-user watchlist push (multicast — each user gets their own watchlist snapshot)
-    if FIRESTORE_AVAILABLE and _db:
-        loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, _push_watchlist_updates_sync, signals)
 
 
 def _push_watchlist_updates_sync(signals: list[StockSignal]) -> None:
