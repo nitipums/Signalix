@@ -1020,6 +1020,143 @@ def build_global_snapshot_card(snapshot: dict[str, dict]) -> dict:
     }
 
 
+def build_global_single_card(asset: dict) -> dict:
+    """Detail bubble for a single non-SET asset (index / ETF / US stock /
+    crypto). No Minervini stage or pattern — those categories don't
+    translate across asset classes — just the reference levels a user
+    wants when they tap a row on the Global Snapshot card:
+      • current price + day change%
+      • day range (low → high)
+      • 52W range + % from 52W high (ATH proximity)
+      • volume (blank for indexes where yfinance returns 0)
+      • "View on TradingView" external link
+
+    asset shape: output of data.fetch_global_asset(code).
+    """
+    CLASS_ICON = {"index": "📊", "etf": "📈", "stock": "🏢", "crypto": "₿"}
+    CLASS_COLOR = {"index": "#1A237E", "etf": "#006064",
+                   "stock": "#0D47A1", "crypto": "#F7931A"}
+
+    chg = asset.get("change_pct") or 0.0
+    chg_color = "#27AE60" if chg > 0 else ("#E74C3C" if chg < 0 else "#7F8C8D")
+    chg_sign = "+" if chg > 0 else ""
+    close = asset.get("close") or 0.0
+    code = asset.get("code", "")
+    asset_class = asset.get("class", "")
+    icon = CLASS_ICON.get(asset_class, "•")
+    accent = CLASS_COLOR.get(asset_class, "#263238")
+
+    # Price formatting: low-value crypto gets 4 decimals.
+    def _fmt_price(x: float) -> str:
+        if asset_class == "crypto" and x < 100:
+            return f"{x:,.4f}"
+        return f"{x:,.2f}"
+
+    # 52W high proximity — "ATH context" for trend traders.
+    week52_high = asset.get("week52_high") or close
+    pct_from_high = ((close - week52_high) / week52_high * 100) if week52_high else 0
+    week52_low = asset.get("week52_low") or close
+    pct_from_low = ((close - week52_low) / week52_low * 100) if week52_low else 0
+
+    # TradingView URL — different symbol namespace per asset class.
+    # For indexes/stocks we can just send the yf ticker minus "^"; for
+    # crypto we prefix with CRYPTO:. Keeps the deep link best-effort; TV
+    # search handles mismatches gracefully.
+    yf_tk = asset.get("yf", code)
+    if asset_class == "crypto":
+        tv_symbol = f"CRYPTO:{yf_tk.replace('-', '')}"
+    elif yf_tk.startswith("^"):
+        tv_symbol = f"INDEX:{yf_tk.lstrip('^')}"
+    elif yf_tk.endswith(".SS"):
+        tv_symbol = f"SSE:{yf_tk.replace('.SS', '')}"
+    else:
+        tv_symbol = yf_tk
+    tv_url = f"https://www.tradingview.com/symbols/{tv_symbol}/"
+
+    def _kv_row(label: str, value: str, value_color: str = "#FFFFFF",
+                label_color: str = "#AAAAAA") -> dict:
+        return {
+            "type": "box", "layout": "horizontal",
+            "paddingTop": "4px", "paddingBottom": "4px",
+            "contents": [
+                {"type": "text", "text": label, "size": "xs",
+                 "color": label_color, "flex": 3},
+                {"type": "text", "text": value, "size": "sm",
+                 "color": value_color, "flex": 4, "align": "end",
+                 "weight": "bold"},
+            ],
+        }
+
+    vol = asset.get("volume") or 0
+    if vol <= 0:
+        vol_display = "—"
+    elif vol >= 1_000_000:
+        vol_display = f"{vol/1_000_000:,.1f}M"
+    elif vol >= 1_000:
+        vol_display = f"{vol/1_000:,.1f}K"
+    else:
+        vol_display = f"{vol:,.0f}"
+
+    body_rows = [
+        _kv_row("Day range",
+                f"{_fmt_price(asset.get('day_low', 0))} → {_fmt_price(asset.get('day_high', 0))}"),
+        _kv_row("52W range",
+                f"{_fmt_price(week52_low)} → {_fmt_price(week52_high)}"),
+        _kv_row("From 52W high", f"{pct_from_high:+.2f}%",
+                value_color="#E74C3C" if pct_from_high < -10 else "#FFFFFF"),
+        _kv_row("From 52W low", f"{pct_from_low:+.2f}%",
+                value_color="#27AE60" if pct_from_low > 10 else "#FFFFFF"),
+        _kv_row("Volume", vol_display),
+    ]
+
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "backgroundColor": accent, "paddingAll": "14px",
+            "contents": [
+                {"type": "text", "text": f"{icon} {code}",
+                 "weight": "bold", "size": "xl", "color": "#FFFFFF"},
+                {"type": "text", "text": asset.get("name", ""),
+                 "size": "xs", "color": "#E3F2FD", "wrap": True},
+            ],
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "paddingAll": "14px",
+            "spacing": "none",
+            "contents": [
+                # Price + change% hero row
+                {"type": "box", "layout": "baseline",
+                 "paddingBottom": "10px",
+                 "contents": [
+                     {"type": "text", "text": _fmt_price(close),
+                      "weight": "bold", "size": "xxl", "color": "#FFFFFF",
+                      "flex": 5},
+                     {"type": "text", "text": f"{chg_sign}{chg:.2f}%",
+                      "weight": "bold", "size": "lg", "color": chg_color,
+                      "align": "end", "flex": 3},
+                 ]},
+                {"type": "separator", "color": "#333333"},
+                {"type": "box", "layout": "vertical",
+                 "paddingTop": "10px", "spacing": "none",
+                 "contents": body_rows},
+            ],
+        },
+        "footer": {
+            "type": "box", "layout": "vertical", "spacing": "sm",
+            "paddingAll": "10px",
+            "contents": [
+                {"type": "button", "style": "link", "height": "sm",
+                 "action": {"type": "uri", "label": "📊 Open in TradingView",
+                            "uri": tv_url}},
+                {"type": "button", "style": "link", "height": "sm",
+                 "action": {"type": "message", "label": "← Back to Global",
+                            "text": "global"}},
+            ],
+        },
+    }
+
+
 def build_index_carousel(indexes: dict[str, dict]) -> dict:
     """Build a carousel of index bubbles with full stock-like analysis for all indexes."""
     INDEX_COLORS = {

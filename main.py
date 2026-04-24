@@ -38,7 +38,8 @@ from config import get_settings
 from data import (
     SECTOR_MAP, SUBSECTOR_TO_SECTOR, SECTOR_INDEX_SYMBOLS,
     append_new_candles_to_bq, BQ_AVAILABLE,
-    fetch_global_snapshot, fetch_indexes_with_history, fetch_latest_candles, fetch_sector_index_prices,
+    fetch_global_asset, fetch_global_snapshot, fetch_indexes_with_history, fetch_latest_candles, fetch_sector_index_prices,
+    is_global_code,
     fetch_sector_map_from_yfinance, get_fundamentals,
     get_sector, get_stock_list, init_bq, load_ath_cache, load_ath_from_bq,
     increment_stage4_views, load_breakout_review,
@@ -56,6 +57,7 @@ from notifier import (
     build_compact_stock_carousel,
     build_explain_card,
     build_guide_carousel,
+    build_global_single_card,
     build_global_snapshot_card,
     build_index_carousel,
     build_market_breadth_card,
@@ -630,7 +632,31 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
             signal = await loop.run_in_executor(None, load_signal_from_firestore, _db, sym)
         return {"kind": "detail", "signal": _signal_snapshot(signal) if signal else None}
 
-    # Single stock lookup (any recognised ticker)
+    # Single asset lookup — global takes precedence so typing "BTC" / "SPX" /
+    # "GOOG" hits the global detail card, not a SET ticker (there IS a SET
+    # retail ticker named GLOBAL that would otherwise hijack it).
+    if is_global_code(c):
+        code = c.strip().upper()
+        asset = await loop.run_in_executor(None, fetch_global_asset, code)
+        if asset is None:
+            return {"kind": "global_single", "code": code, "asset": None,
+                    "error": "fetch_failed"}
+        return {
+            "kind": "global_single",
+            "code": code,
+            "asset": {
+                "code": asset["code"],
+                "name": asset["name"],
+                "class": asset["class"],
+                "close": asset["close"],
+                "change_pct": asset["change_pct"],
+                "week52_high": asset["week52_high"],
+                "week52_low": asset["week52_low"],
+                "volume": asset["volume"],
+            },
+        }
+
+    # Single stock lookup (any recognised SET ticker)
     from data import resolve_symbol
     sym = resolve_symbol(c)
     if sym:
@@ -1879,8 +1905,14 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         card = build_score_card(user_data)
         reply_flex(reply_token, "⭐ Captain's Score", card)
 
-    # ── Single stock lookup ──
+    # ── Single asset lookup ──
     else:
+        # Global code takes precedence — "GLOBAL" is also a SET retail ticker,
+        # but a user typing BTC/SPX/GOOG almost certainly wants the global
+        # detail card, not a SET ticker search.
+        if is_global_code(text):
+            await _reply_global_single(reply_token, text.strip().upper())
+            return
         symbol = resolve_symbol(text)
         if symbol:
             await _reply_single_stock(reply_token, symbol, user_id)
@@ -1931,6 +1963,23 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str,
     bubble = build_ranked_stock_list_bubble(chunk, title, next_cmd=next_cmd,
                                             rank_offset=start, subtitle=subtitle)
     reply_flex(reply_token, title, bubble)
+
+
+async def _reply_global_single(reply_token: str, code: str) -> None:
+    """Detail card for a non-SET asset (index / ETF / US stock / crypto).
+
+    Fires fetch_global_asset in a thread (yfinance blocks), then renders
+    via build_global_single_card. On fetch failure we fall back to a text
+    message rather than an empty card so the user knows it was an upstream
+    issue, not a silent drop.
+    """
+    loop = asyncio.get_running_loop()
+    asset = await loop.run_in_executor(None, fetch_global_asset, code)
+    if asset is None:
+        reply_text(reply_token,
+                   f'ดึงข้อมูล "{code}" ไม่สำเร็จ ลองใหม่อีกครั้ง\n(หรือพิมพ์ "global" เพื่อดูภาพรวม)')
+        return
+    reply_flex(reply_token, f"{code} Detail", build_global_single_card(asset))
 
 
 async def _reply_single_stock(reply_token: str, symbol: str, user_id: str = "") -> None:
