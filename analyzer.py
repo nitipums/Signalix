@@ -10,6 +10,9 @@ Stages (Mark Minervini):
 Patterns detected:
   breakout         — Stage 2 stock closing above recent resistance on high volume
   ath_breakout     — Breakout at or above all-time high
+  breakout_attempt — Day's HIGH broke 52-bar pivot on ≥1.4× volume, but CLOSE
+                     retreated below pivot. Captures in-progress breakouts
+                     before the close confirms (reversal at resistance / handle).
   vcp              — Volatility Contraction Pattern (3+ tightening contractions)
   vcp_low_cheat    — Entry near final VCP low, volume drying up
   consolidating    — Stage 1 basing with contracting volatility
@@ -259,6 +262,45 @@ def detect_pattern(df: pd.DataFrame, stage: int, ath_override: Optional[float] =
             }
             return ("ath_breakout" if is_ath else "breakout"), details
 
+        # ── Breakout Attempt ──
+        # Any of the last 3 bars had HIGH > 52-bar pivot on ≥1.4× volume
+        # (a genuine attempt at breakout), AND current close is still
+        # within 3% of that attempt's high (price hasn't fully reversed
+        # away from resistance). Captures the in-progress "broke out
+        # intraday, now pausing near resistance" state — a signal that
+        # the strict close-based rule flashes for a single bar and then
+        # drops, which is too brittle for scheduled-scan alerting.
+        vol_avg = _vol_avg(df)
+        attempt = None  # {"bar": int-from-end, "high": float, "vol_ratio": float}
+        for k in range(1, 4):  # check today (k=1), yesterday (k=2), 2-days-ago (k=3)
+            if k > len(df):
+                break
+            bar_high = float(high.iloc[-k])
+            bar_vol = float(volume.iloc[-k])
+            bar_vol_avg = float(vol_avg.iloc[-k]) if not np.isnan(vol_avg.iloc[-k]) else 0.0
+            bar_vr = bar_vol / bar_vol_avg if bar_vol_avg > 0 else 0.0
+            # Pivot as of bar k's open: max High in the 52 bars ending the day before
+            pivot_slice_end = len(df) - k  # exclusive
+            pivot_slice_start = max(0, pivot_slice_end - 52)
+            if pivot_slice_end <= pivot_slice_start:
+                continue
+            bar_pivot = float(high.iloc[pivot_slice_start:pivot_slice_end].max())
+            if bar_high > bar_pivot and bar_vr >= 1.4:
+                attempt = {"bars_ago": k - 1, "high": bar_high,
+                           "pivot": bar_pivot, "vol_ratio": bar_vr}
+                break  # take the most recent qualifying attempt
+
+        if attempt and c >= attempt["high"] * 0.97:  # close still within 3% of attempt peak
+            details = {
+                "pivot_high": round(attempt["pivot"], 2),
+                "attempt_high": round(attempt["high"], 2),
+                "bars_ago": attempt["bars_ago"],
+                "volume_ratio": round(attempt["vol_ratio"], 2),
+                "close_from_attempt_pct": round((c - attempt["high"]) / attempt["high"] * 100, 2),
+                "is_ath_touch": attempt["high"] >= ath * 0.99,
+            }
+            return "breakout_attempt", details
+
         return "consolidating", {}
 
     return "consolidating", {}
@@ -314,6 +356,38 @@ def _detect_vcp(df: pd.DataFrame) -> tuple[str, dict]:
             "depth_pct": depth_pct,
             "avg_vol": avg_vol,
         })
+
+    # Open-ended (unclosed) final contraction. The 5-bar pivot detector
+    # can't mark a swing in the last 5 bars, so when price has rallied
+    # past the most recent confirmed swing high and is now pulling back,
+    # the current consolidation is invisible to the closed-contraction
+    # list. Synthesise a final "unclosed" contraction from (post-swing
+    # max high) → current close to capture in-progress tight pullbacks.
+    # Only fires when there's been a genuine higher high after the last
+    # confirmed swing AND the close is pulling back from it.
+    if swing_highs:
+        last_sh_idx = swing_highs[-1][0]
+        last_sh_val = swing_highs[-1][1]
+        post_slice = high[last_sh_idx + 1:]
+        if len(post_slice) >= 2:
+            post_peak_offset = int(np.argmax(post_slice))
+            post_peak = float(post_slice[post_peak_offset])
+            post_peak_idx = last_sh_idx + 1 + post_peak_offset
+            last_close = float(close[-1])
+            if post_peak > last_sh_val and post_peak > last_close:
+                current_bar = len(close) - 1
+                depth_pct = (post_peak - last_close) / post_peak * 100
+                avg_vol = (float(np.mean(volume[post_peak_idx:current_bar + 1]))
+                           if current_bar > post_peak_idx else float(volume[post_peak_idx]))
+                contractions.append({
+                    "hi_idx": post_peak_idx,
+                    "lo_idx": current_bar,
+                    "hi": post_peak,
+                    "lo": last_close,
+                    "depth_pct": depth_pct,
+                    "avg_vol": avg_vol,
+                    "unclosed": True,
+                })
 
     if len(contractions) < 3:
         return "none", {}
@@ -373,8 +447,10 @@ def _strength_score(df: pd.DataFrame, stage: int, pattern: str, volume_ratio: fl
     pattern_scores = {
         "ath_breakout": 25,
         "breakout": 20,
-        "vcp": 15,
         "vcp_low_cheat": 18,
+        "vcp": 15,
+        "breakout_attempt": 12,  # halfway between consolidating and vcp —
+                                 # real signal but weaker than a confirmed close
         "consolidating": 5,
         "going_down": 0,
     }
