@@ -387,6 +387,59 @@ def suite_global_single(base, secret):
     return fails
 
 
+def suite_watchlist_global(base, secret):
+    """Phase 1 Commit 3 — watchlist add/remove accepts global codes."""
+    section("Watchlist add/remove global-code dispatch")
+    fails = 0
+
+    # 'add BTC' — must route to the global path (not bounce as unresolved).
+    try:
+        q, _ = query(base, secret, "add BTC")
+        fails += check("add_btc/kind", q.get("kind") == "watchlist_add",
+                       f"kind={q.get('kind')}")
+        fails += check("add_btc/source", q.get("source") == "global",
+                       f"source={q.get('source')}")
+        fails += check("add_btc/resolved", q.get("resolved") == "BTC",
+                       f"resolved={q.get('resolved')}")
+    except Exception as e:
+        fails += check("add_btc", False, f"err: {e}")
+
+    # 'remove SPX' — same path, remove operation.
+    try:
+        q, _ = query(base, secret, "remove SPX")
+        fails += check("remove_spx/kind", q.get("kind") == "watchlist_remove",
+                       f"kind={q.get('kind')}")
+        fails += check("remove_spx/source", q.get("source") == "global",
+                       f"source={q.get('source')}")
+    except Exception as e:
+        fails += check("remove_spx", False, f"err: {e}")
+
+    # 'add ADVANC' — must still route to SET. Guards against the global
+    # branch accidentally hijacking SET ticker adds.
+    try:
+        q, _ = query(base, secret, "add ADVANC")
+        fails += check("add_advanc/kind", q.get("kind") == "watchlist_add",
+                       f"kind={q.get('kind')}")
+        fails += check("add_advanc/source", q.get("source") == "set",
+                       f"source={q.get('source')}")
+        fails += check("add_advanc/resolved", q.get("resolved") == "ADVANC",
+                       f"resolved={q.get('resolved')}")
+    except Exception as e:
+        fails += check("add_advanc", False, f"err: {e}")
+
+    # 'add NOPE' — unresolved on both sides; must report failure cleanly.
+    try:
+        q, _ = query(base, secret, "add NOPE")
+        fails += check("add_nope/unresolved", q.get("resolved") is None,
+                       f"resolved={q.get('resolved')}")
+        fails += check("add_nope/source_none", q.get("source") is None,
+                       f"source={q.get('source')}")
+    except Exception as e:
+        fails += check("add_nope", False, f"err: {e}")
+
+    return fails
+
+
 def suite_sector_coverage(base, secret):
     section("Sector classification coverage")
     fails = 0
@@ -546,6 +599,7 @@ def main():
     total_fails += suite_sector_coverage(base, secret)
     total_fails += suite_global(base, secret)
     total_fails += suite_global_single(base, secret)
+    total_fails += suite_watchlist_global(base, secret)
     total_fails += suite_single_stock(base, secret)
     total_fails += suite_static_cards(base, secret)
     total_fails += suite_ath_regression(base, secret)

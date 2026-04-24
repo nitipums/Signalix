@@ -632,6 +632,24 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
             signal = await loop.run_in_executor(None, load_signal_from_firestore, _db, sym)
         return {"kind": "detail", "signal": _signal_snapshot(signal) if signal else None}
 
+    # Watchlist dispatch probe — mirrors the LINE-side add/remove
+    # resolution without touching Firestore. Lets e2e verify that
+    # "add BTC" / "remove SPX" route to the global path while "add ADVANC"
+    # still resolves to the SET path, all without needing a user_id.
+    if c.startswith("add ") or c.startswith("remove "):
+        op, _, raw = c.partition(" ")
+        raw = raw.strip()
+        if is_global_code(raw):
+            return {"kind": f"watchlist_{op}", "raw": raw,
+                    "resolved": raw.upper(), "source": "global"}
+        from data import resolve_symbol as _rs
+        sym = _rs(raw)
+        if sym:
+            return {"kind": f"watchlist_{op}", "raw": raw,
+                    "resolved": sym, "source": "set"}
+        return {"kind": f"watchlist_{op}", "raw": raw,
+                "resolved": None, "source": None}
+
     # Single asset lookup — global takes precedence so typing "BTC" / "SPX" /
     # "GOOG" hits the global detail card, not a SET ticker (there IS a SET
     # retail ticker named GLOBAL that would otherwise hijack it).
@@ -1765,25 +1783,53 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         if not wl:
             reply_text(reply_token, "Watchlist ว่างเปล่า\nพิมพ์ add {ชื่อหุ้น} เพื่อเพิ่มหุ้น\nเช่น: add PTT")
             return
+
+        # Split the saved list into SET tickers vs global codes. SET signals
+        # come from the in-memory cache first (fast), Firestore second
+        # (re-hydrates after a cold start). Globals fetch live yfinance in
+        # parallel — the snapshot endpoint can't serve them because we may
+        # not have scanned globals recently, and cached snapshot data can
+        # be minutes stale during heavy market hours.
+        set_codes = [c for c in wl if not is_global_code(c)]
+        global_codes = [c for c in wl if is_global_code(c)]
+
         cached = {s.symbol: s for s in _last_signals}
-        wl_signals = [cached[sym] for sym in wl if sym in cached]
-        uncached = [sym for sym in wl if sym not in cached]
+        wl_signals = [cached[sym] for sym in set_codes if sym in cached]
+        uncached = [sym for sym in set_codes if sym not in cached]
         if uncached and FIRESTORE_AVAILABLE and _db:
             fs_sigs = await loop.run_in_executor(
                 None, lambda: [load_signal_from_firestore(_db, s) for s in uncached]
             )
             wl_signals.extend(s for s in fs_sigs if s)
-        if not wl_signals:
+
+        global_assets = []
+        if global_codes:
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _fetch_all():
+                with ThreadPoolExecutor(max_workers=4) as ex:
+                    return [a for a in ex.map(fetch_global_asset, global_codes) if a]
+
+            global_assets = await loop.run_in_executor(None, _fetch_all)
+
+        if not wl_signals and not global_assets:
             reply_text(reply_token, "ไม่มีข้อมูลหุ้นใน Watchlist ขณะนี้")
             return
-        card = build_watchlist_carousel(wl_signals)
-        reply_flex(reply_token, f"📌 Watchlist ({len(wl_signals)} หุ้น)", card)
+        card = build_watchlist_carousel(wl_signals, global_assets=global_assets)
+        total = len(wl_signals) + len(global_assets)
+        reply_flex(reply_token, f"📌 Watchlist ({total} หุ้น)", card)
 
     # ── Watchlist: add ──
     elif cmd.startswith("add ") or cmd.startswith("เพิ่ม "):
         parts = text.split(" ", 1)
         raw = parts[1].strip() if len(parts) > 1 else ""
-        symbol = resolve_symbol(raw)
+        # Global code takes precedence for the same reason as single-stock
+        # dispatch — type 'add BTC' and it should land in the watchlist as
+        # "BTC" (global), not bounce because BTC isn't a SET ticker.
+        if is_global_code(raw):
+            symbol = raw.strip().upper()
+        else:
+            symbol = resolve_symbol(raw)
         if not symbol:
             reply_text(reply_token, f'ไม่พบหุ้น "{raw.upper()}"')
             return
@@ -1797,7 +1843,10 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     elif cmd.startswith("remove ") or cmd.startswith("ลบ "):
         parts = text.split(" ", 1)
         raw = parts[1].strip() if len(parts) > 1 else ""
-        symbol = resolve_symbol(raw)
+        if is_global_code(raw):
+            symbol = raw.strip().upper()
+        else:
+            symbol = resolve_symbol(raw)
         if not symbol:
             reply_text(reply_token, f'ไม่พบหุ้น "{raw.upper()}"')
             return
