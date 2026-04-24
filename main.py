@@ -509,12 +509,13 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
 
     # Global watchlist (US + Asia indexes + ETFs + US stocks + crypto)
     if c in ("global", "world", "g", "ตลาดโลก", "กลอบอล"):
+        from data import GLOBAL_SYMBOLS
         snap = await loop.run_in_executor(None, fetch_global_snapshot)
         ordered = sorted(snap.items(), key=lambda kv: -(kv[1].get("change_pct") or 0))
         return {
             "kind": "global",
             "count": len(snap),
-            "configured": len(__import__("data").GLOBAL_SYMBOLS),
+            "configured": len(GLOBAL_SYMBOLS),
             "top_5_up": [
                 {"code": code, "class": d["class"], "close": d["close"],
                  "change_pct": d["change_pct"]}
