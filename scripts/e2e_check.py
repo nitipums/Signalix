@@ -322,6 +322,71 @@ def suite_global(base, secret):
     return fails
 
 
+def suite_global_single(base, secret):
+    """Phase 1 Commit 2 — tap-to-detail / direct-text single global asset."""
+    section("Global single-asset card (tap / direct text)")
+    fails = 0
+
+    # BTC: crypto path, price-formatting branch, should always return data.
+    try:
+        q, dt = query(base, secret, "BTC")
+        fails += check("btc/kind", q.get("kind") == "global_single",
+                       f"kind={q.get('kind')}")
+        fails += check("btc/code", q.get("code") == "BTC", f"code={q.get('code')}")
+        asset = q.get("asset") or {}
+        fails += check("btc/class", asset.get("class") == "crypto",
+                       f"class={asset.get('class')}")
+        fails += check("btc/has_price", (asset.get("close") or 0) > 0,
+                       f"close={asset.get('close')}")
+        fails += check("btc/has_52w_range",
+                       (asset.get("week52_high") or 0) > (asset.get("week52_low") or 0),
+                       f"52w {asset.get('week52_low')} → {asset.get('week52_high')}")
+    except Exception as e:
+        fails += check("btc", False, f"err: {e}")
+
+    # SPX: index path — yfinance returns 0 volume for indexes; card must
+    # still render, just without a volume number. `/test/query` returns
+    # asset["volume"] == 0 for this case — that's fine, the card renderer
+    # handles the "—" display.
+    try:
+        q, _ = query(base, secret, "SPX")
+        fails += check("spx/kind", q.get("kind") == "global_single",
+                       f"kind={q.get('kind')}")
+        asset = q.get("asset") or {}
+        fails += check("spx/class", asset.get("class") == "index",
+                       f"class={asset.get('class')}")
+        fails += check("spx/has_price", (asset.get("close") or 0) > 0,
+                       f"close={asset.get('close')}")
+    except Exception as e:
+        fails += check("spx", False, f"err: {e}")
+
+    # GOOG: stock path — should have volume > 0 (unlike indexes).
+    try:
+        q, _ = query(base, secret, "GOOG")
+        fails += check("goog/kind", q.get("kind") == "global_single",
+                       f"kind={q.get('kind')}")
+        asset = q.get("asset") or {}
+        fails += check("goog/class", asset.get("class") == "stock",
+                       f"class={asset.get('class')}")
+        fails += check("goog/has_volume", (asset.get("volume") or 0) > 0,
+                       f"volume={asset.get('volume')}")
+    except Exception as e:
+        fails += check("goog", False, f"err: {e}")
+
+    # "GLOBAL" must NOT hijack the SET retail ticker — the `global` command
+    # dispatch in /test/query fires first (handles the list bubble case), so
+    # typing "GLOBAL" here should return kind=global (the bulk snapshot),
+    # not kind=global_single. Guards against the dispatch order regressing.
+    try:
+        q, _ = query(base, secret, "global")
+        fails += check("global_keyword/still_list", q.get("kind") == "global",
+                       f"typing 'global' should show the list, got kind={q.get('kind')}")
+    except Exception as e:
+        fails += check("global_keyword", False, f"err: {e}")
+
+    return fails
+
+
 def suite_sector_coverage(base, secret):
     section("Sector classification coverage")
     fails = 0
@@ -480,6 +545,7 @@ def main():
     total_fails += suite_sector_drill(base, secret)
     total_fails += suite_sector_coverage(base, secret)
     total_fails += suite_global(base, secret)
+    total_fails += suite_global_single(base, secret)
     total_fails += suite_single_stock(base, secret)
     total_fails += suite_static_cards(base, secret)
     total_fails += suite_ath_regression(base, secret)

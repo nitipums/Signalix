@@ -711,6 +711,76 @@ GLOBAL_SYMBOLS: dict[str, dict] = {
 }
 
 
+def is_global_code(text: str) -> bool:
+    """True if text (case-insensitive, trimmed) matches a GLOBAL_SYMBOLS code."""
+    if not text:
+        return False
+    return text.strip().upper() in GLOBAL_SYMBOLS
+
+
+def fetch_global_asset(code: str) -> Optional[dict]:
+    """Richer single-asset fetch for the tap-to-detail card.
+
+    Returns all of fetch_global_snapshot's fields plus day_high/low,
+    week52_high/low, and volume. One ticker, single HTTP call. Used when a
+    user taps a row on the Global Snapshot card or types a global code
+    directly in chat.
+
+    Returns None if the code isn't known or yfinance returns no data.
+    """
+    import yfinance as yf
+
+    code = (code or "").strip().upper()
+    meta = GLOBAL_SYMBOLS.get(code)
+    if not meta:
+        return None
+    try:
+        # 1y history gives us the 52W range + comfortable day data margin.
+        df = yf.Ticker(meta["yf"]).history(period="1y", auto_adjust=False)
+        if df is None or df.empty:
+            logger.warning("fetch_global_asset(%s): empty dataframe", code)
+            return None
+        df = df.dropna(subset=["Close"])
+        if df.empty:
+            return None
+
+        last_row = df.iloc[-1]
+        close = float(last_row["Close"])
+        prev = float(df["Close"].iloc[-2]) if len(df) >= 2 else close
+        chg = round((close - prev) / prev * 100, 2) if prev else 0.0
+
+        # 52W range. "Close" alone loses intraday highs/lows, so use High/Low.
+        week52_high = float(df["High"].max()) if "High" in df else close
+        week52_low = float(df["Low"].min()) if "Low" in df else close
+
+        # Day range from the latest bar.
+        day_high = float(last_row.get("High", close))
+        day_low = float(last_row.get("Low", close))
+
+        # Volume — crypto volumes are in USD notional, stocks/ETFs in shares.
+        # yfinance index tickers (^GSPC etc.) often return 0 volume; we just
+        # show blank in the card when that happens.
+        vol = float(last_row.get("Volume", 0) or 0)
+
+        return {
+            "code": code,
+            "yf": meta["yf"],
+            "name": meta["name"],
+            "class": meta["class"],
+            "close": close,
+            "change_pct": chg,
+            "day_high": day_high,
+            "day_low": day_low,
+            "week52_high": week52_high,
+            "week52_low": week52_low,
+            "volume": vol,
+            "scanned_at": datetime.now(BANGKOK_TZ).isoformat(),
+        }
+    except Exception as exc:
+        logger.warning("fetch_global_asset(%s / %s) failed: %s", code, meta["yf"], exc)
+        return None
+
+
 def fetch_global_snapshot() -> dict[str, dict]:
     """Fetch latest price + change% for every asset in GLOBAL_SYMBOLS.
 
