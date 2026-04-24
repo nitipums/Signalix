@@ -684,17 +684,26 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
     }
 
 
-def build_watchlist_carousel(signals: list[StockSignal]) -> dict:
-    """Build a carousel of stock cards for the user's watchlist (max 10, with remove buttons)."""
-    if not signals:
+def build_watchlist_carousel(signals: list[StockSignal],
+                             global_assets: list[dict] | None = None) -> dict:
+    """Build a carousel of watchlist cards. Mixes SET stock signals with
+    non-SET global assets (indexes / ETFs / US stocks / crypto) in the same
+    carousel. SET bubbles come first (Minervini context), then globals.
+    LINE enforces max 12 bubbles per carousel — we cap at 10 overall to
+    stay well within the 50KB envelope.
+    """
+    global_assets = global_assets or []
+    if not signals and not global_assets:
         return {
             "type": "bubble", "size": "mega",
             "body": {"type": "box", "layout": "vertical", "contents": [
                 {"type": "text", "text": "📌 Watchlist ว่างเปล่า", "weight": "bold", "size": "md", "color": "#FFFFFF"},
-                {"type": "text", "text": "พิมพ์ add {ชื่อหุ้น} เพื่อเพิ่ม เช่น add PTT", "size": "sm", "color": "#7F8C8D", "wrap": True, "margin": "sm"},
+                {"type": "text", "text": "พิมพ์ add {ชื่อหุ้น} เพื่อเพิ่ม เช่น add PTT หรือ add BTC", "size": "sm", "color": "#7F8C8D", "wrap": True, "margin": "sm"},
             ], "backgroundColor": "#0D0D1A", "paddingAll": "20px"},
         }
-    bubbles = [build_single_stock_card(s, in_watchlist=True) for s in signals[:10]]
+    bubbles = [build_single_stock_card(s, in_watchlist=True) for s in signals]
+    bubbles.extend(build_global_single_card(a, in_watchlist=True) for a in global_assets)
+    bubbles = bubbles[:10]
     if len(bubbles) == 1:
         return bubbles[0]
     return {"type": "carousel", "contents": bubbles}
@@ -1020,7 +1029,7 @@ def build_global_snapshot_card(snapshot: dict[str, dict]) -> dict:
     }
 
 
-def build_global_single_card(asset: dict) -> dict:
+def build_global_single_card(asset: dict, in_watchlist: bool = False) -> dict:
     """Detail bubble for a single non-SET asset (index / ETF / US stock /
     crypto). No Minervini stage or pattern — those categories don't
     translate across asset classes — just the reference levels a user
@@ -1030,6 +1039,7 @@ def build_global_single_card(asset: dict) -> dict:
       • 52W range + % from 52W high (ATH proximity)
       • volume (blank for indexes where yfinance returns 0)
       • "View on TradingView" external link
+      • "+ Watchlist" / "− Remove" toggle (in_watchlist=True flips the label)
 
     asset shape: output of data.fetch_global_asset(code).
     """
@@ -1150,8 +1160,18 @@ def build_global_single_card(asset: dict) -> dict:
                  "action": {"type": "uri", "label": "📊 Open in TradingView",
                             "uri": tv_url}},
                 {"type": "button", "style": "link", "height": "sm",
-                 "action": {"type": "message", "label": "← Back to Global",
-                            "text": "global"}},
+                 "action": {"type": "message",
+                            "label": ("− Remove" if in_watchlist else "＋ Watchlist"),
+                            "text": f"{'remove' if in_watchlist else 'add'} {code}"}},
+                # Back to Global only when the user came from a bulk view;
+                # in the watchlist carousel it'd look out of place next to
+                # the Remove button.
+                *(
+                    [{"type": "button", "style": "link", "height": "sm",
+                      "action": {"type": "message",
+                                 "label": "← Back to Global", "text": "global"}}]
+                    if not in_watchlist else []
+                ),
             ],
         },
     }
