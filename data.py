@@ -679,8 +679,11 @@ GLOBAL_SYMBOLS: dict[str, dict] = {
     "KOSPI":   {"yf": "^KS11",      "name": "KOSPI (Korea)",            "class": "index"},
     "NI225":   {"yf": "^N225",      "name": "Nikkei 225 (Japan)",       "class": "index"},
     "HSI":     {"yf": "^HSI",       "name": "Hang Seng (Hong Kong)",    "class": "index"},
-    "VNINDEX": {"yf": "^VNI",       "name": "VN-Index (Vietnam)",       "class": "index"},
     "SSE":     {"yf": "000001.SS",  "name": "SSE Composite (Shanghai)", "class": "index"},
+    # VNINDEX intentionally omitted — yfinance has no reliable coverage for
+    # the Vietnamese market (`^VNI`, `^VNINDEX`, `VNINDEX.VN`, `VN30.VN`
+    # all return 0 rows / 404). Restore in Phase 3 via a dedicated SEA
+    # market API (HOSE data feed or TradingView scraper).
 
     # ── ETFs ──
     "QQQ":     {"yf": "QQQ",        "name": "Invesco QQQ (Nasdaq 100)",    "class": "etf"},
@@ -711,14 +714,17 @@ GLOBAL_SYMBOLS: dict[str, dict] = {
 def fetch_global_snapshot() -> dict[str, dict]:
     """Fetch latest price + change% for every asset in GLOBAL_SYMBOLS.
 
-    Per-ticker yf.Ticker().history(period='5d') in a thread pool — mirrors
-    fetch_indexes_with_history / fetch_sector_index_prices pattern because
-    batch yf.download is unreliable for mixed US + Asian tickers. ~28 symbols
-    in parallel → ~3-5s wall time.
+    Two-phase fetch to work around a known yfinance 1.3.x threading race:
+    concurrent yf.Ticker().history() calls collide on yfinance's internal
+    sqlite cache and raise "database is locked". We do a parallel pass
+    first (fast, ~3-5 s), then retry any failures sequentially (reliable,
+    adds ~0.5 s per retry). Observed locally: ~1-2 of 25 tickers need the
+    retry under typical thread contention.
 
     Returns:
         {code: {name, class, close, change_pct, scanned_at}} for symbols that
-        returned data; failures are logged and silently dropped.
+        returned data. Failures surviving the sequential retry are logged at
+        WARN and dropped (card just won't show them).
     """
     import yfinance as yf
     from concurrent.futures import ThreadPoolExecutor
@@ -726,19 +732,18 @@ def fetch_global_snapshot() -> dict[str, dict]:
     result: dict[str, dict] = {}
     now = datetime.now(BANGKOK_TZ).isoformat()
 
-    def _fetch(item):
-        code, meta = item
+    def _fetch_one(code: str, meta: dict):
         try:
             df = yf.Ticker(meta["yf"]).history(period="5d", auto_adjust=False)
             if df is None or df.empty:
-                return code, None
+                return None
             df = df.dropna(subset=["Close"])
             if df.empty:
-                return code, None
+                return None
             close = float(df["Close"].iloc[-1])
             prev = float(df["Close"].iloc[-2]) if len(df) >= 2 else close
             chg = round((close - prev) / prev * 100, 2) if prev else 0.0
-            return code, {
+            return {
                 "name": meta["name"],
                 "class": meta["class"],
                 "close": close,
@@ -746,15 +751,31 @@ def fetch_global_snapshot() -> dict[str, dict]:
                 "scanned_at": now,
             }
         except Exception as exc:
-            logger.warning("fetch_global_snapshot(%s / %s) failed: %s", code, meta["yf"], exc)
-            return code, None
+            logger.debug("fetch_global_snapshot(%s / %s) attempt failed: %s",
+                         code, meta["yf"], exc)
+            return None
 
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        for code, data in ex.map(_fetch, GLOBAL_SYMBOLS.items()):
+    # Phase 1 — parallel pass. 4 workers (down from 8) to reduce sqlite
+    # cache contention without giving up meaningful parallelism.
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for code, data in ex.map(
+            lambda item: (item[0], _fetch_one(*item)),
+            GLOBAL_SYMBOLS.items(),
+        ):
             if data:
                 result[code] = data
 
-    logger.info("fetch_global_snapshot: %d/%d assets fetched", len(result), len(GLOBAL_SYMBOLS))
+    # Phase 2 — sequential retry for anything the parallel pass missed.
+    missing = [c for c in GLOBAL_SYMBOLS if c not in result]
+    for code in missing:
+        data = _fetch_one(code, GLOBAL_SYMBOLS[code])
+        if data:
+            result[code] = data
+        else:
+            logger.warning("fetch_global_snapshot(%s) failed both attempts", code)
+
+    logger.info("fetch_global_snapshot: %d/%d assets fetched (phase1=parallel, phase2 retried %d)",
+                len(result), len(GLOBAL_SYMBOLS), len(missing))
     return result
 
 
