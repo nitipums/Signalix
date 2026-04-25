@@ -494,16 +494,79 @@ async def test_compare(symbol: str, x_scan_secret: Optional[str] = Header(defaul
     except Exception as exc:
         out["yfinance"] = {"source": "yfinance", "error": str(exc)}
 
-    # Ratio: <1.0 → Settrade history is lower (dividend-adjusted appearance).
+    # BigQuery — what's stored in our own historical cache?
+    try:
+        from data import load_all_ohlcv_from_bq, BQ_AVAILABLE
+        if BQ_AVAILABLE:
+            bq_data = await loop.run_in_executor(
+                None, lambda: load_all_ohlcv_from_bq(lookback_days=400),
+            )
+            df_bq = bq_data.get(symbol)
+            out["bigquery"] = _summarise(df_bq, "bigquery(merged_400d)")
+        else:
+            out["bigquery"] = {"source": "bigquery", "error": "bq_unavailable"}
+    except Exception as exc:
+        out["bigquery"] = {"source": "bigquery", "error": str(exc)}
+
+    # Merged dataframe — exactly what the scan pipeline produces. Replicates
+    # the Settrade + BQ merge from fetch_all_stocks lines 1371-1373.
+    try:
+        st_df_for_merge = None
+        bq_df_for_merge = None
+        try:
+            from settrade_client import get_ohlcv as st_get_ohlcv2
+            st_df_for_merge = await loop.run_in_executor(None, st_get_ohlcv2, symbol, "1Y")
+        except Exception:
+            pass
+        try:
+            from data import load_all_ohlcv_from_bq, BQ_AVAILABLE as _bq_ok
+            if _bq_ok:
+                bq_data2 = await loop.run_in_executor(
+                    None, lambda: load_all_ohlcv_from_bq(lookback_days=400),
+                )
+                bq_df_for_merge = bq_data2.get(symbol)
+        except Exception:
+            pass
+
+        if st_df_for_merge is not None and bq_df_for_merge is not None:
+            import pandas as pd
+            combined = pd.concat([bq_df_for_merge, st_df_for_merge])
+            combined = combined[~combined.index.duplicated(keep="last")]
+            combined = combined.sort_index()
+            out["merged"] = _summarise(combined, "merged(bq+settrade)")
+        elif st_df_for_merge is not None:
+            out["merged"] = _summarise(st_df_for_merge, "merged(settrade-only,no-bq)")
+        elif bq_df_for_merge is not None:
+            out["merged"] = _summarise(bq_df_for_merge, "merged(bq-only,no-settrade)")
+        else:
+            out["merged"] = {"source": "merged", "error": "neither_source_available"}
+    except Exception as exc:
+        out["merged"] = {"source": "merged", "error": str(exc)}
+
+    # Ratios for at-a-glance comparison.
     st = out.get("settrade", {})
     yf_ = out.get("yfinance", {})
+    bq = out.get("bigquery", {})
+    mg = out.get("merged", {})
+    diagnoses = []
     if st.get("high_52w") and yf_.get("high_52w"):
         out["ratio_settrade_over_yf"] = round(st["high_52w"] / yf_["high_52w"], 4)
-        out["interpretation"] = (
-            "ratio < 0.95 = Settrade history dividend-adjusted relative to yfinance unadj"
-            if out["ratio_settrade_over_yf"] < 0.95 else
-            "ratio ~1.0 = both sources agree (no significant divergence)"
-        )
+    if mg.get("high_52w") and st.get("high_52w"):
+        out["ratio_merged_over_settrade"] = round(mg["high_52w"] / st["high_52w"], 4)
+        if mg["high_52w"] != st["high_52w"]:
+            diagnoses.append(
+                f"merged({mg['high_52w']}) ≠ settrade({st['high_52w']}) — "
+                f"BQ contributing different historical highs"
+            )
+    if bq.get("high_52w") and st.get("high_52w"):
+        out["ratio_bq_over_settrade"] = round(bq["high_52w"] / st["high_52w"], 4)
+        if abs(bq["high_52w"] - st["high_52w"]) > 0.01 * st["high_52w"]:
+            diagnoses.append(
+                f"BQ({bq['high_52w']}) differs from Settrade({st['high_52w']}) by "
+                f"{(bq['high_52w']/st['high_52w']-1)*100:+.1f}% — BQ history is "
+                f"{'higher' if bq['high_52w'] > st['high_52w'] else 'lower'}"
+            )
+    out["diagnoses"] = diagnoses or ["all sources agree"]
     return out
 
 
