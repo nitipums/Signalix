@@ -1757,14 +1757,38 @@ def build_explain_card(metric: str, explanation: str) -> dict:
 
 
 def build_guide_carousel() -> dict:
-    """4-bubble carousel: Quick Reference first, then Stage / Pattern / Score+Volume."""
+    """5-bubble onboarding carousel covering every Signalix feature so a
+    first-time user can scroll through and understand what's available:
+
+      1. Quick Reference   — every text command grouped by category
+      2. Stage Analysis    — Minervini stages 1-4 + Weakening modifier
+      3. Pattern Guide     — breakout / attempt / VCP / consolidating
+      4. Global Assets     — 'global' card + tap-to-detail + watchlist
+      5. Score & Volume    — how stocks are ranked
+
+    Order is intentional: WHAT (commands) → HOW each domain works (stages,
+    patterns, globals) → HOW the ranking is computed.
+    """
+    # ── Bubble 1: Quick Reference ───────────────────────────────────
+    # Compact section headers between command rows so the bubble reads
+    # as four small categories instead of one long flat list.
+    def _section(label: str, color: str = "#F39C12") -> dict:
+        return {
+            "type": "text", "text": label, "size": "xs",
+            "weight": "bold", "color": color,
+            "margin": "md",
+        }
+
     quickref_bubble = {
         "type": "bubble",
         "size": "mega",
         "header": {
             "type": "box",
             "layout": "vertical",
-            "contents": [{"type": "text", "text": "⚡ Quick Reference", "weight": "bold", "size": "lg", "color": "#FFFFFF"}],
+            "contents": [
+                {"type": "text", "text": "⚡ Quick Reference", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+                {"type": "text", "text": "Tap any command to run it", "size": "xs", "color": "#7F8C8D"},
+            ],
             "backgroundColor": "#0D0D1A",
             "paddingAll": "16px",
         },
@@ -1773,27 +1797,32 @@ def build_guide_carousel() -> dict:
             "layout": "vertical",
             "spacing": "none",
             "contents": [
+                _section("MARKET OVERVIEW"),
                 _cmd_row("market", "Market Breadth"),
-                {"type": "separator"},
                 _cmd_row("index", "SET50/MAI/sSET"),
-                {"type": "separator"},
                 _cmd_row("sector", "Sector Trends + Indexes"),
-                {"type": "separator"},
-                _cmd_row("subsector", "Subsector Breakdown (25 codes)"),
-                {"type": "separator"},
-                _cmd_row("breakout", "Breakout Stocks"),
-                {"type": "separator"},
-                _cmd_row("vcp", "VCP Setups"),
-                {"type": "separator"},
+                _cmd_row("subsector", "Subsector Breakdown"),
+
+                _section("STOCK PATTERNS"),
+                _cmd_row("breakout", "Confirmed Breakouts"),
+                _cmd_row("attempt", "Breakout Attempts ⚡ NEW"),
                 _cmd_row("ath", "ATH Breakout"),
-                {"type": "separator"},
+                _cmd_row("vcp", "VCP Setups"),
+
+                _section("STAGES"),
                 _cmd_row("stage2", "Stage 2 Stocks"),
-                {"type": "separator"},
-                _cmd_row("stage1", "Stage 1 Stocks"),
-                {"type": "separator"},
+                _cmd_row("weakening", "Stage 2 Weakening ⚠ NEW"),
+                _cmd_row("stage1", "Stage 1 (Basing)"),
+
+                _section("GLOBAL & PERSONAL", "#1ABC9C"),
+                _cmd_row("global", "World/Crypto Snapshot 🌏 NEW"),
                 _cmd_row("watchlist", "Your Watchlist"),
-                {"type": "separator"},
                 _cmd_row("score", "My Captain Score"),
+
+                {"type": "separator", "margin": "md"},
+                {"type": "text",
+                 "text": "💡 Type any ticker (ADVANC, BTC, SPX, GOOG…) for instant detail",
+                 "size": "xxs", "color": "#7F8C8D", "wrap": True, "margin": "sm"},
             ],
             "paddingAll": "16px",
         },
@@ -1823,11 +1852,13 @@ def build_guide_carousel() -> dict:
                 {"type": "separator"},
                 _guide_row("⚪ Stage 1", "Basing — สะสมตัว รอ breakout", "#95A5A6", cmd="stage1"),
                 _guide_row("🟢 Stage 2", "Uptrend ✅ — โซนซื้อที่ดีที่สุด", "#27AE60", cmd="stage2"),
+                _guide_row("🟢 Stage 2 ⚠", "Uptrend แต่ราคาหลุด SMA50 — ระวัง", "#F39C12", cmd="weakening"),
                 _guide_row("🟡 Stage 3", "Topping ⚠️ — ระวัง smart money ขาย", "#E67E22", cmd="stage3"),
                 _guide_row("🔴 Stage 4", "Downtrend ❌ — หลีกเลี่ยง", "#E74C3C", cmd="stage4"),
                 {"type": "separator"},
                 {"type": "text", "text": "Stage 2 เงื่อนไข:", "weight": "bold", "size": "xs", "color": "#27AE60"},
                 {"type": "text", "text": "ราคา > MA150 > MA200\nMA200 กำลังขึ้น\nราคา ≥ 52W low × 1.25\nราคา ≥ 52W high × 0.75", "size": "xxs", "color": "#555555", "wrap": True},
+                {"type": "text", "text": "⚠ Weakening: stage 2 ทุกข้อยังผ่าน แต่ราคาวันนี้ต่ำกว่า SMA50 — โมเมนตัมเริ่มอ่อน, ดูเป็นสัญญาณก่อน Stage 3", "size": "xxs", "color": "#F39C12", "wrap": True, "margin": "sm"},
             ],
             "paddingAll": "16px",
         },
@@ -1850,12 +1881,57 @@ def build_guide_carousel() -> dict:
             "contents": [
                 _guide_row("🚀 Breakout", "ราคา > 52W high + Vol ≥ 1.4x avg", "#27AE60", cmd="breakout"),
                 _guide_row("🏆 ATH Breakout", "Breakout + ใกล้/สูงกว่า All-Time High", "#F39C12", cmd="ath"),
+                _guide_row("⚡ Breakout Attempt", "High > pivot + Vol ≥ 1.4x แต่ close ยังไม่ยืนยัน", "#16A085", cmd="attempt"),
                 _guide_row("🔍 VCP", "ความผันผวนหดตัว 3+ ครั้ง + Vol แห้ง", "#2980B9", cmd="vcp"),
                 _guide_row("🎯 VCP Low Cheat", "Entry ที่ low ของ VCP contraction สุดท้าย", "#1ABC9C", cmd="vcp low cheat"),
                 _guide_row("⚙️ Consolidating", "Base หดตัว รอ breakout", "#95A5A6", cmd="consolidating"),
                 _guide_row("📉 Going Down", "Stage 4 downtrend ชัดเจน", "#E74C3C"),
                 {"type": "separator"},
                 {"type": "text", "text": "Strategy: ซื้อ Breakout/VCP ใน Stage 2 เท่านั้น", "size": "xxs", "color": "#7F8C8D", "wrap": True},
+                {"type": "text", "text": "⚡ Breakout Attempt = หุ้นกำลัง breakout intraday แต่ close ยังต่ำกว่า pivot — มอนิเตอร์ก่อน confirm", "size": "xxs", "color": "#16A085", "wrap": True, "margin": "sm"},
+            ],
+            "paddingAll": "16px",
+        },
+    }
+
+    # ── Bubble 4: Global Assets ─────────────────────────────────────
+    # Three example tickers from different asset classes — taps right
+    # through to the new tap-to-detail card so users learn the gesture.
+    global_bubble = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "🌏 Global Assets", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+                {"type": "text", "text": "World indexes · ETFs · US stocks · crypto", "size": "xxs", "color": "#B2DFDB"},
+            ],
+            "backgroundColor": "#006064",
+            "paddingAll": "16px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": "Type 'global' for the full snapshot card",
+                 "size": "xs", "color": "#7F8C8D", "wrap": True},
+                {"type": "separator"},
+                {"type": "text", "text": "📊 Indexes", "weight": "bold", "size": "xs", "color": "#1A237E"},
+                _guide_row("SPX / NDX / DJI", "S&P 500 / Nasdaq 100 / Dow", "#1A237E", cmd="SPX"),
+                _guide_row("KOSPI / NI225 / HSI", "Korea / Japan / Hong Kong", "#1A237E", cmd="KOSPI"),
+                {"type": "text", "text": "📈 ETFs", "weight": "bold", "size": "xs", "color": "#006064", "margin": "sm"},
+                _guide_row("SMH / SPY / QQQ", "Semis / S&P / Nasdaq ETFs", "#006064", cmd="SMH"),
+                _guide_row("ARKK / ARKW", "Innovation / Internet ETFs", "#006064", cmd="ARKK"),
+                {"type": "text", "text": "🏢 US Stocks", "weight": "bold", "size": "xs", "color": "#0D47A1", "margin": "sm"},
+                _guide_row("NVDA / AAPL / GOOG", "NVIDIA / Apple / Alphabet", "#0D47A1", cmd="NVDA"),
+                _guide_row("TSLA / MSFT / META", "Tesla / Microsoft / Meta", "#0D47A1", cmd="TSLA"),
+                {"type": "text", "text": "₿ Crypto", "weight": "bold", "size": "xs", "color": "#F7931A", "margin": "sm"},
+                _guide_row("BTC / ETH / SOL", "Bitcoin / Ether / Solana", "#F7931A", cmd="BTC"),
+                {"type": "separator"},
+                {"type": "text", "text": "💡 Tap any code above for instant detail card.\nAdd to watchlist: 'add BTC' / 'add SPX'.\nSee everything: 'global'.",
+                 "size": "xxs", "color": "#7F8C8D", "wrap": True, "margin": "sm"},
             ],
             "paddingAll": "16px",
         },
@@ -1880,7 +1956,9 @@ def build_guide_carousel() -> dict:
                 _guide_row("Stage 2", "+40 คะแนน", "#27AE60"),
                 _guide_row("ATH Breakout", "+25 คะแนน", "#F39C12"),
                 _guide_row("Breakout", "+20 คะแนน", "#27AE60"),
+                _guide_row("VCP Low Cheat", "+18 คะแนน", "#1ABC9C"),
                 _guide_row("VCP", "+15 คะแนน", "#2980B9"),
+                _guide_row("Breakout Attempt", "+12 คะแนน", "#16A085"),
                 _guide_row("Volume bonus", "สูงสุด +15 คะแนน", "#E67E22"),
                 _guide_row("52W proximity", "สูงสุด +20 คะแนน", "#9B59B6"),
                 {"type": "separator"},
@@ -1891,7 +1969,9 @@ def build_guide_carousel() -> dict:
         },
     }
 
-    return {"type": "carousel", "contents": [quickref_bubble, stage_bubble, pattern_bubble, score_vol_bubble]}
+    return {"type": "carousel", "contents": [
+        quickref_bubble, stage_bubble, pattern_bubble, global_bubble, score_vol_bubble,
+    ]}
 
 
 def build_stage_cycle_card() -> dict:
@@ -2116,14 +2196,17 @@ def build_welcome_card(display_name: str) -> dict:
                     "layout": "vertical",
                     "spacing": "xs",
                     "contents": [
-                        _cmd_row("ตลาด", "ภาพรวมตลาด"),
-                        _cmd_row("ดัชนี", "SET50/MAI/sSET"),
+                        _cmd_row("ตลาด", "ภาพรวมตลาด SET"),
                         _cmd_row("sector", "แนวโน้มกลุ่มหุ้น"),
                         _cmd_row("breakout", "หุ้น Breakout"),
+                        _cmd_row("global", "🌏 ตลาดโลก / Crypto"),
                         _cmd_row("watchlist", "รายการโปรด"),
-                        _cmd_row("help", "ดูคำสั่งทั้งหมด"),
+                        _cmd_row("guide", "📖 คู่มือทั้งหมด"),
                     ],
                 },
+                {"type": "text",
+                 "text": "💡 พิมพ์ ticker ตรงๆ เช่น ADVANC, BTC, SPX เพื่อดูรายละเอียดทันที",
+                 "size": "xxs", "color": "#7F8C8D", "wrap": True, "margin": "md"},
             ],
             "paddingAll": "16px",
         },
