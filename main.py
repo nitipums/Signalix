@@ -203,6 +203,48 @@ _EXPLANATIONS: dict[str, str] = {
         "สัญญาณแข็งแกร่งมาก — ไม่มี overhead supply\n\n"
         "🏆 หุ้นที่ทำ ATH breakout มักวิ่งต่อได้ดี"
     ),
+    "explain breakout_attempt": (
+        "Breakout Attempt ⚡\n\n"
+        "High ของวันใดวันหนึ่งใน 3 วันล่าสุด ทะลุ pivot 52 สัปดาห์\n"
+        "พร้อม volume ≥ 1.4x — แต่ close ยังไม่ confirm เหนือ pivot\n"
+        "(ราคายังอยู่ภายใน 3% จาก attempt high)\n\n"
+        "⚡ จับสัญญาณ breakout ระหว่างวันที่ยังไม่ปิดยืนยัน\n"
+        "เป็น signal อ่อนกว่า Breakout จริง — มอนิเตอร์รอ confirm"
+    ),
+    "explain attempt": (
+        "Breakout Attempt ⚡\n\n"
+        "High ของวันใดวันหนึ่งใน 3 วันล่าสุด ทะลุ pivot 52 สัปดาห์\n"
+        "พร้อม volume ≥ 1.4x — แต่ close ยังไม่ confirm เหนือ pivot\n"
+        "(ราคายังอยู่ภายใน 3% จาก attempt high)\n\n"
+        "⚡ จับสัญญาณ breakout ระหว่างวันที่ยังไม่ปิดยืนยัน\n"
+        "เป็น signal อ่อนกว่า Breakout จริง — มอนิเตอร์รอ confirm"
+    ),
+    "explain weakening": (
+        "Stage 2 ⚠ Weakening\n\n"
+        "หุ้นยังผ่าน Minervini Stage 2 ทุกข้อ (MA150/200 alignment)\n"
+        "แต่ราคาวันนี้หลุดต่ำกว่า SMA50\n\n"
+        "⚠️ โมเมนตัมระยะสั้นเริ่มอ่อน — เป็นสัญญาณเตือนก่อน Stage 3\n"
+        "ใช้สำหรับเตรียม trim position หรือ trailing stop"
+    ),
+    "explain stage_weakening": (
+        "Stage 2 ⚠ Weakening\n\n"
+        "หุ้นยังผ่าน Minervini Stage 2 ทุกข้อ (MA150/200 alignment)\n"
+        "แต่ราคาวันนี้หลุดต่ำกว่า SMA50\n\n"
+        "⚠️ โมเมนตัมระยะสั้นเริ่มอ่อน — เป็นสัญญาณเตือนก่อน Stage 3\n"
+        "ใช้สำหรับเตรียม trim position หรือ trailing stop"
+    ),
+    "explain global": (
+        "Global Assets 🌏\n\n"
+        "ติดตามตลาดโลก ETFs หุ้นสหรัฐฯ และ crypto\n"
+        "ในที่เดียวพร้อม SET\n\n"
+        "📊 พิมพ์ 'global' — ดู snapshot 25 ตัวเรียงตาม % เปลี่ยน\n"
+        "⚡ พิมพ์ ticker ตรงๆ (BTC, SPX, NVDA…) — เปิด detail card\n"
+        "📌 'add BTC' — เพิ่มเข้า watchlist เดียวกับหุ้น SET\n\n"
+        "Indexes: SPX/NDX/DJI/KOSPI/NI225/HSI/SSE\n"
+        "ETFs: SMH/SPY/QQQ/ARKK/ARKW/IWM\n"
+        "US Stocks: NVDA/AAPL/GOOG/TSLA/MSFT/META/AMD/NFLX/GEV\n"
+        "Crypto: BTC/ETH/SOL"
+    ),
     "explain vcp": (
         "VCP – Volatility Contraction Pattern\n\n"
         "รูปแบบที่ราคาหดตัวแคบลงเรื่อยๆ (3+ contractions)\n"
@@ -489,6 +531,10 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
         sigs = [s for s in _last_signals if s.pattern in ("breakout", "ath_breakout")]
         sigs.sort(key=lambda s: s.strength_score, reverse=True)
         return summary(sigs, "Breakout")
+    if c in ("attempt", "attempts", "breakout attempt", "breakout_attempt", "breakout attempts"):
+        sigs = [s for s in _last_signals if s.pattern == "breakout_attempt"]
+        sigs.sort(key=lambda s: s.strength_score, reverse=True)
+        return summary(sigs, "Breakout Attempt")
     if c in ("ath", "all time high", "ath breakout"):
         sigs = [s for s in _last_signals if s.pattern == "ath_breakout"]
         sigs.sort(key=lambda s: s.strength_score, reverse=True)
@@ -501,6 +547,11 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
         sigs = [s for s in _last_signals if s.pattern == "consolidating"]
         sigs.sort(key=lambda s: s.strength_score, reverse=True)
         return summary(sigs, "Consolidating")
+    if c in ("weakening", "weak", "stage2 weak", "stage2 weakening"):
+        sigs = [s for s in _last_signals
+                if s.stage == 2 and getattr(s, "stage_weakening", False)]
+        sigs.sort(key=lambda s: s.strength_score, reverse=True)
+        return summary(sigs, "Stage 2 Weakening")
 
     # Sector list (e.g. "sector FINCIAL")
     if c.startswith("sector ") and len(c) > 7:
@@ -1863,6 +1914,13 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         signals = _get_signals_for(pattern="breakout") + _get_signals_for(pattern="ath_breakout")
         _reply_stock_list(reply_token, signals, "🚀 Breakout Stocks")
 
+    elif cmd in ("attempt", "attempts", "breakout attempt", "breakout_attempt", "breakout attempts"):
+        # Stocks that touched the 52-bar pivot intraday on ≥1.4× volume but
+        # haven't confirmed on the close yet. Weaker signal than 'breakout'
+        # but catches in-progress moves that the strict close-rule misses.
+        signals = _get_signals_for(pattern="breakout_attempt")
+        _reply_stock_list(reply_token, signals, "⚡ Breakout Attempts")
+
     elif cmd in ("ath", "all time high", "ath breakout"):
         signals = _get_signals_for(pattern="ath_breakout")
         _reply_stock_list(reply_token, signals, "🏆 ATH Breakout Stocks")
@@ -1870,6 +1928,14 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     elif cmd in ("vcp",):
         signals = _get_signals_for(pattern="vcp") + _get_signals_for(pattern="vcp_low_cheat")
         _reply_stock_list(reply_token, signals, "🔍 VCP Pattern Stocks")
+
+    elif cmd in ("weakening", "weak", "stage2 weak", "stage2 weakening"):
+        # Stage 2 stocks with close < SMA50 — uptrend structure intact but
+        # near-term momentum has rolled over. Useful watch-list for "trim"
+        # candidates before stage 3 transitions.
+        signals = [s for s in _get_signals_for(stage=2)
+                   if getattr(s, "stage_weakening", False)]
+        _reply_stock_list(reply_token, signals, "⚠️ Stage 2 — Weakening")
 
     elif cmd in ("vcp low cheat", "vcp_low_cheat", "low cheat"):
         signals = _get_signals_for(pattern="vcp_low_cheat")

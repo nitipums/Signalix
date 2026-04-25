@@ -241,8 +241,18 @@ def suite_patterns(base, secret):
     section("List cards — patterns")
     fails = 0
     pattern_counts = {}
-    for cmd, label in (("breakout", "breakout"), ("ath", "ath_breakout"),
-                       ("vcp", "vcp_group"), ("consolidating", "consolidating")):
+    # Cover every list-style pattern command that the guide carousel
+    # references. 'attempt' and 'weakening' were added alongside the
+    # scanner calibration / guide refresh — guide rows tap-fire these
+    # commands, so they MUST dispatch correctly even if the count is 0.
+    for cmd, label in (
+        ("breakout", "breakout"),
+        ("attempt", "breakout_attempt"),
+        ("ath", "ath_breakout"),
+        ("vcp", "vcp_group"),
+        ("consolidating", "consolidating"),
+        ("weakening", "stage2_weakening"),
+    ):
         try:
             q, _ = query(base, secret, cmd)
             cnt = q.get("count", 0)
@@ -252,7 +262,8 @@ def suite_patterns(base, secret):
                            f"count={cnt} first={first}")
         except Exception as e:
             fails += check(cmd, False, f"err: {e}")
-    # consolidating must be non-empty on any trading day (it's the default classification for most stocks)
+    # consolidating must be non-empty on any trading day (it's the default
+    # classification for most stocks)
     fails += check("consolidating/non_empty",
                    pattern_counts.get("consolidating", 0) > 0,
                    f"count={pattern_counts.get('consolidating')}")
