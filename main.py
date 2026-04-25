@@ -334,18 +334,21 @@ async def _warm_from_firestore():
                 _dsm.update(loaded_map)
                 logger.info("Sector map loaded: %d symbols with subsector data", len(loaded_map))
 
-        # ── Signals: BQ first (guaranteed durable), Firestore fallback ──────────
-        if BQ_AVAILABLE:
-            bq_signals = await loop.run_in_executor(None, load_latest_signals_from_bq)
-            if bq_signals:
-                _last_signals = bq_signals
-                logger.info("Signals loaded from BQ: %d stocks", len(bq_signals))
-
-        if not _last_signals and FIRESTORE_AVAILABLE and _db:
+        # ── Signals: Firestore first (full StockSignal dataclass via __dict__),
+        # BQ fallback only when Firestore unavailable. BQ scan_results table
+        # has a fixed schema that lags new dataclass fields by one
+        # ALTER TABLE migration; Firestore stays in sync automatically.
+        if FIRESTORE_AVAILABLE and _db:
             fs_signals = await loop.run_in_executor(None, load_signals_from_firestore, _db)
             if fs_signals:
                 _last_signals = fs_signals
-                logger.info("Signals loaded from Firestore (BQ fallback): %d stocks", len(fs_signals))
+                logger.info("Signals loaded from Firestore: %d stocks", len(fs_signals))
+
+        if not _last_signals and BQ_AVAILABLE:
+            bq_signals = await loop.run_in_executor(None, load_latest_signals_from_bq)
+            if bq_signals:
+                _last_signals = bq_signals
+                logger.info("Signals loaded from BQ (Firestore fallback): %d stocks", len(bq_signals))
 
         # ── Scan state (breadth/indexes/sectors): always from Firestore ──────────
         if FIRESTORE_AVAILABLE and _db:
@@ -416,14 +419,15 @@ async def health():
     global _last_signals
     if not _last_signals:
         loop = asyncio.get_running_loop()
-        if BQ_AVAILABLE:
-            bq = await loop.run_in_executor(None, load_latest_signals_from_bq)
-            if bq:
-                _last_signals = bq
-        if not _last_signals and FIRESTORE_AVAILABLE and _db:
+        # Firestore first — has full StockSignal dataclass; BQ fallback.
+        if FIRESTORE_AVAILABLE and _db:
             fs = await loop.run_in_executor(None, load_signals_from_firestore, _db)
             if fs:
                 _last_signals = fs
+        if not _last_signals and BQ_AVAILABLE:
+            bq = await loop.run_in_executor(None, load_latest_signals_from_bq)
+            if bq:
+                _last_signals = bq
     return {
         "status": "ok",
         "time": datetime.now(BANGKOK_TZ).isoformat(),
@@ -750,14 +754,20 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
     global _last_signals
     loop = asyncio.get_running_loop()
     if not _last_signals:
-        if BQ_AVAILABLE:
-            bq_sigs = await loop.run_in_executor(None, load_latest_signals_from_bq)
-            if bq_sigs:
-                _last_signals = bq_sigs
-        if not _last_signals and FIRESTORE_AVAILABLE and _db:
+        # Prefer Firestore — it serializes the full StockSignal dataclass via
+        # signal.__dict__, so new fields (sub_stage, pivot_price, pivot_stop,
+        # sma10/20, sma200_roc20) are present on lazy-load. The BQ scan_results
+        # table has a fixed schema that lags new fields by one ALTER TABLE
+        # migration, so loading from BQ leaves new fields at default 0.0/"".
+        # BQ stays as a fallback for the rare case Firestore is unavailable.
+        if FIRESTORE_AVAILABLE and _db:
             fs_sigs = await loop.run_in_executor(None, load_signals_from_firestore, _db)
             if fs_sigs:
                 _last_signals = fs_sigs
+        if not _last_signals and BQ_AVAILABLE:
+            bq_sigs = await loop.run_in_executor(None, load_latest_signals_from_bq)
+            if bq_sigs:
+                _last_signals = bq_sigs
 
     c = cmd.lower().strip()
 
@@ -1334,14 +1344,20 @@ async def test_invariants(x_scan_secret: Optional[str] = Header(default=None)):
     global _last_signals
     loop = asyncio.get_running_loop()
     if not _last_signals:
-        if BQ_AVAILABLE:
-            bq_sigs = await loop.run_in_executor(None, load_latest_signals_from_bq)
-            if bq_sigs:
-                _last_signals = bq_sigs
-        if not _last_signals and FIRESTORE_AVAILABLE and _db:
+        # Prefer Firestore — it serializes the full StockSignal dataclass via
+        # signal.__dict__, so new fields (sub_stage, pivot_price, pivot_stop,
+        # sma10/20, sma200_roc20) are present on lazy-load. The BQ scan_results
+        # table has a fixed schema that lags new fields by one ALTER TABLE
+        # migration, so loading from BQ leaves new fields at default 0.0/"".
+        # BQ stays as a fallback for the rare case Firestore is unavailable.
+        if FIRESTORE_AVAILABLE and _db:
             fs_sigs = await loop.run_in_executor(None, load_signals_from_firestore, _db)
             if fs_sigs:
                 _last_signals = fs_sigs
+        if not _last_signals and BQ_AVAILABLE:
+            bq_sigs = await loop.run_in_executor(None, load_latest_signals_from_bq)
+            if bq_sigs:
+                _last_signals = bq_sigs
 
     sigs = list(_last_signals)
     total = len(sigs)
@@ -2064,16 +2080,17 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     # _last_signals directly — an empty list here produces "no stock" cards even
     # though Firestore/BQ have fresh signals.
     if not _last_signals:
-        if BQ_AVAILABLE:
-            bq_sigs = await loop.run_in_executor(None, load_latest_signals_from_bq)
-            if bq_sigs:
-                _last_signals = bq_sigs
-                logger.info("_handle_text_query: lazy-reloaded %d signals from BQ", len(bq_sigs))
-        if not _last_signals and FIRESTORE_AVAILABLE and _db:
+        # Firestore first — has full StockSignal dataclass; BQ fallback.
+        if FIRESTORE_AVAILABLE and _db:
             fs_sigs = await loop.run_in_executor(None, load_signals_from_firestore, _db)
             if fs_sigs:
                 _last_signals = fs_sigs
                 logger.info("_handle_text_query: lazy-reloaded %d signals from Firestore", len(fs_sigs))
+        if not _last_signals and BQ_AVAILABLE:
+            bq_sigs = await loop.run_in_executor(None, load_latest_signals_from_bq)
+            if bq_sigs:
+                _last_signals = bq_sigs
+                logger.info("_handle_text_query: lazy-reloaded %d signals from BQ", len(bq_sigs))
 
     # ── Explain metric ⓘ ──
     if cmd.startswith("explain "):
