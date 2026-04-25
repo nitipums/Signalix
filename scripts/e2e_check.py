@@ -409,8 +409,22 @@ def suite_pivot(base, secret):
     """
     section("Pivot point — buy trigger + setup stop")
     fails = 0
-    PIVOT_SCOPE = {"STAGE_1_PREP", "STAGE_2_EARLY",
-                   "STAGE_2_RUNNING", "STAGE_2_PULLBACK"}
+    # Pivot scope per the 2-layer refactor: 5 actionable buy-side states
+    # (PREP + the 4 non-warning Stage 2 sub-stages). Legacy STAGE_2_*
+    # names retained so old Firestore docs loaded mid-migration still
+    # pass — those docs got pivot computed under the previous scope.
+    PIVOT_SCOPE = {
+        "STAGE_1_PREP",
+        # New Stage 2 actionable states (OVEREXTENDED excluded — warning)
+        "STAGE_2_IGNITION",
+        "STAGE_2_CONTRACTION",
+        "STAGE_2_PIVOT_READY",
+        "STAGE_2_MARKUP",
+        # Legacy aliases (kept in scope for backward compat)
+        "STAGE_2_EARLY",
+        "STAGE_2_RUNNING",
+        "STAGE_2_PULLBACK",
+    }
     try:
         q, _ = query(base, secret, "pivot")
         fails += check("pivot/dispatched", q.get("kind") == "list",
