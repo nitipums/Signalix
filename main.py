@@ -416,6 +416,97 @@ async def health():
     }
 
 
+@app.get("/test/compare/{symbol}")
+async def test_compare(symbol: str, x_scan_secret: Optional[str] = Header(default=None)):
+    """Compare Settrade vs yfinance OHLCV side-by-side for one SET ticker.
+
+    Diagnostic for the SYMC/JMT stage-2 false-positive: SET dividend-paying
+    stocks show very different historical 52W highs between Settrade
+    (`normalized=False`) and yfinance (`auto_adjust=False`). Hypothesis:
+    Settrade returns broker-display prices (retroactively dividend-adjusted)
+    despite the flag, while yfinance returns raw traded prices. This
+    endpoint dumps both so we can confirm on a third stock (e.g. KBANK
+    with known large dividends) before changing the primary data source.
+
+    Returns: dict with settrade and yfinance subsections, each showing
+    latest 3 bars + computed SMA50/150/200 + 52W high + bar count, plus
+    a ratio = settrade.high_52w / yfinance.high_52w. Ratio < 1.0 means
+    Settrade's history is dividend-adjusted relative to yfinance.
+    """
+    settings = get_settings()
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
+
+    symbol = symbol.upper().strip()
+    out: dict = {"symbol": symbol}
+    loop = asyncio.get_running_loop()
+
+    def _summarise(df, label):
+        if df is None or len(df) == 0:
+            return {"source": label, "bars": 0, "error": "empty"}
+        try:
+            close = df["Close"]
+            sma50 = float(close.rolling(50).mean().iloc[-1]) if len(df) >= 50 else None
+            sma150 = float(close.rolling(150).mean().iloc[-1]) if len(df) >= 150 else None
+            sma200 = float(close.rolling(200).mean().iloc[-1]) if len(df) >= 200 else None
+            high_52w = float(df["High"].iloc[-min(252, len(df)):].max())
+            last3 = df.tail(3)
+            tail = [{
+                "date": str(idx.date()) if hasattr(idx, "date") else str(idx),
+                "open": round(float(row["Open"]), 4),
+                "high": round(float(row["High"]), 4),
+                "low": round(float(row["Low"]), 4),
+                "close": round(float(row["Close"]), 4),
+            } for idx, row in last3.iterrows()]
+            return {
+                "source": label,
+                "bars": len(df),
+                "first_date": str(df.index[0].date()) if hasattr(df.index[0], "date") else str(df.index[0]),
+                "last_date": str(df.index[-1].date()) if hasattr(df.index[-1], "date") else str(df.index[-1]),
+                "last_close": round(float(close.iloc[-1]), 4),
+                "high_52w": round(high_52w, 4),
+                "sma50": round(sma50, 4) if sma50 is not None else None,
+                "sma150": round(sma150, 4) if sma150 is not None else None,
+                "sma200": round(sma200, 4) if sma200 is not None else None,
+                "tail3": tail,
+            }
+        except Exception as exc:
+            return {"source": label, "error": str(exc)}
+
+    # Settrade
+    try:
+        from settrade_client import get_ohlcv as st_get_ohlcv, is_api_available
+        if is_api_available():
+            df_st = await loop.run_in_executor(None, st_get_ohlcv, symbol, "1Y")
+            out["settrade"] = _summarise(df_st, "settrade(normalized=False)")
+        else:
+            out["settrade"] = {"source": "settrade", "error": "api_unavailable"}
+    except Exception as exc:
+        out["settrade"] = {"source": "settrade", "error": str(exc)}
+
+    # yfinance unadjusted
+    try:
+        import yfinance as yf
+        df_yf = await loop.run_in_executor(
+            None, lambda: yf.Ticker(f"{symbol}.BK").history(period="1y", auto_adjust=False).dropna(subset=["Close"]),
+        )
+        out["yfinance"] = _summarise(df_yf, "yfinance(auto_adjust=False)")
+    except Exception as exc:
+        out["yfinance"] = {"source": "yfinance", "error": str(exc)}
+
+    # Ratio: <1.0 → Settrade history is lower (dividend-adjusted appearance).
+    st = out.get("settrade", {})
+    yf_ = out.get("yfinance", {})
+    if st.get("high_52w") and yf_.get("high_52w"):
+        out["ratio_settrade_over_yf"] = round(st["high_52w"] / yf_["high_52w"], 4)
+        out["interpretation"] = (
+            "ratio < 0.95 = Settrade history dividend-adjusted relative to yfinance unadj"
+            if out["ratio_settrade_over_yf"] < 0.95 else
+            "ratio ~1.0 = both sources agree (no significant divergence)"
+        )
+    return out
+
+
 @app.get("/test/signal/{symbol}")
 async def test_signal(symbol: str):
     """Return the cached StockSignal for a symbol — both in-memory and Firestore.
