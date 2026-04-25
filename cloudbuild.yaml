@@ -42,20 +42,20 @@ steps:
       - -c
       - |
         set -e
-        URL=$(gcloud run services describe signalix \
+        URL=$$(gcloud run services describe signalix \
           --region=asia-southeast1 --format='value(status.url)')
-        SECRET=$(gcloud secrets versions access latest --secret=SCAN_SECRET)
-        echo "Triggering warmup scan at $URL/scan"
+        SECRET=$$(gcloud secrets versions access latest --secret=SCAN_SECRET)
+        echo "Triggering warmup scan at $${URL}/scan"
         # Retry — the new revision may still be rolling out or
         # finishing its first scan when we arrive.
         for i in 1 2 3 4 5; do
-          code=$(curl -sS -o /tmp/scan.out -w "%{http_code}" -X POST "$URL/scan" \
-            -H "x-scan-secret: $SECRET" \
+          code=$$(curl -sS -o /tmp/scan.out -w "%{http_code}" -X POST "$${URL}/scan" \
+            -H "x-scan-secret: $${SECRET}" \
             -H "content-type: application/json" \
             --max-time 300 \
             -d '{"scan_type":"full","mode":"full","broadcast":false}' || echo "curl_err")
-          echo "attempt=$i http=$code"
-          if [ "$code" = "200" ]; then
+          echo "attempt=$${i} http=$${code}"
+          if [ "$${code}" = "200" ]; then
             cat /tmp/scan.out
             exit 0
           fi
