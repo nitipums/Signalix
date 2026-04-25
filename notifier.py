@@ -1235,11 +1235,28 @@ def build_index_carousel(indexes: dict[str, dict]) -> dict:
             pct_from_high = data.get("pct_from_52w_high", 0.0)
             implication = data.get("implication", "")
 
-            # Stage badge
+            # Stage badge + pattern (index-aware pattern detection from
+            # analyze_index — same name space as stocks, but the volume
+            # gate is relaxed because index volume is aggregate).
+            stage_pattern_row = []
             if stage:
                 stage_color = STAGE_COLORS.get(stage, "#7F8C8D")
-                body_contents.append({"type": "text", "text": f"Stage {stage}",
-                                       "size": "xs", "color": stage_color, "weight": "bold"})
+                stage_pattern_row.append({
+                    "type": "text", "text": f"Stage {stage}",
+                    "size": "xs", "color": stage_color, "weight": "bold", "flex": 1,
+                })
+            pattern = data.get("pattern")
+            if pattern in ("breakout", "ath_breakout", "breakout_attempt", "vcp", "vcp_low_cheat"):
+                pcolor = PATTERN_COLOR.get(pattern, "#7F8C8D")
+                plabel = PATTERN_LABEL.get(pattern, pattern)
+                stage_pattern_row.append({
+                    "type": "text", "text": plabel,
+                    "size": "xs", "color": pcolor, "weight": "bold",
+                    "flex": 2, "align": "end",
+                })
+            if stage_pattern_row:
+                body_contents.append({"type": "box", "layout": "horizontal",
+                                       "contents": stage_pattern_row})
 
             body_contents.append({"type": "separator"})
 

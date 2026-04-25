@@ -206,12 +206,18 @@ def classify_stage(df: pd.DataFrame) -> int:
 
 # ─── Pattern detection ─────────────────────────────────────────────────────────
 
-def detect_pattern(df: pd.DataFrame, stage: int, ath_override: Optional[float] = None) -> tuple[str, dict]:
+def detect_pattern(df: pd.DataFrame, stage: int, ath_override: Optional[float] = None,
+                   is_index: bool = False) -> tuple[str, dict]:
     """
-    Detect the most significant pattern for a stock.
+    Detect the most significant pattern for a stock or index.
 
     Returns (pattern_name, details_dict).
     ath_override: true all-time high from Firestore cache; falls back to window max if None.
+    is_index: when True, drops the 1.4× volume gate on breakout / breakout_attempt.
+              Index volume is aggregate (sum of constituents) and doesn't carry the
+              same directional confirmation signal as individual-stock volume —
+              relying on it gates legitimate price-only breakouts that are
+              perfectly visible on a chart. Stocks keep the volume gate.
     """
     if len(df) < 60:
         return ("going_down" if stage == 4 else "consolidating"), {}
@@ -256,8 +262,10 @@ def detect_pattern(df: pd.DataFrame, stage: int, ath_override: Optional[float] =
             return "vcp", vcp_details
 
         # ── Breakout Detection ──
+        # vol_threshold: 0.0 for indexes (price-only), 1.4× for stocks.
+        vol_threshold = 0.0 if is_index else 1.4
         pivot_high = float(high.iloc[-52:-1].max()) if len(df) > 52 else float(high.iloc[:-1].max())
-        is_breakout = c > pivot_high and volume_ratio >= 1.4
+        is_breakout = c > pivot_high and volume_ratio >= vol_threshold
 
         if is_breakout:
             is_ath = c >= ath * 0.99  # within 1% of all-time high counts
@@ -269,13 +277,13 @@ def detect_pattern(df: pd.DataFrame, stage: int, ath_override: Optional[float] =
             return ("ath_breakout" if is_ath else "breakout"), details
 
         # ── Breakout Attempt ──
-        # Any of the last 3 bars had HIGH > 52-bar pivot on ≥1.4× volume
-        # (a genuine attempt at breakout), AND current close is still
-        # within 3% of that attempt's high (price hasn't fully reversed
-        # away from resistance). Captures the in-progress "broke out
-        # intraday, now pausing near resistance" state — a signal that
-        # the strict close-based rule flashes for a single bar and then
-        # drops, which is too brittle for scheduled-scan alerting.
+        # Any of the last 3 bars had HIGH > 52-bar pivot on qualifying volume
+        # (≥1.4× for stocks, any vol for indexes), AND current close is still
+        # within 3% of that attempt's high (price hasn't fully reversed away
+        # from resistance). Captures the in-progress "broke out intraday,
+        # now pausing near resistance" state — a signal that the strict
+        # close-based rule flashes for a single bar and then drops, which is
+        # too brittle for scheduled-scan alerting.
         vol_avg = _vol_avg(df)
         attempt = None  # {"bar": int-from-end, "high": float, "vol_ratio": float}
         for k in range(1, 4):  # check today (k=1), yesterday (k=2), 2-days-ago (k=3)
@@ -291,7 +299,7 @@ def detect_pattern(df: pd.DataFrame, stage: int, ath_override: Optional[float] =
             if pivot_slice_end <= pivot_slice_start:
                 continue
             bar_pivot = float(high.iloc[pivot_slice_start:pivot_slice_end].max())
-            if bar_high > bar_pivot and bar_vr >= 1.4:
+            if bar_high > bar_pivot and bar_vr >= vol_threshold:
                 attempt = {"bars_ago": k - 1, "high": bar_high,
                            "pivot": bar_pivot, "vol_ratio": bar_vr}
                 break  # take the most recent qualifying attempt
@@ -478,8 +486,11 @@ def _strength_score(df: pd.DataFrame, stage: int, pattern: str, volume_ratio: fl
 
 # ─── Full scan ─────────────────────────────────────────────────────────────────
 
-def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = None) -> Optional[StockSignal]:
-    """Analyse a single stock and return a StockSignal, or None if data is insufficient."""
+def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = None,
+               is_index: bool = False) -> Optional[StockSignal]:
+    """Analyse a single stock or index and return a StockSignal, or None if
+    data is insufficient. is_index relaxes the breakout volume gate — see
+    detect_pattern for the rationale."""
     if df is None or len(df) < 60:
         return None
 
@@ -507,7 +518,7 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
     volume_ratio = vol_now / vol_avg_20 if vol_avg_20 > 0 else 1.0
 
     stage = classify_stage(df)
-    pattern, bp_details = detect_pattern(df, stage, ath_override=ath_override)
+    pattern, bp_details = detect_pattern(df, stage, ath_override=ath_override, is_index=is_index)
 
     lookback = min(252, len(df))
     high_52w = float(high.iloc[-lookback:].max())
@@ -648,6 +659,18 @@ def analyze_index(df: pd.DataFrame, name: str) -> dict:
     # Minervini stage for the index
     stage = classify_stage(df) if len(close) >= 200 else None
 
+    # Pattern detection for indexes — uses the same detect_pattern logic
+    # the stocks use, but with is_index=True so the volume gate is dropped
+    # (index volume is aggregate, not directional). Falls back to None for
+    # short histories where stage couldn't be classified.
+    pattern: Optional[str] = None
+    pattern_details: dict = {}
+    if stage is not None:
+        try:
+            pattern, pattern_details = detect_pattern(df, stage, is_index=True)
+        except Exception as exc:
+            logger.warning("analyze_index(%s): pattern detection failed: %s", name, exc)
+
     pct_from_52w_high = round((cur_close / high_52w - 1) * 100, 1) if high_52w else 0.0
 
     macd_bullish_cross = cur_hist > 0 and prev_hist <= 0
@@ -674,6 +697,19 @@ def analyze_index(df: pd.DataFrame, name: str) -> dict:
         parts.append(f"⚠️ RSI Overbought ({cur_rsi:.0f})")
     elif cur_rsi < 30:
         parts.append(f"🟢 RSI Oversold ({cur_rsi:.0f})")
+    # Append pattern badge after the momentum read so the implication
+    # string ends with the user-facing call ('Breakout', 'Breakout
+    # Attempt'). 'consolidating' / 'going_down' are noise here — only
+    # surface the actionable patterns.
+    if pattern in ("breakout", "ath_breakout", "breakout_attempt", "vcp", "vcp_low_cheat"):
+        pattern_thai = {
+            "breakout": "🚀 Breakout",
+            "ath_breakout": "🏆 ATH Breakout",
+            "breakout_attempt": "⚡ Breakout Attempt",
+            "vcp": "🔄 VCP",
+            "vcp_low_cheat": "🔄 VCP Low Cheat",
+        }
+        parts.append(pattern_thai.get(pattern, pattern))
 
     return {
         "name": name,
@@ -688,8 +724,10 @@ def analyze_index(df: pd.DataFrame, name: str) -> dict:
         "above_ma150": above_ma150,
         "above_ma200": above_ma200,
         "ma200_rising": ma200_rising,
-        # Stage
+        # Stage + pattern (pattern is index-aware: no volume gate)
         "stage": stage,
+        "pattern": pattern,
+        "breakout_details": pattern_details,
         # 52W range
         "high_52w": round(high_52w, 2),
         "low_52w": round(low_52w, 2),
