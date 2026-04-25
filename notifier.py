@@ -1091,7 +1091,7 @@ def build_global_single_card(asset: dict, in_watchlist: bool = False) -> dict:
     tv_url = f"https://www.tradingview.com/symbols/{tv_symbol}/"
 
     def _kv_row(label: str, value: str, value_color: str = "#FFFFFF",
-                label_color: str = "#AAAAAA") -> dict:
+                label_color: str = "#9E9E9E") -> dict:
         return {
             "type": "box", "layout": "horizontal",
             "paddingTop": "4px", "paddingBottom": "4px",
@@ -1114,6 +1114,12 @@ def build_global_single_card(asset: dict, in_watchlist: bool = False) -> dict:
     else:
         vol_display = f"{vol:,.0f}"
 
+    # Conditional emphasis: red when from-high < -10% (drawdown), green
+    # when from-low > 10% (extended). Otherwise use the default bright
+    # white text on the dark body. The previous default of pure white
+    # was ALSO used as the conditional fallback, but the body bg back
+    # then was unset so it rendered white-on-white — invisible. Body
+    # is now explicitly dark (set below) so #FFFFFF reads correctly.
     body_rows = [
         _kv_row("Day range",
                 f"{_fmt_price(asset.get('day_low', 0))} → {_fmt_price(asset.get('day_high', 0))}"),
@@ -1139,7 +1145,12 @@ def build_global_single_card(asset: dict, in_watchlist: bool = False) -> dict:
             ],
         },
         "body": {
+            # Dark body background matches Signalix's other detail cards
+            # (single_stock_card, watchlist_stock_card, breadth) — the
+            # previous unset background was rendering as default white,
+            # which made the white-text values invisible.
             "type": "box", "layout": "vertical", "paddingAll": "14px",
+            "backgroundColor": "#1A1A1A",
             "spacing": "none",
             "contents": [
                 # Price + change% hero row
