@@ -1328,8 +1328,6 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
     """
     results: dict[str, pd.DataFrame] = {}
 
-    bq_data = load_all_ohlcv_from_bq(lookback_days=400) if BQ_AVAILABLE else {}
-
     # --- Step 1: Settrade Open API (primary for stocks) ---
     try:
         from settrade_client import get_bulk_ohlcv, is_api_available as _st_ok
@@ -1397,28 +1395,22 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
         except Exception as exc:
             logger.warning("fetch_all_stocks: yfinance bulk fallback failed: %s", exc)
 
-    # --- Step 3: BQ history backfill ---
-    # Extend the 1Y window from Settrade/yfinance with OLDER BQ history,
-    # keeping Settrade/yfinance for overlapping dates (freshest close).
-    # BQ-only fallback is now LAST RESORT — only fires when both Settrade
-    # AND yfinance returned nothing for a stock.
-    if bq_data:
-        merged = 0
-        filled = 0
-        for sym, bq_df in bq_data.items():
-            if bq_df is None or bq_df.empty:
-                continue
-            st_df = results.get(sym)
-            if st_df is None or st_df.empty:
-                results[sym] = bq_df
-                filled += 1
-                continue
-            combined = pd.concat([bq_df, st_df])
-            combined = combined[~combined.index.duplicated(keep="last")]
-            results[sym] = combined.sort_index()
-            merged += 1
-        logger.info("fetch_all_stocks: BQ backfill — %d merged into Settrade/yf, %d BQ-only",
-                    merged, filled)
+    # --- Step 3 REMOVED: BQ history backfill ---
+    # Was: extend Settrade's 1Y with older BQ history, with BQ-only fallback
+    # for stocks Settrade missed. Removed because:
+    #   1. Settrade and yfinance index timestamps don't dedup against BQ's
+    #      (different timezone normalisation), so concat+dedup leaves both
+    #      copies in the merged dataframe — bars=624 for SYMC.
+    #   2. The 252-bar tail used by high_52w then doesn't span a full year
+    #      of unique trading dates, producing nonsense like merged-hi52=4.42
+    #      when both Settrade and yfinance individually report 4.90.
+    #   3. BQ rows for some dividend-paying stocks have rotted values from
+    #      past scans (~3-6% lower than yfinance unadj). Even when the
+    #      merge worked correctly, those polluted bars dragged SMA200 down
+    #      and produced false Stage 2 alignment.
+    # Settrade's 1Y window + yfinance fallback (Step 2) gives enough bars
+    # (~241-365) for SMA200 + 20-bar rising check. BQ stays useful for the
+    # ATH cache (separate table) — it's just not in the scan path anymore.
 
     # --- Step 4: yfinance for SET index (always) + any stocks still missing ---
     missing_stocks = [s for s in SET_STOCKS if s not in results]
