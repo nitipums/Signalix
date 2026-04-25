@@ -416,6 +416,94 @@ async def health():
     }
 
 
+@app.get("/test/coverage")
+async def test_coverage(x_scan_secret: Optional[str] = Header(default=None)):
+    """List SET_STOCKS that the most recent scan didn't classify.
+
+    Used after the BQ-merge removal to identify which 31 stocks fell out
+    of the scan. Causes are usually: insufficient bars (<60 → scan_stock
+    returns None), data freshness gate (last bar > 10 days old), or
+    Settrade + yfinance both returning empty for that ticker.
+
+    For each missing symbol, also probes both data sources to attribute
+    the cause so we can decide whether to widen the universe filter or
+    just accept the drop as genuine data scarcity.
+    """
+    settings = get_settings()
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
+
+    from data import SET_STOCKS
+    scanned = {s.symbol for s in _last_signals}
+    missing = sorted(set(SET_STOCKS) - scanned)
+
+    # For each missing symbol, classify why it's missing.
+    loop = asyncio.get_running_loop()
+    detail: list[dict] = []
+
+    def _probe(sym: str) -> dict:
+        info = {"symbol": sym}
+        # Settrade
+        try:
+            from settrade_client import get_ohlcv as st_get_ohlcv, is_api_available
+            if is_api_available():
+                df = st_get_ohlcv(sym, period="1Y")
+                info["settrade_bars"] = len(df) if df is not None else 0
+            else:
+                info["settrade_bars"] = "api_unavailable"
+        except Exception as exc:
+            info["settrade_bars"] = f"err: {exc}"
+        # yfinance
+        try:
+            import yfinance as yf
+            df = yf.Ticker(f"{sym}.BK").history(period="1y", auto_adjust=False).dropna(subset=["Close"])
+            info["yfinance_bars"] = len(df)
+            if len(df) > 0:
+                last = df.index[-1]
+                from datetime import datetime
+                import pytz
+                today = datetime.now(pytz.timezone("Asia/Bangkok")).date()
+                last_date = last.date() if hasattr(last, "date") else last
+                info["yfinance_last_date"] = str(last_date)
+                info["yfinance_age_days"] = (today - last_date).days
+        except Exception as exc:
+            info["yfinance_bars"] = f"err: {exc}"
+        # Categorise
+        st_b = info.get("settrade_bars") if isinstance(info.get("settrade_bars"), int) else 0
+        yf_b = info.get("yfinance_bars") if isinstance(info.get("yfinance_bars"), int) else 0
+        if st_b == 0 and yf_b == 0:
+            info["cause"] = "no_data_anywhere"
+        elif max(st_b, yf_b) < 60:
+            info["cause"] = "insufficient_bars"
+        elif info.get("yfinance_age_days", 0) > 10:
+            info["cause"] = "stale_data"
+        elif max(st_b, yf_b) < 200:
+            info["cause"] = "lt200_bars_no_stage_classification"
+        else:
+            info["cause"] = "unknown_check_logs"
+        return info
+
+    if missing:
+        from concurrent.futures import ThreadPoolExecutor
+        def _probe_all():
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                return list(ex.map(_probe, missing))
+        detail = await loop.run_in_executor(None, _probe_all)
+
+    # Aggregate
+    from collections import Counter
+    cause_breakdown = dict(Counter(d.get("cause", "?") for d in detail))
+
+    return {
+        "universe_total": len(SET_STOCKS),
+        "scanned_count": len(scanned),
+        "missing_count": len(missing),
+        "missing_symbols": missing,
+        "cause_breakdown": cause_breakdown,
+        "detail": detail,
+    }
+
+
 @app.get("/test/compare/{symbol}")
 async def test_compare(symbol: str, x_scan_secret: Optional[str] = Header(default=None)):
     """Compare Settrade vs yfinance OHLCV side-by-side for one SET ticker.
