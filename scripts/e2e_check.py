@@ -782,7 +782,10 @@ def suite_static_cards(base, secret):
     section("Static cards (guide/help/explain/stage picker/patterns)")
     fails = 0
     for cmd, handler in (("guide", "guide"), ("help", "help"),
-                         ("stage", "stage_picker"), ("patterns", "pattern_overview"),
+                         ("stage", "stage_picker"),
+                         ("stages", "stages_dashboard"),     # NEW — 11-row matrix
+                         ("dashboard", "stages_dashboard"),  # NEW alias
+                         ("patterns", "pattern_overview"),
                          ("explain stage2", "explain"), ("explain breakout", "explain"),
                          ("explain pivot", "explain")):
         try:

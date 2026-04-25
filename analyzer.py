@@ -484,25 +484,39 @@ _PIVOT_SUB_STAGES: frozenset = frozenset({
 def compute_pivot(df: pd.DataFrame, sub_stage: str) -> tuple[float, float]:
     """Return (pivot_price, pivot_stop) for actionable sub-stages.
 
-    pivot_price = highest high in the last 15 bars — the local resistance
-        the stock has been bumping into. For STAGE_2_PULLBACK this is the
-        peak of the pullback (the line a long entry would trigger above).
-        For STAGE_1_PREP / STAGE_2_EARLY / STAGE_2_RUNNING this is the
-        recent local resistance the stock is approaching or has already
-        broken — useful as a "next breakout level" / "re-entry on hold".
-    pivot_stop = lowest low in the last 10 bars — the floor of the
-        recent pullback, below which the setup is invalidated. Tighter
-        than the global -1.5×ATR stop on `signal.stop_loss` (which stays
-        on the dataclass for backward compat); use whichever fits the
-        user's risk tolerance.
+    PIVOT_READY uses a TIGHT 5-bar window aligned with the same
+    tightness range that classify_sub_stage uses to admit the stock
+    (`_price_tightness_5bar` < 7%). The result is a precise breakout
+    trigger that sits at the very top of the contraction — exactly
+    where a Minervini/VCP entry would fire. Stop = 5-bar low (the
+    bottom of the same contraction; a break below invalidates the
+    setup immediately).
 
-    Returns (0.0, 0.0) for sub-stages outside the actionable set so cards
-    and the `pivot` filter command know to skip those stocks.
+    Other actionable sub-stages (PREP / IGNITION / CONTRACTION /
+    MARKUP) get the wider 15-bar high / 10-bar low pivot — generic
+    local resistance, since these states aren't in a tight
+    contraction yet. Pivot is still the breakout trigger; stop is
+    where short-term momentum invalidation lives.
+
+    Returns (0.0, 0.0) for sub-stages outside the actionable set so
+    cards / filter command know to skip those stocks.
     """
     if sub_stage not in _PIVOT_SUB_STAGES or len(df) < 15:
         return 0.0, 0.0
+    # PIVOT_READY: 5-bar tight pivot (matches classify_sub_stage's
+    # tightness window). Both new constant + legacy alias get the
+    # tighter formula so old Firestore docs from before the 2-layer
+    # refactor land in a sensible range.
+    if sub_stage in (SUB_STAGE_2_PIVOT_READY, SUB_STAGE_2_PULLBACK):
+        if len(df) < 5:
+            return 0.0, 0.0
+        pivot = float(df["High"].iloc[-5:].max())
+        stop  = float(df["Low"].iloc[-5:].min())
+        return pivot, stop
+    # Other actionable states: generic 15-bar local resistance pivot
+    # with 10-bar setup-floor stop.
     pivot = float(df["High"].iloc[-15:].max())
-    stop = float(df["Low"].iloc[-10:].min())
+    stop  = float(df["Low"].iloc[-10:].min())
     return pivot, stop
 
 

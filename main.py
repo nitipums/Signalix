@@ -72,6 +72,7 @@ from notifier import (
     build_single_stock_card,
     build_stage_cycle_card,
     build_stage_picker_card,
+    build_stages_dashboard_card,
     build_performance_review_card,
     build_score_card,
     build_watchlist_carousel,
@@ -1085,8 +1086,10 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
     # Static cards — must not error even with empty state
     if c in ("guide", "คู่มือ", "explain all", "all explain"):
         return {"kind": "static", "handler": "guide"}
-    if c in ("stage", "stages", "สเตจ"):
+    if c in ("stage", "สเตจ"):
         return {"kind": "static", "handler": "stage_picker"}
+    if c in ("stages", "dashboard", "overview"):
+        return {"kind": "static", "handler": "stages_dashboard"}
     if c in ("patterns", "pattern", "รูปแบบ"):
         return {"kind": "static", "handler": "pattern_overview"}
     if c in ("subsector", "subsectors", "หมวดย่อย"):
@@ -2320,8 +2323,8 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             _guide_carousel_cache = build_guide_carousel()
         reply_flex(reply_token, "คู่มือ Signalix", _guide_carousel_cache)
 
-    # ── Stage picker ──
-    elif cmd in ("stage", "stages", "สเตจ"):
+    # ── Stage picker (singular) + Stages dashboard (plural) ──
+    elif cmd in ("stage", "stages", "dashboard", "overview", "สเตจ"):
         breadth = _last_breadth
         # Lazy-load from Firestore when this Cloud Run instance hasn't warmed yet —
         # same pattern as _last_signals. Otherwise the stage picker shows 0 per stage.
@@ -2337,7 +2340,14 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
                 _last_breadth = breadth
             except Exception as exc:
                 logger.error("compute_market_breadth on-demand failed: %s", exc)
-        reply_flex(reply_token, "เลือก Stage", build_stage_picker_card(breadth))
+        # 'stages' (plural) + 'dashboard' / 'overview' → single-bubble
+        # 11-row overview matrix. Singular 'stage' → 4-bubble picker.
+        if cmd in ("stages", "dashboard", "overview"):
+            reply_flex(reply_token, "📊 State Distribution",
+                       build_stages_dashboard_card(_last_signals, breadth))
+        else:
+            reply_flex(reply_token, "เลือก Stage",
+                       build_stage_picker_card(breadth, signals=_last_signals))
 
     # ── 52W high / low lists (tappable from market card) ──
     elif cmd in ("52wh", "52w high", "52whigh", "new highs", "new_highs"):
