@@ -367,7 +367,12 @@ def suite_global(base, secret):
                        f"kind={q.get('kind')}")
         configured = q.get("configured") or 0
         got = q.get("count") or 0
-        fails += check("global/configured>=20", configured >= 20,
+        # Tightened threshold after the 50-asset expansion (8 sections:
+        # US/Asia indexes, FX, Commodities, ETFs, US mega-cap, themes,
+        # crypto). Drop below 40 means the curated list got truncated;
+        # drop below 50 = something was deleted that probably shouldn't
+        # have been (use >= 40 to allow safe pruning of niche tickers).
+        fails += check("global/configured>=40", configured >= 40,
                        f"GLOBAL_SYMBOLS has {configured} entries")
         # yfinance occasionally fails on individual tickers — require at
         # least 75% of the curated list to return so the card isn't empty.
@@ -440,6 +445,36 @@ def suite_global_single(base, secret):
                        f"volume={asset.get('volume')}")
     except Exception as e:
         fails += check("goog", False, f"err: {e}")
+
+    # USDTHB: fx path — added with the 50-asset expansion. Confirms the
+    # new 'fx' class round-trips through fetch_global_asset + the
+    # /test/query single-asset response. Critical for Thai exporters who
+    # watch this rate as their primary macro signal.
+    try:
+        q, _ = query(base, secret, "USDTHB")
+        fails += check("usdthb/kind", q.get("kind") == "global_single",
+                       f"kind={q.get('kind')}")
+        asset = q.get("asset") or {}
+        fails += check("usdthb/class", asset.get("class") == "fx",
+                       f"class={asset.get('class')}")
+        fails += check("usdthb/has_price", (asset.get("close") or 0) > 0,
+                       f"close={asset.get('close')}")
+    except Exception as e:
+        fails += check("usdthb", False, f"err: {e}")
+
+    # GOLD: commodity path — same guard rails as fx, also new with the
+    # 50-asset expansion.
+    try:
+        q, _ = query(base, secret, "GOLD")
+        fails += check("gold/kind", q.get("kind") == "global_single",
+                       f"kind={q.get('kind')}")
+        asset = q.get("asset") or {}
+        fails += check("gold/class", asset.get("class") == "commodity",
+                       f"class={asset.get('class')}")
+        fails += check("gold/has_price", (asset.get("close") or 0) > 0,
+                       f"close={asset.get('close')}")
+    except Exception as e:
+        fails += check("gold", False, f"err: {e}")
 
     # "GLOBAL" must NOT hijack the SET retail ticker — the `global` command
     # dispatch in /test/query fires first (handles the list bubble case), so

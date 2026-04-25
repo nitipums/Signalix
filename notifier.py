@@ -959,52 +959,94 @@ def _ma_row(label: str, value: float, close: float) -> dict:
 
 
 def build_global_snapshot_card(snapshot: dict[str, dict]) -> dict:
-    """Single mega bubble — one row per global asset, TradingView-style.
+    """Bulk global view — single mega bubble organised by section.
 
-    Rows sorted by change_pct descending (biggest gainers at top, losers at
-    bottom). Each row is tappable → sends the code as a text message so the
+    With ~50 curated assets (US/Asia indexes, FX, commodities, ETFs,
+    US stocks, crypto), a flat sorted list is too noisy. Instead, render
+    each section as a labelled sub-block, with rows inside the section
+    sorted by % change. Section headers appear in GLOBAL_SECTION_ORDER.
+
+    Each row is tappable → sends the code as a text message so the
     single-asset handler can render a detail card.
 
-    snapshot shape: {code: {name, class, close, change_pct, scanned_at}}
-    produced by data.fetch_global_snapshot().
+    snapshot shape: {code: {name, class, section, close, change_pct,
+    scanned_at}} produced by data.fetch_global_snapshot().
     """
-    CLASS_ICON = {"index": "📊", "etf": "📈", "stock": "🏢", "crypto": "₿"}
+    from data import GLOBAL_SECTION_ORDER, GLOBAL_SYMBOLS
 
-    items = sorted(
-        snapshot.items(),
-        key=lambda kv: -(kv[1].get("change_pct") or 0),
-    )
-    rows: list = []
-    for code, d in items:
-        chg = d.get("change_pct") or 0.0
-        color = "#27AE60" if chg > 0 else ("#E74C3C" if chg < 0 else "#7F8C8D")
-        sign = "+" if chg > 0 else ""
-        icon = CLASS_ICON.get(d.get("class"), "•")
-        close = d.get("close") or 0.0
-        # Price formatting: crypto shows 2 decimals for high-value BTC/ETH, 4 for SOL/ALT
-        if (d.get("class") == "crypto") and close < 100:
-            price_text = f"{close:,.4f}"
-        else:
-            price_text = f"{close:,.2f}"
-        rows.append({
-            "type": "box", "layout": "horizontal",
-            "action": {"type": "message", "label": code[:20], "text": code},
-            "paddingTop": "6px", "paddingBottom": "6px",
-            "contents": [
-                {"type": "text", "text": f"{icon} {code}", "flex": 3, "size": "sm",
-                 "weight": "bold", "color": "#FFFFFF"},
-                {"type": "text", "text": d.get("name", ""), "flex": 5, "size": "xxs",
-                 "color": "#AAAAAA", "wrap": False},
-                {"type": "text", "text": price_text, "flex": 3, "size": "xs",
-                 "color": "#FFFFFF", "align": "end"},
-                {"type": "text", "text": f"{sign}{chg:.2f}%", "flex": 2, "size": "xs",
-                 "color": color, "weight": "bold", "align": "end"},
-            ],
+    # Class icons: each maps to a glyph the user sees at the start of
+    # every row. fx + commodity were added with the 50-asset expansion.
+    CLASS_ICON = {
+        "index": "📊", "etf": "📈", "stock": "🏢",
+        "crypto": "₿", "fx": "💱", "commodity": "🛢",
+    }
+
+    def _fmt_price(asset_class: str, close: float) -> str:
+        # FX rates and low-value crypto show 4 decimals; everything else 2.
+        if asset_class == "fx":
+            return f"{close:,.4f}"
+        if asset_class == "crypto" and close < 100:
+            return f"{close:,.4f}"
+        return f"{close:,.2f}"
+
+    # Group snapshot entries by section using GLOBAL_SYMBOLS as the source
+    # of truth. snapshot rows that lack a section (legacy data, recent
+    # fetch failure) drop into "Other" so they're still visible.
+    by_section: dict[str, list[tuple[str, dict]]] = {}
+    for code, d in snapshot.items():
+        section = (GLOBAL_SYMBOLS.get(code) or {}).get("section") or "other"
+        by_section.setdefault(section, []).append((code, d))
+
+    body_contents: list = []
+    total_rendered = 0
+    for section_id, section_label in GLOBAL_SECTION_ORDER:
+        items = by_section.get(section_id) or []
+        if not items:
+            continue
+        items.sort(key=lambda kv: -(kv[1].get("change_pct") or 0))
+
+        # Section header: bigger margin top so groups read as distinct blocks.
+        body_contents.append({
+            "type": "text", "text": section_label,
+            "weight": "bold", "size": "sm", "color": "#FFD54F",
+            "margin": "lg" if total_rendered else "none",
         })
-        rows.append({"type": "separator"})
+        body_contents.append({"type": "separator", "color": "#333333"})
 
-    hdr_subtitle = f"{len(items)} assets · sorted by % change"
-    if items:
+        for code, d in items:
+            chg = d.get("change_pct") or 0.0
+            color = "#27AE60" if chg > 0 else ("#E74C3C" if chg < 0 else "#7F8C8D")
+            sign = "+" if chg > 0 else ""
+            asset_class = d.get("class", "")
+            icon = CLASS_ICON.get(asset_class, "•")
+            close = d.get("close") or 0.0
+            price_text = _fmt_price(asset_class, close)
+            body_contents.append({
+                "type": "box", "layout": "horizontal",
+                "action": {"type": "message", "label": code[:20], "text": code},
+                "paddingTop": "5px", "paddingBottom": "5px",
+                "contents": [
+                    {"type": "text", "text": f"{icon} {code}", "flex": 3, "size": "sm",
+                     "weight": "bold", "color": "#FFFFFF"},
+                    {"type": "text", "text": d.get("name", ""), "flex": 5, "size": "xxs",
+                     "color": "#9E9E9E", "wrap": False},
+                    {"type": "text", "text": price_text, "flex": 3, "size": "xs",
+                     "color": "#FFFFFF", "align": "end"},
+                    {"type": "text", "text": f"{sign}{chg:.2f}%", "flex": 2, "size": "xs",
+                     "color": color, "weight": "bold", "align": "end"},
+                ],
+            })
+            total_rendered += 1
+
+    # Fall back to the empty state if nothing came through (no fetch results).
+    if not body_contents:
+        body_contents = [
+            {"type": "text", "text": "ไม่มีข้อมูลขณะนี้",
+             "size": "sm", "color": "#7F8C8D", "align": "center"},
+        ]
+
+    hdr_subtitle = f"{total_rendered} assets · grouped by section"
+    if snapshot:
         ts = next(iter(snapshot.values())).get("scanned_at", "")
         if ts:
             try:
@@ -1027,10 +1069,10 @@ def build_global_snapshot_card(snapshot: dict[str, dict]) -> dict:
         },
         "body": {
             "type": "box", "layout": "vertical", "spacing": "none",
-            "contents": rows if rows else [
-                {"type": "text", "text": "ไม่มีข้อมูลขณะนี้",
-                 "size": "sm", "color": "#7F8C8D", "align": "center"},
-            ],
+            # Dark body — matches single_stock_card et al, ensures the
+            # white text in rows reads correctly.
+            "backgroundColor": "#1A1A1A",
+            "contents": body_contents,
             "paddingAll": "12px",
         },
     }
@@ -1050,9 +1092,16 @@ def build_global_single_card(asset: dict, in_watchlist: bool = False) -> dict:
 
     asset shape: output of data.fetch_global_asset(code).
     """
-    CLASS_ICON = {"index": "📊", "etf": "📈", "stock": "🏢", "crypto": "₿"}
-    CLASS_COLOR = {"index": "#1A237E", "etf": "#006064",
-                   "stock": "#0D47A1", "crypto": "#F7931A"}
+    CLASS_ICON = {
+        "index": "📊", "etf": "📈", "stock": "🏢",
+        "crypto": "₿", "fx": "💱", "commodity": "🛢",
+    }
+    CLASS_COLOR = {
+        "index": "#1A237E", "etf": "#006064",
+        "stock": "#0D47A1", "crypto": "#F7931A",
+        "fx": "#4527A0",       # purple — distinct from index navy
+        "commodity": "#5D4037", # brown/earth — distinct from all of the above
+    }
 
     chg = asset.get("change_pct") or 0.0
     chg_color = "#27AE60" if chg > 0 else ("#E74C3C" if chg < 0 else "#7F8C8D")
@@ -1063,8 +1112,11 @@ def build_global_single_card(asset: dict, in_watchlist: bool = False) -> dict:
     icon = CLASS_ICON.get(asset_class, "•")
     accent = CLASS_COLOR.get(asset_class, "#263238")
 
-    # Price formatting: low-value crypto gets 4 decimals.
+    # Price formatting: FX rates always 4 decimals (USD/THB ≈ 36.4500 not
+    # 36.45); low-value crypto also 4 decimals; everything else 2.
     def _fmt_price(x: float) -> str:
+        if asset_class == "fx":
+            return f"{x:,.4f}"
         if asset_class == "crypto" and x < 100:
             return f"{x:,.4f}"
         return f"{x:,.2f}"
@@ -1082,6 +1134,21 @@ def build_global_single_card(asset: dict, in_watchlist: bool = False) -> dict:
     yf_tk = asset.get("yf", code)
     if asset_class == "crypto":
         tv_symbol = f"CRYPTO:{yf_tk.replace('-', '')}"
+    elif asset_class == "fx":
+        # yf 'THB=X' / 'JPY=X' → TradingView 'FX:USDTHB' / 'FX:USDJPY'.
+        # 'DX-Y.NYB' is the dollar index — TV uses 'TVC:DXY'.
+        if yf_tk == "DX-Y.NYB":
+            tv_symbol = "TVC:DXY"
+        else:
+            curr = yf_tk.replace("=X", "")
+            tv_symbol = f"FX:USD{curr}"
+    elif asset_class == "commodity":
+        # yf futures format 'GC=F' (gold), 'CL=F' (oil), 'HG=F' (copper),
+        # 'NG=F' (nat gas) → TradingView prefers 'COMEX:GC1!' / 'NYMEX:CL1!'.
+        # We use a simple TVC: prefix that TV resolves to chart-of-record.
+        tv_map = {"GC=F": "TVC:GOLD", "CL=F": "TVC:USOIL",
+                  "HG=F": "TVC:COPPER", "NG=F": "TVC:NATGAS"}
+        tv_symbol = tv_map.get(yf_tk, yf_tk.replace("=F", ""))
     elif yf_tk.startswith("^"):
         tv_symbol = f"INDEX:{yf_tk.lstrip('^')}"
     elif yf_tk.endswith(".SS"):
@@ -1906,8 +1973,9 @@ def build_guide_carousel() -> dict:
     }
 
     # ── Bubble 4: Global Assets ─────────────────────────────────────
-    # Three example tickers from different asset classes — taps right
-    # through to the new tap-to-detail card so users learn the gesture.
+    # 50 curated assets across 8 sections — Thai retail's most-watched
+    # global tickers. Each section has 1-2 example codes that tap-fire
+    # the detail card so users learn the gesture.
     global_bubble = {
         "type": "bubble",
         "size": "mega",
@@ -1915,8 +1983,8 @@ def build_guide_carousel() -> dict:
             "type": "box",
             "layout": "vertical",
             "contents": [
-                {"type": "text", "text": "🌏 Global Assets", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
-                {"type": "text", "text": "World indexes · ETFs · US stocks · crypto", "size": "xxs", "color": "#B2DFDB"},
+                {"type": "text", "text": "🌏 Global Assets (50)", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+                {"type": "text", "text": "Indexes · FX · Commodities · ETFs · Stocks · Crypto", "size": "xxs", "color": "#B2DFDB", "wrap": True},
             ],
             "backgroundColor": "#006064",
             "paddingAll": "16px",
@@ -1926,22 +1994,44 @@ def build_guide_carousel() -> dict:
             "layout": "vertical",
             "spacing": "sm",
             "contents": [
-                {"type": "text", "text": "Type 'global' for the full snapshot card",
+                {"type": "text", "text": "พิมพ์ 'global' เพื่อดูทั้งหมดเป็นกลุ่ม",
                  "size": "xs", "color": "#7F8C8D", "wrap": True},
                 {"type": "separator"},
-                {"type": "text", "text": "📊 Indexes", "weight": "bold", "size": "xs", "color": "#1A237E"},
-                _guide_row("SPX / NDX / DJI", "S&P 500 / Nasdaq 100 / Dow", "#1A237E", cmd="SPX"),
-                _guide_row("KOSPI / NI225 / HSI", "Korea / Japan / Hong Kong", "#1A237E", cmd="KOSPI"),
+
+                {"type": "text", "text": "🇺🇸 US Indexes", "weight": "bold", "size": "xs", "color": "#1A237E"},
+                _guide_row("SPX · NDX · DJI", "S&P / Nasdaq 100 / Dow", "#1A237E", cmd="NDX"),
+                _guide_row("RUT · VIX", "Small caps / Fear gauge", "#1A237E", cmd="VIX"),
+
+                {"type": "text", "text": "🌏 Asia Pacific", "weight": "bold", "size": "xs", "color": "#1A237E", "margin": "sm"},
+                _guide_row("TWII · KOSPI · NI225", "Taiwan / Korea / Japan", "#1A237E", cmd="TWII"),
+                _guide_row("HSI · SSE · NIFTY · STI · JKSE", "HK / China / India / SG / ID", "#1A237E", cmd="HSI"),
+
+                {"type": "text", "text": "💱 FX & Macro", "weight": "bold", "size": "xs", "color": "#4527A0", "margin": "sm"},
+                _guide_row("USDTHB · DXY", "USD/THB · Dollar Index", "#4527A0", cmd="USDTHB"),
+                _guide_row("USDJPY · USDCNY", "Yen / Yuan", "#4527A0", cmd="USDJPY"),
+
+                {"type": "text", "text": "🛢 Commodities", "weight": "bold", "size": "xs", "color": "#5D4037", "margin": "sm"},
+                _guide_row("GOLD · OIL · COPPER · NATGAS", "Futures (drives PTT/SET energy)", "#5D4037", cmd="GOLD"),
+
                 {"type": "text", "text": "📈 ETFs", "weight": "bold", "size": "xs", "color": "#006064", "margin": "sm"},
-                _guide_row("SMH / SPY / QQQ", "Semis / S&P / Nasdaq ETFs", "#006064", cmd="SMH"),
-                _guide_row("ARKK / ARKW", "Innovation / Internet ETFs", "#006064", cmd="ARKK"),
-                {"type": "text", "text": "🏢 US Stocks", "weight": "bold", "size": "xs", "color": "#0D47A1", "margin": "sm"},
-                _guide_row("NVDA / AAPL / GOOG", "NVIDIA / Apple / Alphabet", "#0D47A1", cmd="NVDA"),
-                _guide_row("TSLA / MSFT / META", "Tesla / Microsoft / Meta", "#0D47A1", cmd="TSLA"),
+                _guide_row("QQQ · SPY · VOO · SMH", "Nasdaq / S&P / Semis", "#006064", cmd="SMH"),
+                _guide_row("GLD · FXI · EWY · INDA", "Gold / China / Korea / India", "#006064", cmd="GLD"),
+
+                {"type": "text", "text": "🏢 US Mega-cap", "weight": "bold", "size": "xs", "color": "#0D47A1", "margin": "sm"},
+                _guide_row("NVDA · AAPL · MSFT · GOOG", "Top tech mega-caps", "#0D47A1", cmd="NVDA"),
+                _guide_row("META · TSLA · AMZN · BRK-B", "Meta / Tesla / Amazon / Berkshire", "#0D47A1", cmd="AMZN"),
+
+                {"type": "text", "text": "🏢 Themes", "weight": "bold", "size": "xs", "color": "#0D47A1", "margin": "sm"},
+                _guide_row("TSM · AMD · AVGO", "Semis (DELTA proxies)", "#0D47A1", cmd="TSM"),
+                _guide_row("JPM · V · GEV · NFLX", "Banks / Payments / Energy / Media", "#0D47A1", cmd="JPM"),
+
                 {"type": "text", "text": "₿ Crypto", "weight": "bold", "size": "xs", "color": "#F7931A", "margin": "sm"},
-                _guide_row("BTC / ETH / SOL", "Bitcoin / Ether / Solana", "#F7931A", cmd="BTC"),
+                _guide_row("BTC · ETH · SOL", "Top 3 by mcap", "#F7931A", cmd="BTC"),
+                _guide_row("BNB · XRP", "Binance / Ripple", "#F7931A", cmd="BNB"),
+
                 {"type": "separator"},
-                {"type": "text", "text": "💡 Tap any code above for instant detail card.\nAdd to watchlist: 'add BTC' / 'add SPX'.\nSee everything: 'global'.",
+                {"type": "text",
+                 "text": "💡 Tap any code → detail card.\n'add BTC' / 'add USDTHB' → watchlist.\n'global' → grouped snapshot.",
                  "size": "xxs", "color": "#7F8C8D", "wrap": True, "margin": "sm"},
             ],
             "paddingAll": "16px",
