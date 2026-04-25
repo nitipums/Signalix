@@ -76,6 +76,11 @@ class StockSignal:
     sma10: float = 0.0             # Short-term MA needed by STAGE_2_RUNNING
     sma20: float = 0.0             # Short-term MA used across multiple sub-stages
     sma200_roc20: float = 0.0      # SMA200 % change vs 20 bars ago — slope signal
+    # Pivot-point fields, computed only for STAGE_1_PREP / STAGE_2_EARLY /
+    # STAGE_2_RUNNING / STAGE_2_PULLBACK (the actionable buy-side states).
+    # 0.0 for stocks outside this scope. See compute_pivot() in analyzer.
+    pivot_price: float = 0.0       # Local resistance / buy trigger (15-bar high)
+    pivot_stop: float = 0.0        # Setup invalidation floor (10-bar low)
     # Stage-2 weakening modifier: True when stage == 2 AND close < SMA50.
     # Minervini's stage-2 template (MA150/200 alignment) can stay true while
     # near-term momentum rolls over below SMA50 — a classic precursor to a
@@ -361,6 +366,43 @@ def _derive_pattern(sub_stage: str, vcp_result: str, is_ath: bool,
     if sub_stage in (SUB_STAGE_4_BREAKDOWN, SUB_STAGE_4_DOWNTREND):
         return "going_down"
     return "consolidating"
+
+
+# Sub-stages that get pivot-point computation. Picked per design decision:
+# pre-stage-2 watchlist (PREP) + the three actionable Stage 2 states
+# (EARLY / RUNNING / PULLBACK). Excludes Stage 1 BASE (no setup yet),
+# Stage 3 (defensive — not a buy zone), and Stage 4 (not a buy zone).
+_PIVOT_SUB_STAGES: frozenset = frozenset({
+    SUB_STAGE_1_PREP,
+    SUB_STAGE_2_EARLY,
+    SUB_STAGE_2_RUNNING,
+    SUB_STAGE_2_PULLBACK,
+})
+
+
+def compute_pivot(df: pd.DataFrame, sub_stage: str) -> tuple[float, float]:
+    """Return (pivot_price, pivot_stop) for actionable sub-stages.
+
+    pivot_price = highest high in the last 15 bars — the local resistance
+        the stock has been bumping into. For STAGE_2_PULLBACK this is the
+        peak of the pullback (the line a long entry would trigger above).
+        For STAGE_1_PREP / STAGE_2_EARLY / STAGE_2_RUNNING this is the
+        recent local resistance the stock is approaching or has already
+        broken — useful as a "next breakout level" / "re-entry on hold".
+    pivot_stop = lowest low in the last 10 bars — the floor of the
+        recent pullback, below which the setup is invalidated. Tighter
+        than the global -1.5×ATR stop on `signal.stop_loss` (which stays
+        on the dataclass for backward compat); use whichever fits the
+        user's risk tolerance.
+
+    Returns (0.0, 0.0) for sub-stages outside the actionable set so cards
+    and the `pivot` filter command know to skip those stocks.
+    """
+    if sub_stage not in _PIVOT_SUB_STAGES or len(df) < 15:
+        return 0.0, 0.0
+    pivot = float(df["High"].iloc[-15:].max())
+    stop = float(df["Low"].iloc[-10:].min())
+    return pivot, stop
 
 
 # ─── Stage classification ──────────────────────────────────────────────────────
@@ -791,6 +833,10 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
 
     score = _strength_score(df, stage, pattern, volume_ratio, sub_stage=sub_stage)
 
+    # Pivot-point: buy trigger + invalidation stop, computed only for the
+    # actionable buy-side sub-stages (PREP / EARLY / RUNNING / PULLBACK).
+    pivot_price, pivot_stop = compute_pivot(df, sub_stage)
+
     # Risk/reward calculations
     atr_series = _atr(df)
     atr_val = float(atr_series.iloc[-1]) if len(df) >= 14 and not np.isnan(atr_series.iloc[-1]) else 0.0
@@ -840,6 +886,8 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
         breakout_count_1y=bo_count,
         data_date=data_date,
         sub_stage=sub_stage,
+        pivot_price=round(pivot_price, 2),
+        pivot_stop=round(pivot_stop, 2),
         stage_weakening=bool(stage_weakening),
     )
 
