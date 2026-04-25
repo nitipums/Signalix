@@ -42,3 +42,24 @@ jobs:
         Content-Type: application/json
         X-Scan-Secret: "${SCAN_SECRET}"
       body: '{"scan_type": "full", "broadcast": true, "mode": "full"}'
+
+  # Monthly health-check for SET50 / SET100 / MAI member lists. Runs on the
+  # 2nd of each month at 09:00 ICT (after SET's quarterly batches typically
+  # land). With no body, the endpoint just LOGS current member counts —
+  # doesn't auto-mutate anything. Reminds the user via Cloud Logging entry
+  # whether a manual list refresh is due.
+  #
+  # When SET rebalances (1 Jan / 1 Jul), the user fetches the fresh list
+  # and POSTs it to /admin/refresh_index_members with members in the body
+  # to actually update — runtime overrides via Firestore.
+  - name: signalix-index-members-check
+    description: "Monthly index-member health check (logs counts; manual refresh on rebalance)"
+    schedule: "0 9 2 * *"
+    timeZone: "Asia/Bangkok"
+    httpTarget:
+      uri: "${CLOUD_RUN_URL}/admin/refresh_index_members"
+      httpMethod: POST
+      headers:
+        Content-Type: application/json
+        X-Scan-Secret: "${SCAN_SECRET}"
+      body: '{}'

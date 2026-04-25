@@ -197,6 +197,144 @@ def _cmd_row(cmd: str, desc: str) -> dict:
     }
 
 
+def build_index_breadth_card(
+    index_name: str,
+    breadth: MarketBreadth,
+    movers_up: list[StockSignal] | None = None,
+    movers_down: list[StockSignal] | None = None,
+    member_count: int = 0,
+) -> dict:
+    """Per-sub-index breadth card (SET50 / SET100 / MAI).
+
+    Smaller surface than the full SET breadth card — focuses on the single
+    question 'how is this index doing today?'. Header carries index price
+    + change% (when available, only SET has yfinance history but sub-index
+    last close + change% is fetched separately into breadth fields). Body
+    shows: member count, adv/dec/flat tally, stage distribution bar,
+    above/below MA200 pct, top-3 up + top-3 down movers within the index.
+
+    Distinct from build_market_breadth_card (which has SET-specific RSI/
+    MACD/sector strips); this one is intentionally trimmed because sub-
+    indexes don't have those analyses available from yfinance's 1-bar
+    response.
+    """
+    INDEX_COLORS = {"SET50": "#0D47A1", "SET100": "#1565C0", "MAI": "#4A148C", "sSET": "#006064", "SETESG": "#2E7D32"}
+    index_color = INDEX_COLORS.get(index_name, "#1A237E")
+
+    idx_close = getattr(breadth, "set_index_close", 0.0)
+    idx_chg = getattr(breadth, "set_index_change_pct", 0.0)
+    chg_color = _pct_color(idx_chg)
+    chg_sign = "+" if idx_chg > 0 else ""
+    if idx_chg > 0:
+        header_bg = "#1B5E20"
+    elif idx_chg < 0:
+        header_bg = "#B71C1C"
+    else:
+        header_bg = index_color
+
+    total = breadth.total_stocks
+    adv = breadth.advancing
+    dec = breadth.declining
+    flat = breadth.unchanged
+    s1, s2, s3, s4 = (breadth.stage1_count, breadth.stage2_count,
+                       breadth.stage3_count, breadth.stage4_count)
+    above_pct = getattr(breadth, "above_ma200_pct", 0.0)
+
+    movers_up = (movers_up or [])[:3]
+    movers_down = (movers_down or [])[:3]
+
+    def _row(label: str, value: str, value_color: str = "#FFFFFF") -> dict:
+        return {
+            "type": "box", "layout": "horizontal",
+            "paddingTop": "4px", "paddingBottom": "4px",
+            "contents": [
+                {"type": "text", "text": label, "size": "xs", "color": "#9E9E9E", "flex": 4},
+                {"type": "text", "text": value, "size": "sm", "color": value_color,
+                 "weight": "bold", "flex": 5, "align": "end"},
+            ],
+        }
+
+    def _mover_row(s: StockSignal, color: str) -> dict:
+        sign = "+" if s.change_pct > 0 else ""
+        return {
+            "type": "box", "layout": "horizontal",
+            "action": {"type": "message", "label": s.symbol[:20], "text": s.symbol},
+            "paddingTop": "3px", "paddingBottom": "3px",
+            "contents": [
+                {"type": "text", "text": s.symbol, "size": "xs", "weight": "bold",
+                 "color": "#FFFFFF", "flex": 3},
+                {"type": "text", "text": f"{s.close:,.2f}", "size": "xs",
+                 "color": "#9E9E9E", "flex": 3, "align": "end"},
+                {"type": "text", "text": f"{sign}{s.change_pct:.2f}%",
+                 "size": "xs", "color": color, "flex": 2, "align": "end", "weight": "bold"},
+            ],
+        }
+
+    body_contents: list = [
+        # Hero price row (when index has live price)
+        *([
+            {"type": "box", "layout": "baseline", "paddingBottom": "8px", "contents": [
+                {"type": "text", "text": f"{idx_close:,.2f}", "weight": "bold",
+                 "size": "xxl", "color": "#FFFFFF", "flex": 5},
+                {"type": "text", "text": f"{chg_sign}{idx_chg:.2f}%", "weight": "bold",
+                 "size": "lg", "color": chg_color, "align": "end", "flex": 3},
+            ]},
+            {"type": "separator", "color": "#333333"},
+        ] if idx_close > 0 else []),
+
+        {"type": "text", "text": "Constituent breadth", "size": "xs",
+         "weight": "bold", "color": "#FFD54F", "margin": "sm"},
+        _row("Members scanned", f"{total} / {member_count}" if member_count else f"{total}"),
+        _row("Advancing", f"{adv}", value_color="#27AE60"),
+        _row("Declining", f"{dec}", value_color="#E74C3C"),
+        _row("Unchanged", f"{flat}"),
+        _row("Above MA200", f"{above_pct:.1f}%",
+             value_color="#27AE60" if above_pct >= 50 else "#E74C3C"),
+
+        {"type": "separator", "color": "#333333", "margin": "md"},
+        {"type": "text", "text": "Stage distribution", "size": "xs",
+         "weight": "bold", "color": "#FFD54F", "margin": "sm"},
+        _row("Stage 1 (Basing)", f"{s1}", value_color="#95A5A6"),
+        _row("Stage 2 (Uptrend)", f"{s2}", value_color="#27AE60"),
+        _row("Stage 3 (Topping)", f"{s3}", value_color="#E67E22"),
+        _row("Stage 4 (Downtrend)", f"{s4}", value_color="#E74C3C"),
+    ]
+
+    if movers_up:
+        body_contents.append({"type": "separator", "color": "#333333", "margin": "md"})
+        body_contents.append({"type": "text", "text": "Top movers up",
+                              "size": "xs", "weight": "bold", "color": "#27AE60", "margin": "sm"})
+        for s in movers_up:
+            body_contents.append(_mover_row(s, "#27AE60"))
+    if movers_down:
+        body_contents.append({"type": "separator", "color": "#333333", "margin": "md"})
+        body_contents.append({"type": "text", "text": "Top movers down",
+                              "size": "xs", "weight": "bold", "color": "#E74C3C", "margin": "sm"})
+        for s in movers_down:
+            body_contents.append(_mover_row(s, "#E74C3C"))
+
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "backgroundColor": header_bg, "paddingAll": "14px",
+            "contents": [
+                {"type": "text", "text": f"📊 {index_name}", "weight": "bold",
+                 "size": "xl", "color": "#FFFFFF"},
+                {"type": "text", "text": "Sub-index breadth · tap mover for detail",
+                 "size": "xxs", "color": "#E3F2FD"},
+            ],
+        },
+        "body": {
+            "type": "box", "layout": "vertical",
+            "backgroundColor": "#1A1A1A",
+            "paddingAll": "14px",
+            "spacing": "none",
+            "contents": body_contents,
+        },
+    }
+
+
 def build_market_breadth_card(breadth: MarketBreadth, sector_trends: list | None = None, indexes: dict | None = None) -> dict:
     """Build a Flex Bubble card for market breadth summary with SET index as hero header."""
     set_close = getattr(breadth, "set_index_close", 0.0)
@@ -1938,9 +2076,11 @@ def build_guide_carousel() -> dict:
             "spacing": "none",
             "contents": [
                 _section("MARKET OVERVIEW"),
-                _cmd_row("market", "Market Breadth"),
-                _cmd_row("index", "SET50/MAI/sSET"),
-                _cmd_row("sector", "Sector Trends + Indexes"),
+                _cmd_row("market", "SET Market Breadth"),
+                _cmd_row("index", "All Indexes Snapshot"),
+                _cmd_row("set50", "SET50 Breadth ⭐ NEW"),
+                _cmd_row("set100", "SET100 Breadth ⭐ NEW"),
+                _cmd_row("sector", "Sector Trends"),
                 _cmd_row("subsector", "Subsector Breakdown"),
 
                 _section("STOCK PATTERNS"),

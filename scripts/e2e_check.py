@@ -270,6 +270,42 @@ def suite_patterns(base, secret):
     return fails
 
 
+def suite_index_breadth(base, secret):
+    """Per-sub-index breadth (SET50 / SET100). MAI deferred until member
+    list is populated; assertion just confirms the dispatch handles it."""
+    section("Per-sub-index breadth (set50 / set100 / mai)")
+    fails = 0
+    for cmd, expected_index in (("set50", "SET50"), ("set100", "SET100"), ("mai", "MAI")):
+        try:
+            q, _ = query(base, secret, cmd)
+            fails += check(f"{cmd}/kind", q.get("kind") == "index_breadth",
+                           f"kind={q.get('kind')}")
+            fails += check(f"{cmd}/index", q.get("index") == expected_index,
+                           f"index={q.get('index')}")
+            # SET50 + SET100 must have configured members. MAI may be 0 if
+            # not yet populated — soft-pass.
+            if expected_index in ("SET50", "SET100"):
+                fails += check(f"{cmd}/has_members",
+                               (q.get("members_configured") or 0) >= 40,
+                               f"configured={q.get('members_configured')}")
+                # Members_scanned should be a high fraction of configured —
+                # if Settrade was up. Allow a wider band for transient outages.
+                cfg = q.get("members_configured") or 0
+                scanned = q.get("members_scanned") or 0
+                fails += check(f"{cmd}/scan_coverage",
+                               cfg == 0 or (scanned / cfg) >= 0.8,
+                               f"scanned={scanned}/{cfg}")
+                # Stage counts should sum to scanned count
+                stages = q.get("stage_counts") or {}
+                total_staged = sum(stages.values()) if stages else 0
+                fails += check(f"{cmd}/stage_counts_consistent",
+                               total_staged == scanned,
+                               f"stages_sum={total_staged} scanned={scanned}")
+        except Exception as e:
+            fails += check(cmd, False, f"err: {e}")
+    return fails
+
+
 def suite_stage_weakening(base, secret):
     """Invariant coverage for the stage_weakening modifier shipped
     alongside breakout_attempt + unclosed-VCP. Works by probing a
@@ -700,6 +736,7 @@ def main():
     total_fails += suite_stage_lists(base, secret)
     total_fails += suite_patterns(base, secret)
     total_fails += suite_stage_weakening(base, secret)
+    total_fails += suite_index_breadth(base, secret)
     total_fails += suite_sector_drill(base, secret)
     total_fails += suite_sector_coverage(base, secret)
     total_fails += suite_global(base, secret)
