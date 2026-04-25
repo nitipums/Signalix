@@ -81,15 +81,17 @@ say "Authenticated as $ACTIVE_SA in project $PROJECT_ID (region $REGION)."
 
 # ── 4. Submit the build ─────────────────────────────────────────────────
 # cloudbuild.yaml already has the two-step deploy + post-deploy /scan.
-# --region asia-southeast1 keeps the build regional (matches the trigger
-# the user would set up in Option B). Stream the log so Claude sees it
-# line-by-line instead of having to poll.
+# Match the minimal invocation the user has been running manually
+# (`gcloud builds submit --config=cloudbuild.yaml`) — the explicit
+# --region + --gcs-source-staging-dir flags assumed a regional bucket
+# named `${PROJECT_ID}_cloudbuild` that doesn't exist in this project,
+# producing a 404 the SA can't recover from (no buckets.create perm).
+# Letting gcloud pick the default global bucket avoids the issue and
+# matches the pattern that's been working in prod for months.
 say "Submitting build… (this takes ~5-8 min)"
 cd "$REPO_ROOT"
 gcloud builds submit \
   --config=cloudbuild.yaml \
-  --region="$REGION" \
-  --gcs-source-staging-dir="gs://${PROJECT_ID}_cloudbuild/source" \
   .
 
 # ── 5. Verify the new revision ──────────────────────────────────────────
