@@ -59,6 +59,7 @@ from notifier import (
     build_guide_carousel,
     build_global_single_card,
     build_global_snapshot_card,
+    build_index_breadth_card,
     build_index_carousel,
     build_market_breadth_card,
     build_pattern_detail_card,
@@ -378,6 +379,23 @@ async def _warm_from_firestore():
                 _last_sector_trends = compute_sector_trends(_last_signals)
             except Exception as exc:
                 logger.error("compute sector_trends fallback failed: %s", exc)
+
+        # Load index member overrides from Firestore (if previously written
+        # by /admin/refresh_index_members). Falls back to data.py hardcoded
+        # constants when missing.
+        if FIRESTORE_AVAILABLE and _db:
+            try:
+                from data import set_index_members
+                for index_name in ("SET50", "SET100", "MAI"):
+                    doc = _db.collection("index_members").document(index_name).get()
+                    if doc.exists:
+                        members_list = (doc.to_dict() or {}).get("members") or []
+                        if members_list:
+                            set_index_members(index_name, set(members_list))
+                            logger.info("Loaded %s members from Firestore: %d tickers",
+                                        index_name, len(members_list))
+            except Exception as exc:
+                logger.warning("Failed to load index_members from Firestore: %s", exc)
 
         logger.info("Cache warm complete: %d signals, breadth=%s, indexes=%d, sectors=%d",
                     len(_last_signals), "ok" if _last_breadth else "missing",
@@ -823,6 +841,36 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
                  "change_pct": d["change_pct"]}
                 for code, d in ordered[-5:][::-1]
             ],
+        }
+
+    # Per-sub-index breadth (SET50 / SET100 / MAI)
+    if c in ("set50", "set 50", "set100", "set 100", "mai"):
+        from data import get_index_members
+        from analyzer import compute_index_breadth
+        index_name = "SET50" if c.replace(" ", "") == "set50" else (
+                     "SET100" if c.replace(" ", "") == "set100" else "MAI")
+        members = get_index_members(index_name)
+        idx_data = (_last_indexes or {}).get(index_name, {})
+        idx_close = float(idx_data.get("close", 0) or 0)
+        idx_chg = float(idx_data.get("change_pct", 0) or 0)
+        breadth = compute_index_breadth(
+            _last_signals, members, index_close=idx_close, index_change_pct=idx_chg,
+        )
+        constituents = [s for s in _last_signals if s.symbol in members]
+        return {
+            "kind": "index_breadth",
+            "index": index_name,
+            "members_configured": len(members),
+            "members_scanned": breadth.total_stocks,
+            "advancing": breadth.advancing,
+            "declining": breadth.declining,
+            "unchanged": breadth.unchanged,
+            "stage_counts": {1: breadth.stage1_count, 2: breadth.stage2_count,
+                             3: breadth.stage3_count, 4: breadth.stage4_count},
+            "above_ma200_pct": getattr(breadth, "above_ma200_pct", 0.0),
+            "index_close": idx_close,
+            "index_change_pct": idx_chg,
+            "first_5_constituents": [s.symbol for s in constituents[:5]],
         }
 
     # Market breadth summary
@@ -1588,6 +1636,75 @@ async def sync_ath_endpoint(
     }
 
 
+@app.post("/admin/refresh_index_members")
+async def refresh_index_members_endpoint(
+    request: Request,
+    x_scan_secret: Optional[str] = Header(default=None),
+):
+    """Update SET50 / SET100 / MAI member lists.
+
+    Two modes:
+      1. Body provided: {"SET50": ["ADVANC", "AOT", ...], "SET100": [...]}
+         → use the provided lists verbatim. For when you've fetched fresh
+         lists from SET's site / official feed and want to push them
+         without redeploying.
+      2. No body / empty body: just verify current in-memory lists exist
+         and return their counts. Useful for the monthly Cloud Scheduler
+         health-check job — logs membership state without mutating it.
+
+    Persists to Firestore index_members/{INDEX_NAME} so subsequent
+    instance restarts pick up the new lists. In-memory _index_members
+    in data.py is also updated immediately for the current process.
+    """
+    settings = get_settings()
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
+
+    from data import set_index_members, index_member_counts, get_index_members
+
+    body: dict = {}
+    try:
+        body = await request.json() if (await request.body()) else {}
+    except Exception:
+        body = {}
+
+    updated: dict[str, int] = {}
+    if body:
+        # Validate + apply
+        for index_name in ("SET50", "SET100", "MAI"):
+            members_in = body.get(index_name)
+            if not members_in:
+                continue
+            if not isinstance(members_in, list):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{index_name} must be a list of ticker codes",
+                )
+            members_set = {str(s).strip().upper() for s in members_in if s}
+            set_index_members(index_name, members_set)
+            updated[index_name] = len(members_set)
+            # Persist to Firestore
+            if FIRESTORE_AVAILABLE and _db:
+                try:
+                    _db.collection("index_members").document(index_name).set({
+                        "members": sorted(members_set),
+                        "count": len(members_set),
+                        "updated_at": pd.Timestamp.utcnow().isoformat(),
+                    }, merge=False)
+                except Exception as exc:
+                    logger.error("refresh_index_members: Firestore write %s failed: %s",
+                                 index_name, exc)
+
+    return {
+        "updated": updated,
+        "current_counts": index_member_counts(),
+        "members_sample": {
+            k: sorted(get_index_members(k))[:5]
+            for k in ("SET50", "SET100", "MAI")
+        },
+    }
+
+
 @app.post("/admin/refresh_sector_map")
 async def refresh_sector_map_endpoint(
     x_scan_secret: Optional[str] = Header(default=None),
@@ -1882,6 +1999,16 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
                 reply_text(reply_token, f'ไม่พบคำอธิบายสำหรับ "{metric_name}"')
 
     # ── Market Breadth ──
+    # ── Per-index breadth: SET50 / SET100 / MAI ──
+    elif cmd in ("set50", "set 50"):
+        await _reply_index_breadth(reply_token, "SET50")
+
+    elif cmd in ("set100", "set 100"):
+        await _reply_index_breadth(reply_token, "SET100")
+
+    elif cmd in ("mai", "ไหม"):
+        await _reply_index_breadth(reply_token, "MAI")
+
     elif cmd in ("ตลาด", "market", "breadth"):
         card = _last_breadth_card
         if card is None and FIRESTORE_AVAILABLE and _db:
@@ -2328,6 +2455,53 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str,
     bubble = build_ranked_stock_list_bubble(chunk, title, next_cmd=next_cmd,
                                             rank_offset=start, subtitle=subtitle)
     reply_flex(reply_token, title, bubble)
+
+
+async def _reply_index_breadth(reply_token: str, index_name: str) -> None:
+    """Per-sub-index breadth card. Filters _last_signals by member set and
+    runs compute_index_breadth, then renders with build_index_breadth_card.
+
+    Index price + change% are read from _last_indexes (yfinance returns 1
+    bar per scan for sub-indexes — enough for today's price). Members come
+    from data._index_members (Firestore-backed, with hardcoded fallback).
+    """
+    from data import get_index_members, INDEX_SYMBOLS
+    from analyzer import compute_index_breadth
+
+    members = get_index_members(index_name)
+    if not members:
+        reply_text(reply_token,
+                   f"{index_name}: ยังไม่มีรายชื่อสมาชิก (กำลังเตรียมข้อมูล)\nลอง 'set50' หรือ 'set100' ก่อน")
+        return
+
+    if not _last_signals:
+        reply_text(reply_token, "ยังไม่มีข้อมูลการสแกน กรุณารอการสแกนครั้งถัดไป")
+        return
+
+    # Index price/change: yfinance gives us today's bar for ^SET50.BK etc.
+    idx_data = (_last_indexes or {}).get(index_name, {})
+    idx_close = float(idx_data.get("close", 0) or 0)
+    idx_chg = float(idx_data.get("change_pct", 0) or 0)
+
+    breadth = compute_index_breadth(_last_signals, members,
+                                     index_close=idx_close,
+                                     index_change_pct=idx_chg)
+
+    # Top 3 movers up + 3 down within the index members
+    constituents = [s for s in _last_signals if s.symbol in members]
+    movers_up = sorted([s for s in constituents if s.change_pct > 0],
+                      key=lambda s: -s.change_pct)[:3]
+    movers_down = sorted([s for s in constituents if s.change_pct < 0],
+                        key=lambda s: s.change_pct)[:3]
+
+    card = build_index_breadth_card(
+        index_name=index_name,
+        breadth=breadth,
+        movers_up=movers_up,
+        movers_down=movers_down,
+        member_count=len(members),
+    )
+    reply_flex(reply_token, f"📊 {index_name} Breadth", card)
 
 
 async def _reply_global_single(reply_token: str, code: str) -> None:

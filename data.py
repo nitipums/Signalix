@@ -181,6 +181,74 @@ INDEX_SYMBOLS: dict[str, str] = {
     "SETESG": "^SETESG.BK",
 }
 
+# ──────────────────────────────────────────────────────────────────────────
+# Sub-index member lists (SET50 / SET100 / MAI)
+# ──────────────────────────────────────────────────────────────────────────
+# Bootstrap (hardcoded) lists for the core SET sub-indexes. SET rebalances
+# every 6 months (effective 1 January and 1 July). Keep these as the
+# fallback / seed values; the canonical runtime source is Firestore
+# `index_members/{INDEX_NAME}.members`, populated by /admin/refresh_index_members
+# (manual trigger or monthly Cloud Scheduler job).
+#
+# Last hand-verified: 2026 H1 composition (best-effort from public SET data).
+# When SET publishes a rebalance, either update these constants OR push the
+# fresh list to Firestore via the admin endpoint. The bot prefers Firestore
+# at runtime when present.
+
+# SET50 — top 50 by market cap + liquidity. Stable mega-caps.
+SET50_MEMBERS_FALLBACK: set[str] = {
+    "ADVANC", "AOT", "AWC", "BANPU", "BBL", "BCP", "BDMS", "BEM", "BGRIM", "BH",
+    "BJC", "BTS", "CBG", "CENTEL", "CK", "COM7", "CPALL", "CPF", "CPN", "CRC",
+    "DELTA", "EA", "EGCO", "GLOBAL", "GPSC", "GULF", "HMPRO", "INTUCH", "IVL",
+    "KBANK", "KCE", "KTB", "KTC", "LH", "MINT", "MTC", "OR", "OSP", "PTT",
+    "PTTEP", "PTTGC", "RATCH", "SCB", "SCC", "SCGP", "TIDLOR", "TOP", "TRUE",
+    "TTB", "VGI",
+}
+
+# SET100 — top 100 by market cap + liquidity. Includes all SET50 plus 50 more
+# mid-caps. The members below are the ADDITIONAL 50 names beyond SET50.
+SET100_EXTRA_FALLBACK: set[str] = {
+    "AAV", "AMATA", "ASW", "BA", "BAM", "BBIK", "BCH", "BCPG", "BJCHI", "BLA",
+    "BPP", "CHG", "CKP", "DOHOME", "ERW", "GFPT", "GUNKUL", "HANA", "ICHI",
+    "ITC", "JMART", "JMT", "KKP", "M", "MAJOR", "MEGA", "OSP", "PR9", "PRM",
+    "PSL", "PTG", "QH", "RBF", "S", "SABUY", "SAPPE", "SAWAD", "SINGER",
+    "SISB", "SJWD", "SNNP", "SPALI", "SPRC", "STA", "STARK", "STEC", "TLI",
+    "TOA", "TQM", "VGI", "WHA",
+}
+SET100_MEMBERS_FALLBACK: set[str] = SET50_MEMBERS_FALLBACK | SET100_EXTRA_FALLBACK
+
+# MAI — ~200 stocks listed on the MAI exchange (separate from SET).
+# Hardcoding is impractical without a verified source. Empty fallback;
+# Phase B will populate via Firestore from a scraped or official feed.
+MAI_MEMBERS_FALLBACK: set[str] = set()
+
+# Public accessor — runtime in-memory dict, populated at startup from
+# Firestore (preferred) or fallback constants. main.py reads this via
+# get_index_members() to avoid coupling notifier/analyzer to globals.
+_index_members: dict[str, set[str]] = {
+    "SET50":  set(SET50_MEMBERS_FALLBACK),
+    "SET100": set(SET100_MEMBERS_FALLBACK),
+    "MAI":    set(MAI_MEMBERS_FALLBACK),
+}
+
+
+def get_index_members(index_name: str) -> set[str]:
+    """Return the member set for a sub-index. Empty set if unknown."""
+    return _index_members.get(index_name.upper(), set())
+
+
+def set_index_members(index_name: str, members: set[str]) -> None:
+    """Replace the in-memory member set. Called by the /admin refresh path
+    after writing to Firestore so subsequent scans use the new list
+    without restart."""
+    _index_members[index_name.upper()] = set(members)
+
+
+def index_member_counts() -> dict[str, int]:
+    """{index_name: member_count} — used by the monthly health check."""
+    return {k: len(v) for k, v in _index_members.items()}
+
+
 # TradingView URLs per index
 INDEX_TV_URLS: dict[str, str] = {
     "SET":    "https://www.tradingview.com/chart/?symbol=SET%3ASET",

@@ -861,6 +861,29 @@ def filter_signals(signals: list[StockSignal], pattern: Optional[str] = None, st
     return result
 
 
+def compute_index_breadth(
+    signals: list[StockSignal],
+    members: set[str],
+    index_close: float = 0.0,
+    index_change_pct: float = 0.0,
+) -> MarketBreadth:
+    """Same shape as compute_market_breadth but filtered to a sub-index's
+    member set (SET50 / SET100 / MAI).
+
+    The result reuses the MarketBreadth dataclass so all the existing card
+    builders / breadth-context formatters work unchanged. set_index_close /
+    set_index_change_pct fields here represent the SUB-INDEX's price (not
+    SET composite), which the bulk index card / breadth card will surface.
+
+    members: set of ticker codes (no .BK suffix). Use data.get_index_members.
+    """
+    filtered = [s for s in signals if s.symbol in members]
+    breadth = compute_market_breadth(filtered, index_df=None)
+    breadth.set_index_close = index_close
+    breadth.set_index_change_pct = index_change_pct
+    return breadth
+
+
 def compute_sector_trends(signals: list[StockSignal]) -> list["SectorSummary"]:
     """Group signals by SET sector and compute breadth stats per sector.
     Uses get_sector() which checks the dynamic subsector map first, then falls
