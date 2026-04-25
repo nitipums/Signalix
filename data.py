@@ -1353,10 +1353,55 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
     except Exception as exc:
         logger.warning("fetch_all_stocks: Settrade primary failed: %s — using BQ + yfinance", exc)
 
-    # --- Step 2: BQ history backfill ---
-    # Extend Settrade's 1Y window with older BQ history, keeping Settrade for
-    # overlapping dates (freshest close). For stocks Settrade didn't cover at
-    # all, use BQ as-is so the scan still has something.
+    # --- Step 2: yfinance fallback for Settrade misses (BEFORE BQ) ---
+    # Settrade is intermittent — when it returns empty for a stock, we used
+    # to fall straight to BQ. But BQ can carry dividend-touched values from
+    # past scans (e.g. a yfinance fallback using auto_adjust=True at some
+    # earlier point, or a Settrade response that was adjusted at the time
+    # of write). yfinance auto_adjust=False is more reliably unadjusted at
+    # fetch time than our potentially-rotted BQ cache, so try it first.
+    settrade_misses = [s for s in SET_STOCKS if s not in results]
+    if settrade_misses:
+        logger.info("fetch_all_stocks: Settrade missed %d stocks — trying yfinance unadjusted",
+                    len(settrade_misses))
+        yf_tickers_for_misses = [_to_yf_ticker(s) for s in settrade_misses]
+        try:
+            raw = yf.download(
+                yf_tickers_for_misses,
+                period="1y",
+                group_by="ticker",
+                progress=False,
+                auto_adjust=False,
+                threads=True,
+            )
+            yf_recovered = 0
+            for sym, yfk in zip(settrade_misses, yf_tickers_for_misses):
+                try:
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        df_one = raw[yfk].dropna(subset=["Close"])
+                    else:
+                        df_one = raw.dropna(subset=["Close"])
+                    if df_one is None or df_one.empty:
+                        continue
+                    df_one.index = pd.to_datetime(df_one.index).tz_localize(None)
+                    df_one.index.name = "Date"
+                    price_cols = [c for c in _PRICE_COLS if c in df_one.columns]
+                    if price_cols:
+                        df_one[price_cols] = df_one[price_cols].astype("float32")
+                    results[sym] = df_one
+                    yf_recovered += 1
+                except Exception:
+                    continue
+            logger.info("fetch_all_stocks: yfinance recovered %d/%d Settrade misses",
+                        yf_recovered, len(settrade_misses))
+        except Exception as exc:
+            logger.warning("fetch_all_stocks: yfinance bulk fallback failed: %s", exc)
+
+    # --- Step 3: BQ history backfill ---
+    # Extend the 1Y window from Settrade/yfinance with OLDER BQ history,
+    # keeping Settrade/yfinance for overlapping dates (freshest close).
+    # BQ-only fallback is now LAST RESORT — only fires when both Settrade
+    # AND yfinance returned nothing for a stock.
     if bq_data:
         merged = 0
         filled = 0
@@ -1372,10 +1417,10 @@ def fetch_all_stocks(period: str = "1y") -> dict[str, pd.DataFrame]:
             combined = combined[~combined.index.duplicated(keep="last")]
             results[sym] = combined.sort_index()
             merged += 1
-        logger.info("fetch_all_stocks: BQ backfill — %d merged into Settrade, %d BQ-only",
+        logger.info("fetch_all_stocks: BQ backfill — %d merged into Settrade/yf, %d BQ-only",
                     merged, filled)
 
-    # --- Step 3: yfinance for SET index (always) + any stocks still missing ---
+    # --- Step 4: yfinance for SET index (always) + any stocks still missing ---
     missing_stocks = [s for s in SET_STOCKS if s not in results]
     yf_targets = missing_stocks + ["SET"]
     yf_tickers = [("^SET.BK" if s == "SET" else _to_yf_ticker(s)) for s in yf_targets]
