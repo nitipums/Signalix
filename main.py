@@ -710,7 +710,9 @@ async def test_signal(symbol: str):
 
 
 def _signal_snapshot(signal) -> dict:
-    """Minimal StockSignal view for diagnostic endpoints."""
+    """Minimal StockSignal view for diagnostic endpoints. Includes the
+    sub_stage finite-state-machine label as the primary classification;
+    legacy stage/pattern fields retained for backward compat."""
     return {
         "symbol": signal.symbol,
         "close": signal.close,
@@ -718,11 +720,15 @@ def _signal_snapshot(signal) -> dict:
         "high_52w": signal.high_52w,
         "pct_from_52w_high": signal.pct_from_52w_high,
         "stage": signal.stage,
+        "sub_stage": getattr(signal, "sub_stage", ""),
         "pattern": signal.pattern,
         "strength_score": signal.strength_score,
         "scanned_at": signal.scanned_at,
         "data_date": getattr(signal, "data_date", ""),
+        "sma10": getattr(signal, "sma10", 0.0),
+        "sma20": getattr(signal, "sma20", 0.0),
         "sma50": getattr(signal, "sma50", 0.0),
+        "sma200_roc20": getattr(signal, "sma200_roc20", 0.0),
         "stage_weakening": getattr(signal, "stage_weakening", False),
     }
 
@@ -760,7 +766,9 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
             "count": len(sigs),
             "first_5": [
                 {"symbol": s.symbol, "close": s.close, "change_pct": s.change_pct,
-                 "stage": s.stage, "pattern": s.pattern, "strength": s.strength_score}
+                 "stage": s.stage,
+                 "sub_stage": getattr(s, "sub_stage", ""),
+                 "pattern": s.pattern, "strength": s.strength_score}
                 for s in sigs[:5]
             ],
         }
@@ -813,6 +821,29 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
         sigs.sort(key=lambda s: s.strength_score, reverse=True)
         return summary(sigs, "Stage 2 Weakening")
 
+    # ── Sub-stage filters (9-state finite state machine) ──────────────
+    # Same vocabulary as classify_sub_stage(): one of 9 SUB_STAGE_*.
+    # Aliases support both "early" and "stage2 early" forms; the long
+    # form is what tappable rows from the breadth card emit.
+    SUB_STAGE_FILTERS = {
+        ("base", "stage1 base"):                 ("STAGE_1_BASE",      "Stage 1 · Base"),
+        ("prep", "stage1 prep"):                 ("STAGE_1_PREP",      "Stage 1 · Prep"),
+        ("early", "stage2 early"):               ("STAGE_2_EARLY",     "Stage 2 · Early"),
+        ("running", "stage2 running"):           ("STAGE_2_RUNNING",   "Stage 2 · Running"),
+        ("pullback", "stage2 pullback"):         ("STAGE_2_PULLBACK",  "Stage 2 · Pullback"),
+        ("volatile", "stage3 volatile"):         ("STAGE_3_VOLATILE",  "Stage 3 · Volatile"),
+        ("dist", "distribution", "stage3 dist",
+         "stage3 distribution"):                 ("STAGE_3_DIST_DIST", "Stage 3 · Distribution"),
+        ("breakdown", "stage4 breakdown"):       ("STAGE_4_BREAKDOWN", "Stage 4 · Breakdown"),
+        ("downtrend", "stage4 downtrend"):       ("STAGE_4_DOWNTREND", "Stage 4 · Downtrend"),
+    }
+    for aliases, (sub_stage_const, label) in SUB_STAGE_FILTERS.items():
+        if c in aliases:
+            sigs = [s for s in _last_signals
+                    if getattr(s, "sub_stage", "") == sub_stage_const]
+            sigs.sort(key=lambda s: s.strength_score, reverse=True)
+            return summary(sigs, label)
+
     # Sector list (e.g. "sector FINCIAL")
     if c.startswith("sector ") and len(c) > 7:
         sector_name = c[7:].strip().upper()
@@ -846,6 +877,17 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
     # Per-sub-index drill-down: 'set50 members' / 'set50 stage2' / etc.
     # Returns kind=list (same shape as /test/query?cmd=stage2) so e2e can
     # use the existing list-summary helper.
+    # Sub-stage tokens that the per-index drill-down also recognises.
+    # Same vocab as the global SUB_STAGE_FILTERS above; allows e.g.
+    # 'set50 pullback' to filter SET50 constituents to STAGE_2_PULLBACK.
+    SUB_STAGE_TOKEN_MAP = {
+        "base": "STAGE_1_BASE", "prep": "STAGE_1_PREP",
+        "early": "STAGE_2_EARLY", "running": "STAGE_2_RUNNING",
+        "pullback": "STAGE_2_PULLBACK",
+        "volatile": "STAGE_3_VOLATILE",
+        "dist": "STAGE_3_DIST_DIST", "distribution": "STAGE_3_DIST_DIST",
+        "breakdown": "STAGE_4_BREAKDOWN", "downtrend": "STAGE_4_DOWNTREND",
+    }
     for prefix in ("set50 ", "set100 ", "mai "):
         if c.startswith(prefix):
             from data import get_index_members
@@ -859,9 +901,14 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
                 if rest in (f"stage{n}", f"s{n}"):
                     stage_filter = n
                     break
+            sub_stage_const = SUB_STAGE_TOKEN_MAP.get(rest)
             if stage_filter is not None:
                 sigs = [s for s in constituents if s.stage == stage_filter]
                 label = f"{index_name} Stage {stage_filter}"
+            elif sub_stage_const is not None:
+                sigs = [s for s in constituents
+                        if getattr(s, "sub_stage", "") == sub_stage_const]
+                label = f"{index_name} {rest}"
             elif rest in ("members", "list", "all"):
                 sigs = list(constituents)
                 label = f"{index_name} members"
@@ -2352,6 +2399,46 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
                    if getattr(s, "stage_weakening", False)]
         _reply_stock_list(reply_token, signals, "⚠️ Stage 2 — Weakening")
 
+    # ── Sub-stage filters (9-state finite state machine) ──
+    # Same vocabulary as classify_sub_stage(); both short ('pullback')
+    # and long ('stage2 pullback') forms accepted. Long form is what
+    # tappable rows from the breadth card emit.
+    elif cmd in ("base", "stage1 base", "prep", "stage1 prep",
+                  "early", "stage2 early", "running", "stage2 running",
+                  "pullback", "stage2 pullback",
+                  "volatile", "stage3 volatile",
+                  "dist", "distribution", "stage3 dist", "stage3 distribution",
+                  "breakdown", "stage4 breakdown",
+                  "downtrend", "stage4 downtrend"):
+        SUB_STAGE_LABELS = {
+            "STAGE_1_BASE":      "⚪ Stage 1 · Base",
+            "STAGE_1_PREP":      "🟢 Stage 1 · Prep",
+            "STAGE_2_EARLY":     "🟢 Stage 2 · Early",
+            "STAGE_2_RUNNING":   "🟢 Stage 2 · Running",
+            "STAGE_2_PULLBACK":  "🔵 Stage 2 · Pullback",
+            "STAGE_3_VOLATILE":  "🟡 Stage 3 · Volatile",
+            "STAGE_3_DIST_DIST": "🟠 Stage 3 · Distribution",
+            "STAGE_4_BREAKDOWN": "🔴 Stage 4 · Breakdown",
+            "STAGE_4_DOWNTREND": "🔴 Stage 4 · Downtrend",
+        }
+        TOKEN_TO_SUB = {
+            "base": "STAGE_1_BASE", "stage1 base": "STAGE_1_BASE",
+            "prep": "STAGE_1_PREP", "stage1 prep": "STAGE_1_PREP",
+            "early": "STAGE_2_EARLY", "stage2 early": "STAGE_2_EARLY",
+            "running": "STAGE_2_RUNNING", "stage2 running": "STAGE_2_RUNNING",
+            "pullback": "STAGE_2_PULLBACK", "stage2 pullback": "STAGE_2_PULLBACK",
+            "volatile": "STAGE_3_VOLATILE", "stage3 volatile": "STAGE_3_VOLATILE",
+            "dist": "STAGE_3_DIST_DIST", "distribution": "STAGE_3_DIST_DIST",
+            "stage3 dist": "STAGE_3_DIST_DIST", "stage3 distribution": "STAGE_3_DIST_DIST",
+            "breakdown": "STAGE_4_BREAKDOWN", "stage4 breakdown": "STAGE_4_BREAKDOWN",
+            "downtrend": "STAGE_4_DOWNTREND", "stage4 downtrend": "STAGE_4_DOWNTREND",
+        }
+        sub_stage_const = TOKEN_TO_SUB[cmd]
+        signals = [s for s in _last_signals
+                   if getattr(s, "sub_stage", "") == sub_stage_const]
+        signals.sort(key=lambda s: s.strength_score, reverse=True)
+        _reply_stock_list(reply_token, signals, SUB_STAGE_LABELS[sub_stage_const])
+
     elif cmd in ("vcp low cheat", "vcp_low_cheat", "low cheat"):
         signals = _get_signals_for(pattern="vcp_low_cheat")
         _reply_stock_list(reply_token, signals, "🎯 VCP Low Cheat Stocks")
@@ -2529,17 +2616,39 @@ async def _reply_index_filter(reply_token: str, index_name: str, rest: str) -> N
             break
     members_only = rest_norm in ("members", "list", "all", "")
 
+    # Sub-stage tokens ('pullback', 'early', 'breakdown', etc.) → constituent
+    # filter. Same vocabulary as the global sub-stage filter commands.
+    SUB_STAGE_TOKEN_MAP = {
+        "base": "STAGE_1_BASE", "prep": "STAGE_1_PREP",
+        "early": "STAGE_2_EARLY", "running": "STAGE_2_RUNNING",
+        "pullback": "STAGE_2_PULLBACK",
+        "volatile": "STAGE_3_VOLATILE",
+        "dist": "STAGE_3_DIST_DIST", "distribution": "STAGE_3_DIST_DIST",
+        "breakdown": "STAGE_4_BREAKDOWN", "downtrend": "STAGE_4_DOWNTREND",
+    }
+    sub_stage_const = SUB_STAGE_TOKEN_MAP.get(rest_norm)
+
     if stage_filter is not None:
         signals = [s for s in constituents if s.stage == stage_filter]
         title = f"📊 {index_name} · Stage {stage_filter} ({len(signals)})"
+    elif sub_stage_const is not None:
+        signals = [s for s in constituents
+                   if getattr(s, "sub_stage", "") == sub_stage_const]
+        # Friendly label: convert STAGE_2_PULLBACK → "Stage 2 · Pullback"
+        parts = sub_stage_const.split("_")
+        nice = f"Stage {parts[1]} · {parts[2].title() if len(parts) > 2 else ''}"
+        if len(parts) > 3:  # e.g. STAGE_3_DIST_DIST
+            nice = f"Stage {parts[1]} · Distribution"
+        title = f"📊 {index_name} · {nice} ({len(signals)})"
     elif members_only:
         signals = constituents
         title = f"📊 {index_name} · Members ({len(signals)})"
     else:
         reply_text(reply_token,
                    f"คำสั่งไม่ถูกต้อง: '{index_name.lower()} {rest}'\n"
-                   f"ลอง: '{index_name.lower()} members' หรือ "
-                   f"'{index_name.lower()} stage2'")
+                   f"ลอง: '{index_name.lower()} members' / "
+                   f"'{index_name.lower()} stage2' / "
+                   f"'{index_name.lower()} pullback'")
         return
 
     if not signals:

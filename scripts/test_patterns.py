@@ -329,6 +329,95 @@ expect("downtrend: stage != 2 → weakening False",
        sig_bear.stage_weakening, False,
        f"stage={sig_bear.stage}")
 
+
+# ── Sub-stage finite state machine ─────────────────────────────────────────
+# Synthetic fixtures per sub-stage. Each builds an OHLCV shape that
+# triggers exactly one sub-stage and asserts classify_sub_stage() returns
+# the expected enum.
+print("\nclassify_sub_stage — 9-state taxonomy")
+from analyzer import classify_sub_stage, classify_stage
+from analyzer import (SUB_STAGE_1_BASE, SUB_STAGE_1_PREP,
+                      SUB_STAGE_2_EARLY, SUB_STAGE_2_RUNNING,
+                      SUB_STAGE_2_PULLBACK,
+                      SUB_STAGE_3_VOLATILE, SUB_STAGE_3_DIST_DIST,
+                      SUB_STAGE_4_BREAKDOWN, SUB_STAGE_4_DOWNTREND,
+                      ALL_SUB_STAGES)
+
+# Helper: classify and report parent stage + sub-stage in one go.
+def _classify(df):
+    p = classify_stage(df)
+    s = classify_sub_stage(df, p)
+    return p, s
+
+# 4_DOWNTREND: long bear market, all SMAs aligned downward, ROC negative.
+df_dt = _build_downtrend()
+p_dt, s_dt = _classify(df_dt)
+expect("downtrend → STAGE_4_DOWNTREND",
+       (p_dt, s_dt), (4, SUB_STAGE_4_DOWNTREND))
+
+# 2_RUNNING: pure uptrend (the strong-uptrend fixture from earlier).
+df_run = _build_strong_uptrend()
+p_run, s_run = _classify(df_run)
+expect("strong uptrend → STAGE_2_RUNNING",
+       (p_run, s_run), (2, SUB_STAGE_2_RUNNING))
+
+# 2_PULLBACK: uptrend with recent pullback below SMA20 but above SMA50,
+# narrowing range, drying volume on the last 10 bars.
+def _build_uptrend_then_tight_pullback():
+    # Long uptrend leaves SMA50 well below current price; shallow recent
+    # pullback dips close BELOW SMA20 (which has caught up to the recent
+    # peak) but stays comfortably ABOVE SMA50.
+    #
+    # 100 bars at 50 (basing → low SMA150/200) → 100 bars rising 50→100
+    # → 30 bars consolidating at 110 (lifts SMA20 toward 110) → 10 bars
+    # mild pullback 110 → 108 (close dips below SMA20 ≈ 109 but stays
+    # well above SMA50 ≈ 105).
+    base = [50.0] * 100
+    rise = list(np.linspace(50, 100, 100))
+    consol = [110.0] * 30
+    pullback = list(np.linspace(110, 108, 10))
+    prices = base + rise + consol + pullback
+    # Range geometry: prior bars wide (±1.5) including the consol; final
+    # 10 pullback bars narrow (±0.2). _range_contraction(n=10) compares
+    # the last 10 (pullback, narrow) to the prior 10 (end of consol, wide).
+    pre_pullback_count = len(prices) - len(pullback)
+    highs = ([p + 1.5 for p in prices[:pre_pullback_count]]
+             + [p + 0.2 for p in pullback])
+    lows = ([p - 1.5 for p in prices[:pre_pullback_count]]
+            + [p - 0.2 for p in pullback])
+    # Volume: prior bars at 2M, last 10 (pullback) at 500k → 25% of
+    # 20-bar avg, well under the 70% threshold.
+    vols = [2_000_000] * pre_pullback_count + [500_000] * len(pullback)
+    return _mk_df(highs, lows=lows, closes=prices, volumes=vols)
+
+df_pb = _build_uptrend_then_tight_pullback()
+p_pb, s_pb = _classify(df_pb)
+sma20_pb = float(df_pb["Close"].rolling(20).mean().iloc[-1])
+sma50_pb = float(df_pb["Close"].rolling(50).mean().iloc[-1])
+expect("uptrend with narrowing low-vol pullback → STAGE_2_PULLBACK",
+       (p_pb, s_pb), (2, SUB_STAGE_2_PULLBACK),
+       extra=f"close={float(df_pb['Close'].iloc[-1]):.2f} sma20={sma20_pb:.2f} sma50={sma50_pb:.2f}")
+
+# Invariant: every sub-stage emitted must be in ALL_SUB_STAGES (or "").
+for sym, df in [("DT", df_dt), ("RUN", df_run), ("PB", df_pb), ("BEAR", df_bear),
+                ("WEAK", df_weak), ("STRONG", df_strong)]:
+    p = classify_stage(df)
+    s = classify_sub_stage(df, p)
+    expect(f"{sym}/sub_stage_in_enum",
+           (s == "" or s in ALL_SUB_STAGES), True,
+           f"got sub_stage={s!r} parent={p}")
+
+# Invariant: parent prefix matches parent stage (e.g. STAGE_2_* on stage 2).
+for sym, df in [("DT", df_dt), ("RUN", df_run), ("PB", df_pb), ("BEAR", df_bear)]:
+    p = classify_stage(df)
+    s = classify_sub_stage(df, p)
+    if s:
+        expected_prefix = f"STAGE_{p}_"
+        expect(f"{sym}/sub_stage_parent_matches",
+               s.startswith(expected_prefix), True,
+               f"sub_stage={s!r} parent={p}")
+
+
 print()
 if fails == 0:
     print(f"All pattern tests passed.")
