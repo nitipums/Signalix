@@ -1000,7 +1000,19 @@ def _fmt_price(price: float) -> str:
 
 
 def _stock_row(rank: int, signal: StockSignal) -> dict:
-    """Single row in the ranked stock list. Columns: # | Stock | Price | Chg% | Vol | Pat"""
+    """Single row in the ranked stock list. 7 columns:
+        #  | Stock | Price | Chg% | Vol | Piv | Pat
+
+    Two visual cues encode the new 2-layer taxonomy:
+      • Rank number is colored by SUB_STAGE_COLOR[sub_stage] so
+        PIVOT_READY (gold), IGNITION (green), OVEREXTENDED (red) etc.
+        stand out at a glance even when buried mid-list by score.
+      • Piv column shows signed % distance to the pivot trigger for
+        the 5 actionable sub-stages (PREP/IGNITION/CONTRACTION/
+        PIVOT_READY/MARKUP). Stocks without a pivot show "—".
+    Pat column keeps the legacy 2-letter pattern code (BO/VCP/Coil/...)
+    per user preference for muscle memory.
+    """
     chg_pct = signal.change_pct or 0.0
     vol_ratio = signal.volume_ratio or 0.0
     close = signal.close or 0.0
@@ -1011,6 +1023,29 @@ def _stock_row(rank: int, signal: StockSignal) -> dict:
         "breakout": "BO", "ath_breakout": "ATH", "vcp": "VCP",
         "vcp_low_cheat": "VCPl", "consolidating": "Coil", "going_down": "DN",
     }.get(signal.pattern, "–")
+
+    # Rank colored by sub-stage — instant visual signal for actionable
+    # sub-stages buried mid-list by score. Falls back to neutral grey
+    # for old Firestore docs that don't have sub_stage populated.
+    sub_stage = getattr(signal, "sub_stage", "") or ""
+    rank_color = SUB_STAGE_COLOR.get(sub_stage, "#7F8C8D")
+
+    # Piv column — signed % distance to pivot trigger. Color tiers:
+    # green at/above trigger, amber within -5%, neutral otherwise.
+    piv = getattr(signal, "pivot_price", 0.0) or 0.0
+    if piv > 0 and close > 0:
+        delta = (close - piv) / piv * 100.0
+        piv_text = f"{'+' if delta > 0 else ''}{delta:.1f}%"
+        if delta >= 0:
+            piv_color = "#27AE60"
+        elif delta > -5:
+            piv_color = "#F39C12"
+        else:
+            piv_color = "#7F8C8D"
+    else:
+        piv_text = "—"
+        piv_color = "#7F8C8D"
+
     return {
         "type": "box",
         "layout": "horizontal",
@@ -1018,11 +1053,12 @@ def _stock_row(rank: int, signal: StockSignal) -> dict:
         "paddingTop": "5px",
         "paddingBottom": "5px",
         "contents": [
-            {"type": "text", "text": str(rank), "size": "xxs", "color": "#7F8C8D", "flex": 1, "gravity": "center"},
+            {"type": "text", "text": str(rank), "size": "xxs", "color": rank_color, "flex": 1, "gravity": "center", "weight": "bold"},
             {"type": "text", "text": signal.symbol, "size": "sm", "weight": "bold", "flex": 4, "gravity": "center"},
             {"type": "text", "text": _fmt_price(close), "size": "xxs", "color": "#CCCCCC", "flex": 3, "align": "end", "gravity": "center"},
             {"type": "text", "text": f"{chg_sign}{chg_pct:.1f}%", "size": "xs", "color": chg_color, "weight": "bold", "flex": 3, "align": "end", "gravity": "center"},
             {"type": "text", "text": f"{vol_ratio:.1f}x", "size": "xxs", "color": vol_color, "flex": 2, "align": "end", "gravity": "center"},
+            {"type": "text", "text": piv_text, "size": "xxs", "color": piv_color, "flex": 2, "align": "end", "gravity": "center"},
             {"type": "text", "text": pattern_short, "size": "xxs", "color": PATTERN_COLOR.get(signal.pattern, "#7F8C8D"), "flex": 2, "align": "end", "gravity": "center"},
         ],
     }
@@ -1058,6 +1094,7 @@ def build_ranked_stock_list_bubble(
             {"type": "text", "text": "Price", "size": "xxs", "color": "#7F8C8D", "flex": 3, "align": "end"},
             {"type": "text", "text": "Chg%", "size": "xxs", "color": "#7F8C8D", "flex": 3, "align": "end"},
             {"type": "text", "text": "Vol", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+            {"type": "text", "text": "Piv", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
             {"type": "text", "text": "Pat", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
         ],
     }

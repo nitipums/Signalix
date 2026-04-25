@@ -546,6 +546,58 @@ for sym, df in [("DT", df_dt), ("RUN", df_run), ("PB", df_pb), ("BEAR", df_bear)
                f"sub_stage={s!r} parent={p}")
 
 
+# ── Stock-list row builder: rank color + Piv column ─────────────────────
+# The shared `_stock_row` helper renders every ranked-list bubble (Stage 2,
+# sector, breakout, watchlist, index drill-down). Visual cues encode the new
+# 2-layer taxonomy: rank colored by SUB_STAGE_COLOR, new Piv column shows
+# distance to pivot trigger.
+print("\n_stock_row — rank color + Piv column")
+from notifier import _stock_row, SUB_STAGE_COLOR
+
+# PIVOT_READY signal: rank color = gold, Piv = signed-percent string.
+sig_pb.sub_stage = "STAGE_2_PIVOT_READY"   # df_pb fixture from earlier
+sig_pb.pivot_price = 111.5
+sig_pb.close = 108.0
+row = _stock_row(1, sig_pb)
+cells = row["contents"]
+expect("_stock_row: 7 columns", len(cells), 7)
+expect("_stock_row: rank colored by sub_stage",
+       cells[0]["color"], SUB_STAGE_COLOR["STAGE_2_PIVOT_READY"])
+piv_text = cells[5]["text"]
+expect("_stock_row: Piv text is signed-percent (not '—')",
+       piv_text != "—" and piv_text.endswith("%"), True,
+       f"piv_text={piv_text!r}")
+expect("_stock_row: Piv reflects close < pivot (negative delta)",
+       piv_text.startswith("-"), True, f"piv_text={piv_text!r}")
+
+# Out-of-scope for pivot (Stage 4 downtrend): Piv = '—', and rank gets
+# the sub_stage's own color (dark red for STAGE_4_DOWNTREND, not grey).
+sig_bear_pivot.sub_stage = "STAGE_4_DOWNTREND"
+sig_bear_pivot.pivot_price = 0.0
+row2 = _stock_row(2, sig_bear_pivot)
+cells2 = row2["contents"]
+expect("_stock_row: Stage 4 rank colored by SUB_STAGE_COLOR",
+       cells2[0]["color"], SUB_STAGE_COLOR["STAGE_4_DOWNTREND"])
+expect("_stock_row: out-of-scope Piv text is '—'",
+       cells2[5]["text"], "—")
+
+# Truly no sub_stage (e.g. old Firestore doc) → neutral grey fallback.
+sig_pb.sub_stage = ""
+sig_pb.pivot_price = 0.0
+row3 = _stock_row(3, sig_pb)
+expect("_stock_row: empty sub_stage falls back to neutral grey",
+       row3["contents"][0]["color"], "#7F8C8D")
+
+# Header sanity: build_ranked_stock_list_bubble emits a 7-cell header.
+from notifier import build_ranked_stock_list_bubble
+bubble = build_ranked_stock_list_bubble([sig_pb], "Test")
+header_row = bubble["body"]["contents"][0]
+expect("col_header: 7 cells (matches row width)",
+       len(header_row["contents"]), 7)
+expect("col_header: 6th cell text is 'Piv'",
+       header_row["contents"][5]["text"], "Piv")
+
+
 print()
 if fails == 0:
     print(f"All pattern tests passed.")
