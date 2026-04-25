@@ -318,42 +318,74 @@ def classify_sub_stage(df: pd.DataFrame, parent_stage: int) -> str:
     # ── Parent stage 2 — Layer 2 sub-stage classifier ──────────────
     # Five sub-stages, evaluated in this STRICT priority order so
     # multi-condition stocks resolve deterministically:
-    #   1. OVEREXTENDED — wins over everything (defensive: warn first).
-    #      Even a fresh-golden-cross stock at +25% above SMA50 gets
-    #      WARNING, not IGNITION.
-    #   2. PIVOT_READY  — actionable VCP setup (CONTRACTION + tightness
-    #      + volume dry-up triggers all firing). Spec calls this out
-    #      as "the trigger to calculate the Pivot Point".
-    #   3. IGNITION     — fresh momentum (golden cross within 20 bars
-    #      OR new 52W high on 1.5× volume).
+    #   1. PIVOT_READY  — actionable VCP setup (CONTRACTION + tightness
+    #      + volume dry-up triggers all firing). Highest priority —
+    #      a tight contraction is actionable regardless of how
+    #      stretched the larger structure is.
+    #   2. IGNITION     — fresh momentum kick. Wins over OVEREXTENDED
+    #      (per locked-in tie-break): a fresh golden-cross breakout
+    #      that's already 25% extended is still a fresh breakout, not
+    #      a climax warning.
+    #   3. OVEREXTENDED — entrenched climax warning. 3-path OR:
+    #      Path A: +25% above SMA50 AND golden cross > 40 bars old
+    #      Path B: +40% above SMA50 (very stretched flat threshold)
+    #      Path C: +25% above SMA50 AND ATR(5) > 2× ATR(20) (parabolic)
     #   4. CONTRACTION  — base building (PIVOT_READY MA structure
     #      WITHOUT the tightness/dry-up triggers).
     #   5. MARKUP       — riding short-term MAs; default fallback for
     #      any Stage 2 stock that doesn't match the others.
     if parent_stage == 2:
-        # Priority 1 — OVEREXTENDED: price stretched > 25% above SMA50.
-        # Climax-warning state; suppresses all other Stage 2 labels.
-        if m50 > 0 and c > m50 * 1.25:
-            return SUB_STAGE_2_OVEREXTENDED
-
         # PIVOT_READY + CONTRACTION share the same MA structure
         # (price below short-term MA but above mid-term).
         in_contraction_zone = (c < m10 or c < m20) and c > m50
 
-        # Priority 2 — PIVOT_READY: contraction + tightness + dry-up.
+        # Priority 1 — PIVOT_READY: contraction + tightness + dry-up.
         if (in_contraction_zone
                 and _price_tightness_5bar(df) < 0.07
                 and _vol_dry_up_strict(df, window=50, threshold=0.5)):
             return SUB_STAGE_2_PIVOT_READY
 
-        # Priority 3 — IGNITION: fresh momentum kick.
-        # Two paths: recent golden cross OR a new 52W high on heavy vol.
-        golden_cross_recent = _cross_within(s50, s200, n=20, direction="up")
+        # Priority 2 — IGNITION: fresh momentum kick. Mirrors Layer 1
+        # Path 3 (a)+(b) so any stock promoted to Stage 2 via the
+        # ignition override paths lands in IGNITION at the sub-stage
+        # level. Three trigger forms:
+        #   (a) Post-cross: golden cross within 20 bars (tighter than
+        #       L1's 30-bar window — only the freshest crosses).
+        #   (b) Pre-cross blast: price leads all 3 MAs (close > SMA10
+        #       AND close > SMA20 AND close > SMA50) on a decisive
+        #       breakout day. Catches GLORY-class stocks where SMA50
+        #       hasn't crossed SMA200 yet.
+        #   (c) New 52W high on heavy volume (pre-existing path).
+        c_prev_l2 = float(close.iloc[-2]) if len(close) > 1 else c
+        today_chg_l2 = (c - c_prev_l2) / c_prev_l2 * 100.0 if c_prev_l2 else 0.0
         high_52w_now = float(df["High"].iloc[-min(252, len(df)):].max())
         new_52w_high = high_52w_now > 0 and c >= high_52w_now * 0.999
+        strong_today = today_chg_l2 > 5.0
+        decisive_kick_l2 = new_52w_high or strong_today
         ignition_volume = vol_avg_50 > 0 and vol_now > vol_avg_50 * 1.5
-        if golden_cross_recent or (new_52w_high and ignition_volume):
+        golden_cross_recent = _cross_within(s50, s200, n=20, direction="up")
+        price_leads_all_mas = c > m10 and c > m20 and c > m50
+        if (golden_cross_recent
+                or (price_leads_all_mas and decisive_kick_l2)
+                or (new_52w_high and ignition_volume)):
             return SUB_STAGE_2_IGNITION
+
+        # Priority 3 — OVEREXTENDED: entrenched climax warning.
+        # 3-path OR — only fires when one of the climax tells is
+        # genuinely present, not just any +25% gap. Note IGNITION has
+        # already returned above for fresh-cross cases, so reaching
+        # here means cross is NOT recent (>20 bars old).
+        if m50 > 0:
+            extended_25  = c > m50 * 1.25
+            extended_40  = c > m50 * 1.40
+            cross_old_40 = not _cross_within(s50, s200, n=40, direction="up")
+            atr_5  = float(_atr(df, 5).iloc[-1])  if len(df) >= 5  else 0.0
+            atr_20 = float(_atr(df, 20).iloc[-1]) if len(df) >= 20 else 0.0
+            parabolic = atr_20 > 0 and atr_5 > 2.0 * atr_20
+            if ((extended_25 and cross_old_40)
+                    or extended_40
+                    or (extended_25 and parabolic)):
+                return SUB_STAGE_2_OVEREXTENDED
 
         # Priority 4 — CONTRACTION: same MA structure as PIVOT_READY
         # but the tightness/dry-up gates haven't fired yet.
@@ -525,13 +557,23 @@ def compute_pivot(df: pd.DataFrame, sub_stage: str) -> tuple[float, float]:
 def classify_stage(df: pd.DataFrame) -> int:
     """Layer 1 — general regime classification. Returns 1, 2, 3, or 4.
 
-    Spec-driven SMA conditions with Minervini's canonical 52W proximity
-    gates retained on Stage 2 (price ≥ 52W_low × 1.25 AND price ≥
-    52W_high × 0.75) so dead-cat stocks that pass MA slope conditions
-    but are still −50% from peak don't slip into the buy zone.
+    6-path priority pipeline:
+      1. Stage 2 strict      — canonical Minervini template
+      2. Stage 4              — explicit downtrend
+      3. Stage 2 ignition    — fresh-breakout-from-flat-base override
+                                (catches GLORY / GPI when SMA200 ROC
+                                hasn't caught up yet)
+      4. Stage 2 entrenched  — structurally-intact mid-pullback Stage 2
+                                (catches KKP / KCG when SMA200 ROC has
+                                temporarily flattened)
+      5. Stage 3 strict      — explicit topping (SMA20 dead-cross +
+                                close < SMA50). Drops the ROC-flat
+                                gate that previously caught fresh
+                                breakouts.
+      6. Stage 1              — default fallback (everything else)
 
-    Priority order: Stage 2 → 4 → 3 → 1 (default). Layer 2 sub-stage
-    classification runs separately via classify_sub_stage().
+    Each Stage 2 path enforces the canonical 52W proximity gates so
+    dead cats (down 50%+ from peak) don't slip into the buy zone.
     """
     if len(df) < MIN_ROWS:
         return 1
@@ -539,10 +581,14 @@ def classify_stage(df: pd.DataFrame) -> int:
     close = df["Close"]
     high = df["High"]
 
+    sma20 = _sma(close, 20)
     sma50 = _sma(close, 50)
     sma200 = _sma(close, 200)
 
     c = float(close.iloc[-1])
+    c_prev = float(close.iloc[-2]) if len(close) > 1 else c
+    today_chg = (c - c_prev) / c_prev * 100.0 if c_prev else 0.0
+    s20 = float(sma20.iloc[-1]) if not sma20.dropna().empty else float("nan")
     s50 = float(sma50.iloc[-1])
     s200 = float(sma200.iloc[-1])
 
@@ -554,33 +600,77 @@ def classify_stage(df: pd.DataFrame) -> int:
     high_52w = float(high.iloc[-lookback:].max())
     low_52w = float(close.iloc[-lookback:].min())
 
-    # ── Stage 2 (Uptrend) — spec + canonical 52W proximity gates ──
-    #   1. SMA50 > SMA200 (golden cross active)
-    #   2. Price > SMA200
-    #   3. SMA200 rising (ROC(200, 20d) > 0)
-    #   4. Price ≥ 52W low × 1.25  (Minervini, retained)
-    #   5. Price ≥ 52W high × 0.75 (Minervini, retained)
+    # Shared 52W proximity gates — used by every Stage 2 path so dead
+    # cats (down 50%+ from peak) don't slip into Stage 2.
+    #
+    # The low-gate has a 1e-6 tolerance for float-precision edge cases
+    # (yfinance returns prices as float32 round-tripped to float64,
+    # which can land 1e-7 above an exact threshold and falsely fail
+    # `>=`). It also has a tight-range exemption: if the 52W range is
+    # narrow (high - low < 30% of low), the stock isn't a dead cat by
+    # definition and the 25%-above-low rule shouldn't exclude it.
+    # Catches narrow-range Stage 2 stocks (e.g. KCG / GPI) that pass
+    # every structural condition but barely miss the 1.25× gate.
+    range_52w = (high_52w - low_52w) / low_52w if low_52w > 0 else 0.0
+    above_52w_low_x125 = (
+        c + 1e-6 >= low_52w * 1.25       # float tolerance
+        or range_52w < 0.30              # tight 52W range exemption
+    )
+    within_52w_high_x75 = c >= high_52w * 0.75
+
+    # ── Path 1: Stage 2 strict — canonical Minervini template ──
     if (s50 > s200 and c > s200 and roc200 > 0
-            and c >= low_52w * 1.25
-            and c >= high_52w * 0.75):
+            and above_52w_low_x125 and within_52w_high_x75):
         return 2
 
-    # ── Stage 4 (Downtrend) ──
-    #   Price < SMA200 AND SMA200 declining (ROC < 0).
+    # ── Path 2: Stage 4 — explicit downtrend ──
     if c < s200 and roc200 < 0:
         return 4
 
-    # ── Stage 3 (Distribution) — intermediate / topping ──
-    #   ROC(SMA200) flat (−1% < ROC < +1%) — the "rolling over" zone
-    #   between confirmed uptrend (Stage 2) and confirmed downtrend
-    #   (Stage 4). Captures stocks where the long-term slope has
-    #   stalled regardless of where price sits relative to SMA200.
-    if -1.0 < roc200 < 1.0:
+    # ── Path 3: Stage 2 ignition override — fresh breakout from flat
+    # base. Two forms:
+    #   (a) Post-cross: golden cross has occurred within last 30 bars
+    #       + price > SMA200 + close > SMA20 + decisive breakout
+    #       (new 52W high OR +5% kick day) + 52W gates.
+    #   (b) Pre-cross blast: SMA50 hasn't crossed SMA200 yet because
+    #       the long flat base drags SMA200 down faster than SMA50
+    #       can catch up — but price is LEADING all 3 MAs (close >
+    #       SMA20 AND close > SMA50 AND close > SMA200) on a
+    #       decisive breakout day. Catches "GLORY-class" stocks
+    #       where the rally is so explosive (+170% from base in
+    #       weeks) that SMA50 hasn't yet overtaken SMA200.
+    recent_cross   = _cross_within(sma50, sma200, n=30, direction="up")
+    above_sma20    = (not np.isnan(s20)) and c > s20
+    new_52w_high   = high_52w > 0 and c >= high_52w * 0.999
+    strong_today   = today_chg > 5.0
+    decisive_kick  = new_52w_high or strong_today
+    # Form (a) — post-cross
+    if (recent_cross and c > s200 and above_sma20
+            and above_52w_low_x125 and decisive_kick):
+        return 2
+    # Form (b) — pre-cross blast (SMA50 < SMA200 still, price-led)
+    if (c > s200 and c > s50 and above_sma20
+            and above_52w_low_x125 and within_52w_high_x75
+            and decisive_kick):
+        return 2
+
+    # ── Path 4: Stage 2 entrenched — structurally-intact mid-pullback.
+    # SMA stack still bullish, price still above SMA50, 52W gates still
+    # pass — only ROC has slipped. Catches KCG-class stocks where a
+    # shallow pullback briefly flattens SMA200's slope but the stock
+    # is clearly still in Stage 2 territory.
+    if (s50 > s200 and c > s50 and c > s200
+            and above_52w_low_x125 and within_52w_high_x75):
+        return 2
+
+    # ── Path 5: Stage 3 strict — explicit topping. SMA20 dead-crossed
+    # SMA50 in the last 20 bars AND price has fallen below SMA50.
+    # Stricter than the old "ROC flat" gate (which mis-caught fresh
+    # breakouts); now requires actual rolling-over behavior.
+    if _cross_within(sma20, sma50, n=20, direction="down") and c < s50:
         return 3
 
-    # ── Stage 1 (Accumulation / Basing) — default fallback ──
-    #   Catches everything else: SMA50 < SMA200 with non-rising ROC,
-    #   or any other non-classified state.
+    # ── Path 6: Stage 1 default fallback ──
     return 1
 
 

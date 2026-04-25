@@ -536,6 +536,116 @@ expect("wide pullback above SMA50 → STAGE_2_CONTRACTION (not PIVOT_READY)",
        (p_ct, s_ct), (2, SUB_STAGE_2_CONTRACTION),
        extra=f"close={float(df_ct['Close'].iloc[-1]):.2f} tightness={tightness_ct:.3f}")
 
+# ── Diagnostic fixtures (from chart-review iteration) ───────────────
+# Four real-chart patterns that exposed math bugs in Layer 1 + Layer 2:
+#   1. HANA-like   — fresh breakout from VCP, +30% above SMA50 (was wrongly
+#                    classified as OVEREXTENDED; should be IGNITION because
+#                    cross is recent)
+#   2. GLORY-like  — 6-month flat base then explosive breakout (was wrongly
+#                    classified as Stage 3 because flat SMA200 ROC; should
+#                    be Stage 2 IGNITION via Layer 1 path 3 override)
+#   3. KCG-like    — entrenched Stage 2 with shallow recent pullback that
+#                    flattens SMA200 ROC marginally (was dropping to Stage 1;
+#                    should stay Stage 2 via Layer 1 path 4 entrenched)
+#   4. True overextended — entrenched advance, golden cross long ago, +30%
+#                    above SMA50 (regression: still must fire OVEREXTENDED)
+
+# 1. HANA-like fixture: long base + sharp recent breakout. Stock closes
+# AT or near the day's high during the breakout (strong-close pattern)
+# so the new-52W-high IGNITION gate fires.
+def _build_hana_like():
+    base    = list(np.linspace(15, 18, 100))    # base 15→18
+    leg1    = list(np.linspace(18, 22, 30))     # first leg
+    pullback= list(np.linspace(22, 19, 20))     # pullback to 19
+    leg2    = list(np.linspace(19, 24, 20))     # second leg
+    contract= list(np.linspace(24, 21, 30))     # tight contraction
+    breakout= list(np.linspace(21, 30, 15))     # sharp breakout (15 bars)
+    prices = base + leg1 + pullback + leg2 + contract + breakout
+    # Pre-breakout: normal wicks ±0.5. Breakout candles close AT the
+    # high (no upper wick) so the last bar's high == last close == new
+    # 52W high.
+    highs = [p + 0.5 for p in prices[:-15]] + list(breakout)
+    lows  = [p - 0.5 for p in prices[:-15]] + [p - 0.5 for p in breakout]
+    vols  = [1_500_000] * (len(prices) - 15) + [4_000_000] * 15  # vol surge
+    return _mk_df(highs, lows=lows, closes=prices, volumes=vols)
+
+df_hana = _build_hana_like()
+p_hana, s_hana = _classify(df_hana)
+expect("HANA-like: fresh breakout from contraction → STAGE_2_IGNITION (not OVEREXTENDED)",
+       (p_hana, s_hana), (2, SUB_STAGE_2_IGNITION),
+       extra=f"close={float(df_hana['Close'].iloc[-1]):.2f}")
+
+# 2. GLORY-like fixture: long flat base then explosive breakout. Like
+# HANA, the breakout candles close AT the high so the new-52W-high
+# IGNITION gate fires even if the SMA50/SMA200 cross is just outside
+# the 20-bar window (cross happens early in the explosion phase).
+def _build_glory_like():
+    # 200 bars flat at 0.60 → 25 bars exploding from 0.60 to 1.50
+    base   = [0.60] * 200
+    blast  = list(np.linspace(0.60, 1.50, 25))
+    prices = base + blast
+    # Pre-blast: normal small wicks. Blast bars close AT the high
+    # (no upper wick) — strong-close breakout pattern.
+    highs = [p + 0.02 for p in prices[:-25]] + list(blast)
+    lows  = [p - 0.02 for p in prices[:-25]] + [p - 0.05 for p in blast]
+    # Heavy volume on the breakout days
+    vols  = [2_000_000] * (len(prices) - 10) + [10_000_000] * 10
+    return _mk_df(highs, lows=lows, closes=prices, volumes=vols)
+
+df_glory = _build_glory_like()
+p_glory, s_glory = _classify(df_glory)
+expect("GLORY-like: long flat base + explosive breakout → STAGE_2 (Layer 1 ignition override)",
+       p_glory, 2,
+       extra=f"sub_stage={s_glory!r} close={float(df_glory['Close'].iloc[-1]):.2f}")
+# Sub-stage may be IGNITION (recent cross) or OVEREXTENDED depending on
+# exact ratios — but with IGNITION prioritised over OVEREXTENDED, fresh
+# crosses always land in IGNITION.
+expect("GLORY-like: sub-stage is IGNITION (priority over OVEREXTENDED)",
+       s_glory, SUB_STAGE_2_IGNITION)
+
+# 3. KCG-like fixture: entrenched Stage 2 with shallow pullback
+def _build_kcg_like():
+    # 100 bars rising 7→9 (long uptrend, golden cross 100+ bars ago)
+    # 100 bars rising 9→9.5 (slow continuation)
+    # 30 bars consol/pullback at 9.5 → 9.7 → 9.5 (flattens SMA200 ROC)
+    rise1   = list(np.linspace(7.0, 9.0, 100))
+    rise2   = list(np.linspace(9.0, 9.5, 100))
+    pullbk  = ([9.7, 9.6, 9.5, 9.4, 9.5, 9.6, 9.7, 9.8, 9.7, 9.6,
+                9.5, 9.6, 9.7, 9.8, 9.7, 9.6, 9.5, 9.4, 9.5, 9.6,
+                9.7, 9.6, 9.5, 9.6, 9.7, 9.6, 9.7, 9.6, 9.7, 9.6])  # 30 bars choppy around 9.5-9.8
+    prices = rise1 + rise2 + pullbk
+    highs = [p + 0.10 for p in prices]
+    lows  = [p - 0.10 for p in prices]
+    vols  = [3_000_000] * len(prices)
+    return _mk_df(highs, lows=lows, closes=prices, volumes=vols)
+
+df_kcg = _build_kcg_like()
+p_kcg, s_kcg = _classify(df_kcg)
+expect("KCG-like: entrenched Stage 2 with shallow pullback → STAGE_2 (Layer 1 path 4 entrenched)",
+       p_kcg, 2,
+       extra=f"sub_stage={s_kcg!r} close={float(df_kcg['Close'].iloc[-1]):.2f}")
+
+# 4. True overextended fixture (regression): golden cross way back +
+# +30% above SMA50 = entrenched climax → must still fire OVEREXTENDED
+def _build_true_overextended():
+    # 50 bars at 50 (early base) + 200 bars steady rise to 100 (golden
+    # cross happened ~150 bars ago) + 15 bars climax run 100→130
+    base    = [50.0] * 50
+    rise    = list(np.linspace(50, 100, 200))
+    climax  = list(np.linspace(100, 130, 15))
+    prices = base + rise + climax
+    highs = [p + 1 for p in prices]
+    lows  = [p - 1 for p in prices]
+    vols  = [2_000_000] * len(prices)
+    return _mk_df(highs, lows=lows, closes=prices, volumes=vols)
+
+df_true_oe = _build_true_overextended()
+p_true_oe, s_true_oe = _classify(df_true_oe)
+sma50_true_oe = float(df_true_oe["Close"].rolling(50).mean().iloc[-1])
+expect("True-overextended: entrenched advance + 30% above SMA50 → OVEREXTENDED (regression)",
+       (p_true_oe, s_true_oe), (2, SUB_STAGE_2_OVEREXTENDED),
+       extra=f"close={float(df_true_oe['Close'].iloc[-1]):.2f} sma50={sma50_true_oe:.2f}")
+
 # Invariant: every sub-stage emitted must be in ALL_SUB_STAGES (or "").
 for sym, df in [("DT", df_dt), ("RUN", df_run), ("PB", df_pb), ("BEAR", df_bear),
                 ("WEAK", df_weak), ("STRONG", df_strong),
