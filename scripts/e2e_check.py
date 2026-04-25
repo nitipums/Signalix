@@ -379,17 +379,18 @@ def suite_global(base, secret):
         fails += check("global/coverage>=75%",
                        got >= int(configured * 0.75) if configured else False,
                        f"got {got}/{configured} ({round(got/configured*100 if configured else 0)}%)  ({dt}s)")
-        # Must have representation from at least 3 of 4 asset classes
-        # in the top/bottom-10 movers. Indexes barely move day-to-day and
-        # often miss the extremes — that's expected, not a bug. The
-        # invariant we actually care about: stock / etf / crypto must
-        # show up (those are the higher-volatility classes).
+        # Must show diversity in the top/bottom-10 movers — at least 3
+        # distinct asset classes. Specific classes drop in/out of the
+        # extremes daily depending on which section has the biggest
+        # movers (e.g. quiet crypto day → no crypto in top 10). The
+        # real invariant is "no single class is monopolising the
+        # extremes", not a specific class roster.
         top = (q.get("top_5_up") or []) + (q.get("top_5_down") or [])
-        classes = {row.get("class") for row in top}
-        fails += check("global/movers_have_volatile_classes",
-                       classes.issuperset({"stock", "etf", "crypto"}),
+        classes = {row.get("class") for row in top if row.get("class")}
+        fails += check("global/movers_diverse_classes",
+                       len(classes) >= 3,
                        f"top/bottom 10 classes: {sorted(classes)} "
-                       f"(indexes acceptable to be absent — they don't move much)")
+                       f"(need ≥3 distinct classes for healthy diversity)")
     except Exception as e:
         fails += check("global", False, f"err: {e}")
     return fails
