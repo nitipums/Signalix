@@ -376,6 +376,46 @@ def suite_sub_stage(base, secret):
     return fails
 
 
+def suite_pivot(base, secret):
+    """Pivot-point coverage for the 4 actionable buy-side sub-stages.
+
+    Confirms (a) the `pivot` filter dispatches kind=list, (b) every
+    returned signal has pivot_price > 0 + pivot_stop > 0 + stop < pivot,
+    (c) every signal's sub_stage is in the actionable scope (PREP /
+    EARLY / RUNNING / PULLBACK), (d) at least one stock in the live
+    cache carries a pivot — sanity-checking that the field made it
+    through scan → snapshot.
+    """
+    section("Pivot point — buy trigger + setup stop")
+    fails = 0
+    PIVOT_SCOPE = {"STAGE_1_PREP", "STAGE_2_EARLY",
+                   "STAGE_2_RUNNING", "STAGE_2_PULLBACK"}
+    try:
+        q, _ = query(base, secret, "pivot")
+        fails += check("pivot/dispatched", q.get("kind") == "list",
+                       f"kind={q.get('kind')} count={q.get('count')}")
+        fails += check("pivot/has_candidates", (q.get("count") or 0) > 0,
+                       f"count={q.get('count')} — no stocks with pivot_price>0; "
+                       "scan path may not be writing the field")
+        for r in q.get("first_5") or []:
+            sym = r.get("symbol")
+            piv = r.get("pivot_price") or 0
+            stp = r.get("pivot_stop") or 0
+            sub = r.get("sub_stage") or ""
+            fails += check(f"pivot/{sym}/price_positive", piv > 0,
+                           f"pivot_price={piv}")
+            fails += check(f"pivot/{sym}/stop_positive", stp > 0,
+                           f"pivot_stop={stp}")
+            fails += check(f"pivot/{sym}/stop_below_pivot", stp < piv,
+                           f"stop={stp} pivot={piv}")
+            fails += check(f"pivot/{sym}/sub_stage_in_scope",
+                           sub in PIVOT_SCOPE,
+                           f"sub_stage={sub!r} not in {PIVOT_SCOPE}")
+    except Exception as e:
+        fails += check("pivot", False, f"err: {e}")
+    return fails
+
+
 def suite_stage_weakening(base, secret):
     """Invariant coverage for the stage_weakening modifier shipped
     alongside breakout_attempt + unclosed-VCP. Works by probing a
@@ -807,6 +847,7 @@ def main():
     total_fails += suite_patterns(base, secret)
     total_fails += suite_stage_weakening(base, secret)
     total_fails += suite_sub_stage(base, secret)
+    total_fails += suite_pivot(base, secret)
     total_fails += suite_index_breadth(base, secret)
     total_fails += suite_sector_drill(base, secret)
     total_fails += suite_sector_coverage(base, secret)

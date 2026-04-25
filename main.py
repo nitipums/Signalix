@@ -729,6 +729,8 @@ def _signal_snapshot(signal) -> dict:
         "sma20": getattr(signal, "sma20", 0.0),
         "sma50": getattr(signal, "sma50", 0.0),
         "sma200_roc20": getattr(signal, "sma200_roc20", 0.0),
+        "pivot_price": getattr(signal, "pivot_price", 0.0),
+        "pivot_stop": getattr(signal, "pivot_stop", 0.0),
         "stage_weakening": getattr(signal, "stage_weakening", False),
     }
 
@@ -768,7 +770,9 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
                 {"symbol": s.symbol, "close": s.close, "change_pct": s.change_pct,
                  "stage": s.stage,
                  "sub_stage": getattr(s, "sub_stage", ""),
-                 "pattern": s.pattern, "strength": s.strength_score}
+                 "pattern": s.pattern, "strength": s.strength_score,
+                 "pivot_price": getattr(s, "pivot_price", 0.0),
+                 "pivot_stop": getattr(s, "pivot_stop", 0.0)}
                 for s in sigs[:5]
             ],
         }
@@ -843,6 +847,24 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
                     if getattr(s, "sub_stage", "") == sub_stage_const]
             sigs.sort(key=lambda s: s.strength_score, reverse=True)
             return summary(sigs, label)
+
+    # ── Pivot-point candidates ─────────────────────────────────────────
+    # All stocks with a computed pivot (= one of the 4 actionable
+    # sub-stages: PREP / EARLY / RUNNING / PULLBACK). Sorted by closeness
+    # to pivot — stocks already AT or ABOVE pivot rank highest, then those
+    # approaching it from below by % distance.
+    if c in ("pivot", "pivots", "pivot point", "pivot points"):
+        sigs = [s for s in _last_signals
+                if getattr(s, "pivot_price", 0.0) > 0]
+
+        def _pivot_distance(s):
+            # Closer to pivot = smaller positive value; above pivot = negative.
+            if not s.pivot_price:
+                return 999.0
+            return (s.pivot_price - s.close) / s.pivot_price
+
+        sigs.sort(key=_pivot_distance)
+        return summary(sigs, "Pivot Candidates")
 
     # Sector list (e.g. "sector FINCIAL")
     if c.startswith("sector ") and len(c) > 7:
@@ -2438,6 +2460,19 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
                    if getattr(s, "sub_stage", "") == sub_stage_const]
         signals.sort(key=lambda s: s.strength_score, reverse=True)
         _reply_stock_list(reply_token, signals, SUB_STAGE_LABELS[sub_stage_const])
+
+    elif cmd in ("pivot", "pivots", "pivot point", "pivot points"):
+        # Stocks with a computed pivot price (PREP / EARLY / RUNNING /
+        # PULLBACK sub-stages). Sorted by closeness to pivot — stocks
+        # already at/above pivot rank first, then approaching from below.
+        signals = [s for s in _last_signals
+                   if getattr(s, "pivot_price", 0.0) > 0]
+
+        def _pivot_distance(s):
+            return (s.pivot_price - s.close) / s.pivot_price if s.pivot_price else 999.0
+
+        signals.sort(key=_pivot_distance)
+        _reply_stock_list(reply_token, signals, "🎯 Pivot Candidates")
 
     elif cmd in ("vcp low cheat", "vcp_low_cheat", "low cheat"):
         signals = _get_signals_for(pattern="vcp_low_cheat")

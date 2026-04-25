@@ -398,6 +398,46 @@ expect("uptrend with narrowing low-vol pullback → STAGE_2_PULLBACK",
        (p_pb, s_pb), (2, SUB_STAGE_2_PULLBACK),
        extra=f"close={float(df_pb['Close'].iloc[-1]):.2f} sma20={sma20_pb:.2f} sma50={sma50_pb:.2f}")
 
+# ── Pivot point computation ───────────────────────────────────────────────
+print("\ncompute_pivot — pivot price + setup stop for actionable sub-stages")
+from analyzer import compute_pivot
+
+# Pullback fixture: pivot must be > current close (resistance above);
+# stop must be < current close (floor below); stop < pivot (sane R:R).
+pivot_pb, stop_pb = compute_pivot(df_pb, SUB_STAGE_2_PULLBACK)
+close_pb = float(df_pb["Close"].iloc[-1])
+expect("pullback fixture: pivot > 0", pivot_pb > 0, True,
+       f"pivot={pivot_pb:.2f}")
+expect("pullback fixture: stop > 0", stop_pb > 0, True,
+       f"stop={stop_pb:.2f}")
+expect("pullback fixture: stop < pivot", stop_pb < pivot_pb, True,
+       f"stop={stop_pb:.2f} pivot={pivot_pb:.2f}")
+expect("pullback fixture: pivot is recent 15-bar high",
+       pivot_pb, float(df_pb["High"].iloc[-15:].max()))
+expect("pullback fixture: stop is recent 10-bar low",
+       stop_pb, float(df_pb["Low"].iloc[-10:].min()))
+
+# Out-of-scope sub-stage: STAGE_4_DOWNTREND should return (0, 0).
+pivot_dt, stop_dt = compute_pivot(df_dt, SUB_STAGE_4_DOWNTREND)
+expect("downtrend fixture: pivot=0 (out of scope)", pivot_dt, 0.0)
+expect("downtrend fixture: stop=0 (out of scope)", stop_dt, 0.0)
+
+# scan_stock end-to-end: pullback signal carries pivot + stop fields.
+sig_pb = scan_stock("PBTEST", df_pb)
+expect("pullback scan: pivot_price field set",
+       sig_pb.pivot_price > 0, True,
+       f"pivot_price={sig_pb.pivot_price}")
+expect("pullback scan: pivot_stop field set",
+       sig_pb.pivot_stop > 0, True,
+       f"pivot_stop={sig_pb.pivot_stop}")
+expect("pullback scan: pivot_stop < pivot_price",
+       sig_pb.pivot_stop < sig_pb.pivot_price, True)
+
+# Downtrend signal: pivot fields stay zero (out of scope).
+sig_bear_pivot = scan_stock("BEARPIVOT", df_bear)
+expect("downtrend scan: pivot_price=0 (out of scope)",
+       sig_bear_pivot.pivot_price, 0.0)
+
 # Invariant: every sub-stage emitted must be in ALL_SUB_STAGES (or "").
 for sym, df in [("DT", df_dt), ("RUN", df_run), ("PB", df_pb), ("BEAR", df_bear),
                 ("WEAK", df_weak), ("STRONG", df_strong)]:

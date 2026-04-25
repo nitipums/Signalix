@@ -771,6 +771,19 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
     if signal.sma200:
         gap200 = (signal.close - signal.sma200) / signal.sma200 * 100
         ma_rows.append(_detail_row("SMA200", f"฿{signal.sma200:,.2f}", f"{gap200:+.1f}%", _pct_color(gap200)))
+    # Pivot row — only renders for actionable sub-stages (PREP / EARLY /
+    # RUNNING / PULLBACK). Distance % shown next to pivot tells the user
+    # how far above/below the buy trigger they are right now.
+    pivot = getattr(signal, "pivot_price", 0.0) or 0.0
+    pstop = getattr(signal, "pivot_stop", 0.0) or 0.0
+    if pivot > 0:
+        gap_pivot = (signal.close - pivot) / pivot * 100
+        ma_rows.append(_detail_row("🎯 Pivot", f"฿{pivot:,.2f}",
+                                    f"{gap_pivot:+.1f}%", _pct_color(gap_pivot)))
+        if pstop > 0:
+            risk_pct = (pstop - signal.close) / signal.close * 100
+            ma_rows.append(_detail_row("⛔ Stop", f"฿{pstop:,.2f}",
+                                        f"{risk_pct:+.1f}%", "#E74C3C"))
 
     body_contents = [
         {"type": "box", "layout": "horizontal", "contents": [
@@ -1970,6 +1983,17 @@ def build_watchlist_stock_card(signal: StockSignal, fundamentals: dict) -> dict:
     if signal.sma200:
         gap200 = (signal.close - signal.sma200) / signal.sma200 * 100
         ma_rows.append(_detail_row("SMA200", f"฿{signal.sma200:,.2f}", f"{gap200:+.1f}%", _pct_color(gap200)))
+    # Pivot row (same gesture as single-stock card).
+    pivot = getattr(signal, "pivot_price", 0.0) or 0.0
+    pstop = getattr(signal, "pivot_stop", 0.0) or 0.0
+    if pivot > 0:
+        gap_pivot = (signal.close - pivot) / pivot * 100
+        ma_rows.append(_detail_row("🎯 Pivot", f"฿{pivot:,.2f}",
+                                    f"{gap_pivot:+.1f}%", _pct_color(gap_pivot)))
+        if pstop > 0:
+            risk_pct = (pstop - signal.close) / signal.close * 100
+            ma_rows.append(_detail_row("⛔ Stop", f"฿{pstop:,.2f}",
+                                        f"{risk_pct:+.1f}%", "#E74C3C"))
 
     # Fundamental rows
     fund_rows = []

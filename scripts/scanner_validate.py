@@ -128,13 +128,18 @@ def dump_stock(code: str, name: str, yf_tk: str, df) -> dict:
     print()
     weak = " ⚠ WEAKENING (close < SMA50)" if getattr(sig, "stage_weakening", False) else ""
     sub = getattr(sig, "sub_stage", "") or "(none)"
+    pivot = getattr(sig, "pivot_price", 0.0) or 0.0
+    pstop = getattr(sig, "pivot_stop", 0.0) or 0.0
     print(f"  >>> SCANNER DECISION: stage={sig.stage}{weak}  pattern={sig.pattern}  sub_stage={sub}")
+    if pivot > 0:
+        gap = (sig.close - pivot) / pivot * 100
+        print(f"      🎯 pivot={pivot:,.2f}  ⛔ stop={pstop:,.2f}  close-vs-pivot={gap:+.2f}%")
     if sig.breakout_details:
         print(f"      breakout_details: {sig.breakout_details}")
     return {"code": code, "stage": sig.stage, "pattern": sig.pattern,
             "data_date": sig.data_date, "close": sig.close,
             "weakening": getattr(sig, "stage_weakening", False),
-            "sub_stage": sub}
+            "sub_stage": sub, "pivot": pivot, "stop": pstop}
 
 
 def dump_index(code: str, name: str, yf_tk: str, df) -> dict:
