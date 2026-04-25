@@ -41,6 +41,8 @@ from data import (
     load_signals_from_firestore, resolve_symbol, save_signals_to_firestore,
     sync_ath_to_firestore, tradingview_url,
 )
+import settrade_client
+import trader
 from notifier import (
     broadcast_flex,
     build_compact_stock_carousel,
@@ -378,8 +380,25 @@ async def scan(
     if BQ_AVAILABLE and body.mode == "full":
         loop.run_in_executor(None, append_new_candles_to_bq, all_data)
 
+    # Trading: gate signals through risk_manager and place orders (or paper-log)
+    trade_summary: dict = {}
+    if get_settings().trading_enabled:
+        try:
+            trade_summary = await loop.run_in_executor(
+                None, trader.process_signals, signals, _db,
+            )
+            logger.info("Trading summary: %s", trade_summary)
+        except Exception as exc:
+            logger.exception("trader.process_signals failed: %s", exc)
+            trade_summary = {"error": str(exc)}
+
     if not body.broadcast:
-        return {"scanned": len(signals), "mode": body.mode, "breadth": breadth.__dict__}
+        return {
+            "scanned": len(signals),
+            "mode": body.mode,
+            "breadth": breadth.__dict__,
+            "trading": trade_summary,
+        }
 
     # Choose what to broadcast based on scan_type
     if body.scan_type == "breadth":
@@ -400,7 +419,103 @@ async def scan(
     else:  # "full" — post-close full report
         _broadcast_full_report(breadth, signals)
 
-    return {"scanned": len(signals), "mode": body.mode, "broadcast": body.scan_type}
+    return {
+        "scanned": len(signals),
+        "mode": body.mode,
+        "broadcast": body.scan_type,
+        "trading": trade_summary,
+    }
+
+
+# ─── Trading endpoints ────────────────────────────────────────────────────────
+
+def _require_scan_secret(x_scan_secret: Optional[str]) -> None:
+    if not secrets.compare_digest(x_scan_secret or "", get_settings().scan_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scan secret")
+
+
+@app.get("/trading/status")
+async def trading_status(x_scan_secret: Optional[str] = Header(default=None)):
+    _require_scan_secret(x_scan_secret)
+    s = get_settings()
+    open_trades_real = trader._open_trades(_db, "live") if FIRESTORE_AVAILABLE and _db else []
+    open_trades_paper = trader._open_trades(_db, "paper") if FIRESTORE_AVAILABLE and _db else []
+    account_info = settrade_client.get_account_info() if s.trading_mode.lower() == "live" else None
+    portfolio = settrade_client.get_portfolio() if s.trading_mode.lower() == "live" else []
+    return {
+        "trading_enabled": s.trading_enabled,
+        "trading_mode": s.trading_mode,
+        "kill_switch_active": trader.kill_switch_active(_db),
+        "today_realized_pnl": trader.today_realized_pnl(_db),
+        "open_trades_live": open_trades_real,
+        "open_trades_paper": open_trades_paper,
+        "broker_portfolio": portfolio,
+        "account_info": account_info,
+        "limits": {
+            "min_strength_score": s.min_strength_score,
+            "allowed_patterns": s.allowed_patterns,
+            "risk_per_trade_pct": s.risk_per_trade_pct,
+            "reward_r_multiple": s.reward_r_multiple,
+            "max_position_size_thb": s.max_position_size_thb,
+            "max_open_positions": s.max_open_positions,
+            "max_daily_loss_thb": s.max_daily_loss_thb,
+        },
+    }
+
+
+@app.post("/trading/enable")
+async def trading_enable(x_scan_secret: Optional[str] = Header(default=None)):
+    _require_scan_secret(x_scan_secret)
+    trader.set_kill_switch(_db, disabled=False, reason="manual_enable")
+    return {"ok": True, "kill_switch_active": False}
+
+
+@app.post("/trading/disable")
+async def trading_disable(
+    x_scan_secret: Optional[str] = Header(default=None),
+    reason: str = "manual_disable",
+):
+    _require_scan_secret(x_scan_secret)
+    trader.set_kill_switch(_db, disabled=True, reason=reason)
+    return {"ok": True, "kill_switch_active": True, "reason": reason}
+
+
+@app.post("/trading/manage")
+async def trading_manage(x_scan_secret: Optional[str] = Header(default=None)):
+    _require_scan_secret(x_scan_secret)
+    loop = asyncio.get_running_loop()
+    summary = await loop.run_in_executor(None, trader.manage_open_positions, _db)
+    return summary
+
+
+@app.post("/trading/exit-all")
+async def trading_exit_all(x_scan_secret: Optional[str] = Header(default=None)):
+    """Emergency liquidate: market-sell every open live position."""
+    _require_scan_secret(x_scan_secret)
+    s = get_settings()
+    if s.trading_mode.lower() != "live":
+        return {"ok": True, "skipped": "not_in_live_mode", "mode": s.trading_mode}
+
+    portfolio = settrade_client.get_portfolio()
+    results: list[dict] = []
+    for pos in portfolio:
+        symbol = pos.get("symbol")
+        volume = int(pos.get("volume") or 0)
+        if not symbol or volume <= 0:
+            continue
+        quote = settrade_client.get_quote(symbol) or {}
+        last = float(quote.get("last") or pos.get("market_price") or 0) or 0.01
+        resp = settrade_client.place_order(
+            symbol=symbol, side="Sell", volume=volume, price=last,
+            price_type="Market", position="Close",
+        )
+        results.append({
+            "symbol": symbol, "volume": volume,
+            "order_no": (resp or {}).get("order_no"),
+            "ok": bool(resp),
+        })
+    trader.set_kill_switch(_db, disabled=True, reason="exit_all_invoked")
+    return {"liquidated": results, "kill_switch_active": True}
 
 
 @app.post("/sync_ath")

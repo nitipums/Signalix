@@ -1740,3 +1740,185 @@ def multicast_flex(user_ids: list[str], alt_text: str, container: dict) -> None:
             )
     except Exception as exc:
         logger.error("Failed to multicast: %s", exc)
+
+
+# ─── Trade event cards ────────────────────────────────────────────────────────
+
+def _kv_row(label: str, value: str, value_color: str = "#111111", value_weight: str = "regular") -> dict:
+    return {
+        "type": "box",
+        "layout": "baseline",
+        "contents": [
+            {"type": "text", "text": label, "size": "sm", "color": "#888888", "flex": 4},
+            {"type": "text", "text": value, "size": "sm", "weight": value_weight,
+             "color": value_color, "flex": 6, "align": "end"},
+        ],
+    }
+
+
+def build_trade_entry_card(trade: dict) -> dict:
+    symbol = trade.get("symbol", "?")
+    volume = int(trade.get("volume") or 0)
+    entry = float(trade.get("entry_price") or 0)
+    stop = float(trade.get("stop_loss") or 0)
+    target = float(trade.get("target_price") or 0)
+    pattern = trade.get("pattern", "-")
+    score = trade.get("strength_score", "-")
+    mode = (trade.get("mode") or "live").upper()
+    order_no = trade.get("order_no") or "-"
+    notional = volume * entry
+    risk = (entry - stop) * volume if entry > stop > 0 else 0
+    reward = (target - entry) * volume if target > entry else 0
+
+    return {
+        "type": "bubble",
+        "size": "kilo",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "backgroundColor": "#0B5394" if mode == "LIVE" else "#37474F",
+            "contents": [
+                {"type": "text", "text": f"🟢 ENTRY · {mode}", "color": "#FFFFFF",
+                 "size": "xs", "weight": "bold"},
+                {"type": "text", "text": symbol, "color": "#FFFFFF",
+                 "size": "xxl", "weight": "bold"},
+                {"type": "text", "text": f"{pattern} · score {score}",
+                 "color": "#DDDDDD", "size": "xs"},
+            ],
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "sm",
+            "contents": [
+                _kv_row("Volume", f"{volume:,}"),
+                _kv_row("Entry", f"{entry:,.2f}", "#0B5394", "bold"),
+                _kv_row("Stop", f"{stop:,.2f}", "#C62828"),
+                _kv_row("Target", f"{target:,.2f}", "#2E7D32"),
+                {"type": "separator", "margin": "sm"},
+                _kv_row("Notional", f"฿{notional:,.0f}"),
+                _kv_row("Risk", f"฿{risk:,.0f}", "#C62828"),
+                _kv_row("Reward", f"฿{reward:,.0f}", "#2E7D32"),
+                _kv_row("Order", str(order_no), "#666666"),
+            ],
+        },
+    }
+
+
+def build_trade_exit_card(trade: dict) -> dict:
+    symbol = trade.get("symbol", "?")
+    volume = int(trade.get("volume") or 0)
+    entry = float(trade.get("entry_price") or 0)
+    exit_p = float(trade.get("exit_price") or 0)
+    realized = float(trade.get("realized_pnl") or 0)
+    reason = trade.get("exit_reason") or "-"
+    mode = (trade.get("mode") or "live").upper()
+    pct = ((exit_p / entry - 1) * 100) if entry > 0 and exit_p > 0 else 0.0
+    is_win = realized >= 0
+    bg = "#2E7D32" if is_win else "#C62828"
+    icon = "✅" if is_win else "🛑"
+
+    return {
+        "type": "bubble",
+        "size": "kilo",
+        "header": {
+            "type": "box", "layout": "vertical", "backgroundColor": bg,
+            "contents": [
+                {"type": "text", "text": f"{icon} EXIT · {mode}",
+                 "color": "#FFFFFF", "size": "xs", "weight": "bold"},
+                {"type": "text", "text": symbol, "color": "#FFFFFF",
+                 "size": "xxl", "weight": "bold"},
+                {"type": "text", "text": reason, "color": "#DDDDDD", "size": "xs"},
+            ],
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "sm",
+            "contents": [
+                _kv_row("Volume", f"{volume:,}"),
+                _kv_row("Entry", f"{entry:,.2f}"),
+                _kv_row("Exit", f"{exit_p:,.2f}", "#0B5394", "bold"),
+                {"type": "separator", "margin": "sm"},
+                _kv_row("P&L", f"{'+' if is_win else ''}฿{realized:,.0f}", bg, "bold"),
+                _kv_row("Return", f"{pct:+.2f}%", bg, "bold"),
+            ],
+        },
+    }
+
+
+def build_daily_pnl_card(summary: dict) -> dict:
+    realized = float(summary.get("realized_pnl") or 0)
+    trades = int(summary.get("trades_closed") or 0)
+    wins = int(summary.get("wins") or 0)
+    losses = int(summary.get("losses") or 0)
+    is_win = realized >= 0
+    bg = "#2E7D32" if is_win else "#C62828"
+
+    return {
+        "type": "bubble",
+        "size": "kilo",
+        "header": {
+            "type": "box", "layout": "vertical", "backgroundColor": bg,
+            "contents": [
+                {"type": "text", "text": "📈 Daily P&L", "color": "#FFFFFF",
+                 "size": "xs", "weight": "bold"},
+                {"type": "text", "text": f"{'+' if is_win else ''}฿{realized:,.0f}",
+                 "color": "#FFFFFF", "size": "xxl", "weight": "bold"},
+            ],
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "sm",
+            "contents": [
+                _kv_row("Trades closed", str(trades)),
+                _kv_row("Wins", str(wins), "#2E7D32"),
+                _kv_row("Losses", str(losses), "#C62828"),
+            ],
+        },
+    }
+
+
+def build_risk_alert_card(reason: str, detail: str = "") -> dict:
+    return {
+        "type": "bubble",
+        "size": "kilo",
+        "header": {
+            "type": "box", "layout": "vertical", "backgroundColor": "#B71C1C",
+            "contents": [
+                {"type": "text", "text": "⚠️ RISK ALERT", "color": "#FFFFFF",
+                 "size": "sm", "weight": "bold"},
+                {"type": "text", "text": reason, "color": "#FFFFFF",
+                 "size": "lg", "weight": "bold"},
+            ],
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": detail or "Trading is paused. Review /trading/status.",
+                 "wrap": True, "size": "sm", "color": "#333333"},
+            ],
+        },
+    }
+
+
+def notify_trade_entry(trade: dict) -> None:
+    try:
+        broadcast_flex(f"Entry: {trade.get('symbol')}", build_trade_entry_card(trade))
+    except Exception as exc:
+        logger.error("notify_trade_entry failed: %s", exc)
+
+
+def notify_trade_exit(trade: dict) -> None:
+    try:
+        broadcast_flex(f"Exit: {trade.get('symbol')}", build_trade_exit_card(trade))
+    except Exception as exc:
+        logger.error("notify_trade_exit failed: %s", exc)
+
+
+def notify_daily_pnl(summary: dict) -> None:
+    try:
+        broadcast_flex("Daily P&L", build_daily_pnl_card(summary))
+    except Exception as exc:
+        logger.error("notify_daily_pnl failed: %s", exc)
+
+
+def notify_risk_alert(reason: str, detail: str = "") -> None:
+    try:
+        broadcast_flex(f"Risk: {reason}", build_risk_alert_card(reason, detail))
+    except Exception as exc:
+        logger.error("notify_risk_alert failed: %s", exc)

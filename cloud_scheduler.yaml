@@ -57,3 +57,32 @@ jobs:
         Content-Type: application/json
         X-Scan-Secret: "${SCAN_SECRET}"
       body: '{"scan_type": "full", "broadcast": true, "mode": "full"}'
+
+  # ─── Trading: position management loop ────────────────────────────────────
+  # Every 10 minutes during ICT market hours (10:00-12:30 and 14:30-16:30, Mon-Fri)
+  # 10:00-12:30 ICT = 03:00-05:30 UTC → "*/10 3-5 * * 1-5"  (covers 03:00-05:50 UTC)
+  # 14:30-16:30 ICT = 07:30-09:30 UTC → "*/10 7-9 * * 1-5"  (covers 07:00-09:50 UTC)
+
+  - name: signalix-trading-manage-morning
+    description: "Every 10 min, ICT 10:00-12:30 — evaluate stop/target on open positions"
+    schedule: "*/10 3-5 * * 1-5"
+    timeZone: "Asia/Bangkok"
+    httpTarget:
+      uri: "${CLOUD_RUN_URL}/trading/manage"
+      httpMethod: POST
+      headers:
+        Content-Type: application/json
+        X-Scan-Secret: "${SCAN_SECRET}"
+      body: '{}'
+
+  - name: signalix-trading-manage-afternoon
+    description: "Every 10 min, ICT 14:30-16:30 — evaluate stop/target on open positions"
+    schedule: "*/10 7-9 * * 1-5"
+    timeZone: "Asia/Bangkok"
+    httpTarget:
+      uri: "${CLOUD_RUN_URL}/trading/manage"
+      httpMethod: POST
+      headers:
+        Content-Type: application/json
+        X-Scan-Secret: "${SCAN_SECRET}"
+      body: '{}'

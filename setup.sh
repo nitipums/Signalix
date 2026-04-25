@@ -36,6 +36,8 @@ SETTRADE_APP_ID=$(grep 'SETTRADE_APP_ID' env.yaml | sed 's/.*: *//' | tr -d '"')
 SETTRADE_APP_SECRET=$(grep 'SETTRADE_APP_SECRET' env.yaml | sed 's/.*: *//' | tr -d '"')
 SETTRADE_BROKER_ID=$(grep 'SETTRADE_BROKER_ID' env.yaml | sed 's/.*: *//' | tr -d '"')
 SETTRADE_APP_CODE=$(grep 'SETTRADE_APP_CODE' env.yaml | sed 's/.*: *//' | tr -d '"')
+SETTRADE_ACCOUNT_NO=$(grep 'SETTRADE_ACCOUNT_NO' env.yaml | sed 's/.*: *//' | tr -d '"')
+SETTRADE_PIN=$(grep 'SETTRADE_PIN' env.yaml | sed 's/.*: *//' | tr -d '"')
 
 # ── 1. Enable APIs ────────────────────────────────────────────────────────────
 echo ""
@@ -69,6 +71,11 @@ store_secret "SCAN_SECRET" "$SCAN_SECRET"
 [ -n "$SETTRADE_APP_SECRET" ] && store_secret "SETTRADE_APP_SECRET" "$SETTRADE_APP_SECRET"
 [ -n "$SETTRADE_BROKER_ID" ]  && store_secret "SETTRADE_BROKER_ID"  "$SETTRADE_BROKER_ID"
 [ -n "$SETTRADE_APP_CODE" ]   && store_secret "SETTRADE_APP_CODE"   "$SETTRADE_APP_CODE"
+# Trading secrets are referenced unconditionally by cloudbuild.yaml; create
+# placeholders so deploys never fail. Trading stays inert until real values land
+# (settrade_client._get_equity_account returns None when PIN/account are empty).
+store_secret "SETTRADE_ACCOUNT_NO" "${SETTRADE_ACCOUNT_NO:-PLACEHOLDER-NOT-SET}"
+store_secret "SETTRADE_PIN"        "${SETTRADE_PIN:-PLACEHOLDER-NOT-SET}"
 
 # ── 3. Grant Cloud Build access to secrets ────────────────────────────────────
 echo ""

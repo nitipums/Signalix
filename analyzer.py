@@ -23,6 +23,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from config import get_settings
 from data import SECTOR_MAP, fetch_all_stocks, get_stock_list, tradingview_url
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ class StockSignal:
     trade_value_m: float = 0.0     # Trade value in THB millions (volume * close / 1M)
     pct_from_52w_high: float = 0.0 # (close / high_52w - 1) * 100, negative when below ATH
     stop_loss: float = 0.0         # ATR-based: close - 1.5 * ATR
-    target_price: float = 0.0      # 2:1 risk/reward: close + 2 * (close - stop_loss)
+    target_price: float = 0.0      # close + REWARD_R_MULTIPLE * (close - stop_loss)
     breakout_count_1y: int = 0     # Number of distinct breakout events in past year
 
 
@@ -416,7 +417,8 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
     pct_from_high = round((c / high_52w - 1) * 100, 2) if high_52w > 0 else 0.0
     stop_loss_price = round(c - 1.5 * atr_val, 2) if atr_val > 0 else 0.0
     risk_per_share = c - stop_loss_price if stop_loss_price > 0 else 0.0
-    target = round(c + 2 * risk_per_share, 2) if risk_per_share > 0 else 0.0
+    reward_r = get_settings().reward_r_multiple
+    target = round(c + reward_r * risk_per_share, 2) if risk_per_share > 0 else 0.0
     bo_count = count_breakouts_1y(df)
 
     from datetime import datetime
