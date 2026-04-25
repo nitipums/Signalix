@@ -671,44 +671,99 @@ def fetch_sector_index_prices() -> dict[str, dict]:
 # small enough (~28 symbols) that per-ticker fetches are cheap.
 # ──────────────────────────────────────────────────────────────────────────
 
+# Each entry has an optional "section" — a stable display group used by
+# build_global_snapshot_card to render the bulk view in tabs/headers.
+# Six top-level groups, organised by what Thai SET-stock-focused traders
+# actually watch in TradingView side-panels.
+#
+# Class vs Section: 'class' is the asset taxonomy (index/etf/stock/crypto/
+# fx/commodity) used for icons + per-class scoring rules. 'section' is the
+# UI grouping (e.g. US Indexes vs Asia Indexes are both class=index but
+# different sections).
 GLOBAL_SYMBOLS: dict[str, dict] = {
-    # ── World / Asia-Pacific indexes ──
-    "SPX":     {"yf": "^GSPC",      "name": "S&P 500",                  "class": "index"},
-    "NDX":     {"yf": "^NDX",       "name": "Nasdaq 100",               "class": "index"},
-    "DJI":     {"yf": "^DJI",       "name": "Dow Jones",                "class": "index"},
-    "KOSPI":   {"yf": "^KS11",      "name": "KOSPI (Korea)",            "class": "index"},
-    "NI225":   {"yf": "^N225",      "name": "Nikkei 225 (Japan)",       "class": "index"},
-    "HSI":     {"yf": "^HSI",       "name": "Hang Seng (Hong Kong)",    "class": "index"},
-    "SSE":     {"yf": "000001.SS",  "name": "SSE Composite (Shanghai)", "class": "index"},
+    # ── 🇺🇸 US Major Indexes ────────────────────────────────────────
+    "SPX":     {"yf": "^GSPC",      "name": "S&P 500",                       "class": "index",     "section": "us_indexes"},
+    "NDX":     {"yf": "^NDX",       "name": "Nasdaq 100",                    "class": "index",     "section": "us_indexes"},
+    "DJI":     {"yf": "^DJI",       "name": "Dow Jones",                     "class": "index",     "section": "us_indexes"},
+    "RUT":     {"yf": "^RUT",       "name": "Russell 2000 (small caps)",     "class": "index",     "section": "us_indexes"},
+    "VIX":     {"yf": "^VIX",       "name": "Volatility Index (fear gauge)", "class": "index",     "section": "us_indexes"},
+
+    # ── 🌏 Asia Pacific Indexes ─────────────────────────────────────
+    "KOSPI":   {"yf": "^KS11",      "name": "KOSPI (Korea)",                 "class": "index",     "section": "asia_indexes"},
+    "NI225":   {"yf": "^N225",      "name": "Nikkei 225 (Japan)",            "class": "index",     "section": "asia_indexes"},
+    "HSI":     {"yf": "^HSI",       "name": "Hang Seng (Hong Kong)",         "class": "index",     "section": "asia_indexes"},
+    "SSE":     {"yf": "000001.SS",  "name": "SSE Composite (Shanghai)",      "class": "index",     "section": "asia_indexes"},
+    "TWII":    {"yf": "^TWII",      "name": "Taiwan Weighted (TWSE)",        "class": "index",     "section": "asia_indexes"},
+    "STI":     {"yf": "^STI",       "name": "Straits Times (Singapore)",     "class": "index",     "section": "asia_indexes"},
+    "JKSE":    {"yf": "^JKSE",      "name": "Jakarta Composite (Indonesia)", "class": "index",     "section": "asia_indexes"},
+    "NIFTY":   {"yf": "^NSEI",      "name": "NIFTY 50 (India)",              "class": "index",     "section": "asia_indexes"},
     # VNINDEX intentionally omitted — yfinance has no reliable coverage for
-    # the Vietnamese market (`^VNI`, `^VNINDEX`, `VNINDEX.VN`, `VN30.VN`
-    # all return 0 rows / 404). Restore in Phase 3 via a dedicated SEA
-    # market API (HOSE data feed or TradingView scraper).
+    # the Vietnamese market (^VNI / ^VNINDEX / VNINDEX.VN / VN30.VN all
+    # return 0 rows / 404). Restore in Phase 3 via dedicated SEA feed.
 
-    # ── ETFs ──
-    "QQQ":     {"yf": "QQQ",        "name": "Invesco QQQ (Nasdaq 100)",    "class": "etf"},
-    "SPY":     {"yf": "SPY",        "name": "SPDR S&P 500 ETF",            "class": "etf"},
-    "VOO":     {"yf": "VOO",        "name": "Vanguard S&P 500 ETF",        "class": "etf"},
-    "SMH":     {"yf": "SMH",        "name": "VanEck Semiconductor ETF",    "class": "etf"},
-    "ARKW":    {"yf": "ARKW",       "name": "ARK Next Gen Internet ETF",   "class": "etf"},
-    "DAPP":    {"yf": "DAPP",       "name": "VanEck Digital Transform",    "class": "etf"},
+    # ── 💱 FX & Macro (Thailand-relevant currencies + dollar index) ──
+    "USDTHB":  {"yf": "THB=X",      "name": "USD / THB",                     "class": "fx",        "section": "fx_macro"},
+    "DXY":     {"yf": "DX-Y.NYB",   "name": "US Dollar Index",               "class": "fx",        "section": "fx_macro"},
+    "USDJPY":  {"yf": "JPY=X",      "name": "USD / JPY",                     "class": "fx",        "section": "fx_macro"},
+    "USDCNY":  {"yf": "CNY=X",      "name": "USD / CNY",                     "class": "fx",        "section": "fx_macro"},
 
-    # ── US large-cap stocks ──
-    "AAPL":    {"yf": "AAPL",       "name": "Apple",           "class": "stock"},
-    "MSFT":    {"yf": "MSFT",       "name": "Microsoft",       "class": "stock"},
-    "NVDA":    {"yf": "NVDA",       "name": "NVIDIA",          "class": "stock"},
-    "TSLA":    {"yf": "TSLA",       "name": "Tesla",           "class": "stock"},
-    "GOOG":    {"yf": "GOOG",       "name": "Alphabet",        "class": "stock"},
-    "META":    {"yf": "META",       "name": "Meta Platforms",  "class": "stock"},
-    "GEV":     {"yf": "GEV",        "name": "GE Vernova",      "class": "stock"},
-    "FSLY":    {"yf": "FSLY",       "name": "Fastly",          "class": "stock"},
-    "NFLX":    {"yf": "NFLX",       "name": "Netflix",         "class": "stock"},
+    # ── 🛢 Commodities (futures — drives PTT/PTTEP/IRPC/SET energy) ──
+    "GOLD":    {"yf": "GC=F",       "name": "Gold (futures)",                "class": "commodity", "section": "commodities"},
+    "OIL":     {"yf": "CL=F",       "name": "WTI Crude Oil (futures)",       "class": "commodity", "section": "commodities"},
+    "COPPER":  {"yf": "HG=F",       "name": "Copper (futures)",              "class": "commodity", "section": "commodities"},
+    "NATGAS":  {"yf": "NG=F",       "name": "Natural Gas (futures)",         "class": "commodity", "section": "commodities"},
 
-    # ── Crypto (USD pricing — THB pairs deferred to Phase 3) ──
-    "BTC":     {"yf": "BTC-USD",    "name": "Bitcoin",   "class": "crypto"},
-    "ETH":     {"yf": "ETH-USD",    "name": "Ethereum",  "class": "crypto"},
-    "SOL":     {"yf": "SOL-USD",    "name": "Solana",    "class": "crypto"},
+    # ── 📈 ETFs (broad market + thematic + regional) ─────────────────
+    "QQQ":     {"yf": "QQQ",        "name": "Invesco QQQ (Nasdaq 100)",      "class": "etf",       "section": "etfs"},
+    "SPY":     {"yf": "SPY",        "name": "SPDR S&P 500 ETF",              "class": "etf",       "section": "etfs"},
+    "VOO":     {"yf": "VOO",        "name": "Vanguard S&P 500 ETF",          "class": "etf",       "section": "etfs"},
+    "SMH":     {"yf": "SMH",        "name": "VanEck Semiconductor ETF",      "class": "etf",       "section": "etfs"},
+    "ARKW":    {"yf": "ARKW",       "name": "ARK Next Gen Internet ETF",     "class": "etf",       "section": "etfs"},
+    "GLD":     {"yf": "GLD",        "name": "SPDR Gold Shares",              "class": "etf",       "section": "etfs"},
+    "FXI":     {"yf": "FXI",        "name": "iShares China Large-Cap",       "class": "etf",       "section": "etfs"},
+    "EWY":     {"yf": "EWY",        "name": "iShares MSCI South Korea",      "class": "etf",       "section": "etfs"},
+    "INDA":    {"yf": "INDA",       "name": "iShares MSCI India",            "class": "etf",       "section": "etfs"},
+
+    # ── 🏢 US Mega-cap stocks ────────────────────────────────────────
+    "AAPL":    {"yf": "AAPL",       "name": "Apple",                         "class": "stock",     "section": "us_megacap"},
+    "MSFT":    {"yf": "MSFT",       "name": "Microsoft",                     "class": "stock",     "section": "us_megacap"},
+    "NVDA":    {"yf": "NVDA",       "name": "NVIDIA",                        "class": "stock",     "section": "us_megacap"},
+    "GOOG":    {"yf": "GOOG",       "name": "Alphabet",                      "class": "stock",     "section": "us_megacap"},
+    "META":    {"yf": "META",       "name": "Meta Platforms",                "class": "stock",     "section": "us_megacap"},
+    "TSLA":    {"yf": "TSLA",       "name": "Tesla",                         "class": "stock",     "section": "us_megacap"},
+    "AMZN":    {"yf": "AMZN",       "name": "Amazon",                        "class": "stock",     "section": "us_megacap"},
+    "BRK-B":   {"yf": "BRK-B",      "name": "Berkshire Hathaway B",          "class": "stock",     "section": "us_megacap"},
+
+    # ── 🏢 Theme stocks (semis · banks · payments — Delta/PTT proxies) ──
+    "TSM":     {"yf": "TSM",        "name": "Taiwan Semi (Delta proxy)",     "class": "stock",     "section": "us_themes"},
+    "AMD":     {"yf": "AMD",        "name": "AMD (semis)",                   "class": "stock",     "section": "us_themes"},
+    "AVGO":    {"yf": "AVGO",       "name": "Broadcom (semis)",              "class": "stock",     "section": "us_themes"},
+    "JPM":     {"yf": "JPM",        "name": "JPMorgan (banks bellwether)",   "class": "stock",     "section": "us_themes"},
+    "V":       {"yf": "V",          "name": "Visa (payments)",               "class": "stock",     "section": "us_themes"},
+    "GEV":     {"yf": "GEV",        "name": "GE Vernova (energy/AI)",        "class": "stock",     "section": "us_themes"},
+    "NFLX":    {"yf": "NFLX",       "name": "Netflix",                       "class": "stock",     "section": "us_themes"},
+
+    # ── ₿ Crypto (USD pricing — THB pairs deferred to Phase 3 / Bitkub) ──
+    "BTC":     {"yf": "BTC-USD",    "name": "Bitcoin",                       "class": "crypto",    "section": "crypto"},
+    "ETH":     {"yf": "ETH-USD",    "name": "Ethereum",                      "class": "crypto",    "section": "crypto"},
+    "SOL":     {"yf": "SOL-USD",    "name": "Solana",                        "class": "crypto",    "section": "crypto"},
+    "BNB":     {"yf": "BNB-USD",    "name": "BNB (Binance)",                 "class": "crypto",    "section": "crypto"},
+    "XRP":     {"yf": "XRP-USD",    "name": "XRP (Ripple)",                  "class": "crypto",    "section": "crypto"},
 }
+
+# Section display order for the bulk 'global' card. Matches the dict insertion
+# order above, but keeping it explicit makes the UI rendering deterministic
+# and decouples display from dict ordering.
+GLOBAL_SECTION_ORDER: list[tuple[str, str]] = [
+    ("us_indexes",   "🇺🇸 US Indexes"),
+    ("asia_indexes", "🌏 Asia Pacific Indexes"),
+    ("fx_macro",     "💱 FX & Macro"),
+    ("commodities",  "🛢 Commodities"),
+    ("etfs",         "📈 ETFs"),
+    ("us_megacap",   "🏢 US Mega-cap"),
+    ("us_themes",    "🏢 Theme Stocks"),
+    ("crypto",       "₿ Crypto"),
+]
 
 
 def is_global_code(text: str) -> bool:
