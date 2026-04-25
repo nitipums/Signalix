@@ -836,26 +836,46 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
         sigs.sort(key=lambda s: s.strength_score, reverse=True)
         return summary(sigs, "Stage 2 Weakening")
 
-    # ── Sub-stage filters (9-state finite state machine) ──────────────
-    # Same vocabulary as classify_sub_stage(): one of 9 SUB_STAGE_*.
-    # Aliases support both "early" and "stage2 early" forms; the long
-    # form is what tappable rows from the breadth card emit.
+    # ── Sub-stage filters (2-layer state machine — 11 sub-stages) ────
+    # Each entry maps user command aliases → tuple of (target sub_stage
+    # constants, display label). Multi-constant tuples express UNION
+    # filters (e.g. legacy `pullback` matches both CONTRACTION and
+    # PIVOT_READY since the old PULLBACK definition split into those).
+    # Aliases support both short ('pullback') and long ('stage2 pullback')
+    # forms; long form is what tappable rows from the breadth card emit.
     SUB_STAGE_FILTERS = {
-        ("base", "stage1 base"):                 ("STAGE_1_BASE",      "Stage 1 · Base"),
-        ("prep", "stage1 prep"):                 ("STAGE_1_PREP",      "Stage 1 · Prep"),
-        ("early", "stage2 early"):               ("STAGE_2_EARLY",     "Stage 2 · Early"),
-        ("running", "stage2 running"):           ("STAGE_2_RUNNING",   "Stage 2 · Running"),
-        ("pullback", "stage2 pullback"):         ("STAGE_2_PULLBACK",  "Stage 2 · Pullback"),
-        ("volatile", "stage3 volatile"):         ("STAGE_3_VOLATILE",  "Stage 3 · Volatile"),
+        ("base", "stage1 base"):                 (("STAGE_1_BASE",),       "Stage 1 · Base"),
+        ("prep", "stage1 prep"):                 (("STAGE_1_PREP",),       "Stage 1 · Prep"),
+        # NEW Stage 2 sub-stages (preferred vocabulary)
+        ("ignition", "stage2 ignition"):         (("STAGE_2_IGNITION",),    "Stage 2 · Ignition"),
+        ("overextended", "extended",
+         "stage2 overextended"):                 (("STAGE_2_OVEREXTENDED",), "Stage 2 · Overextended"),
+        ("contraction", "stage2 contraction"):   (("STAGE_2_CONTRACTION",), "Stage 2 · Contraction"),
+        ("ready", "pivot_ready", "pivot ready",
+         "stage2 ready"):                        (("STAGE_2_PIVOT_READY",), "Stage 2 · Pivot Ready"),
+        ("markup", "stage2 markup"):             (("STAGE_2_MARKUP",),      "Stage 2 · Markup"),
+        # LEGACY aliases — map to nearest new constant(s) for backward
+        # muscle-memory compat. Will keep working as long as legacy
+        # constants remain in ALL_SUB_STAGES.
+        ("early", "stage2 early"):               (("STAGE_2_IGNITION",
+                                                   "STAGE_2_EARLY"),       "Stage 2 · Early (→ Ignition)"),
+        ("running", "stage2 running"):           (("STAGE_2_MARKUP",
+                                                   "STAGE_2_RUNNING"),     "Stage 2 · Running (→ Markup)"),
+        ("pullback", "stage2 pullback"):         (("STAGE_2_CONTRACTION",
+                                                   "STAGE_2_PIVOT_READY",
+                                                   "STAGE_2_PULLBACK"),    "Stage 2 · Pullback (→ Contraction ∪ Ready)"),
+        # Stage 3 / 4 — unchanged
+        ("volatile", "stage3 volatile"):         (("STAGE_3_VOLATILE",),    "Stage 3 · Volatile"),
         ("dist", "distribution", "stage3 dist",
-         "stage3 distribution"):                 ("STAGE_3_DIST_DIST", "Stage 3 · Distribution"),
-        ("breakdown", "stage4 breakdown"):       ("STAGE_4_BREAKDOWN", "Stage 4 · Breakdown"),
-        ("downtrend", "stage4 downtrend"):       ("STAGE_4_DOWNTREND", "Stage 4 · Downtrend"),
+         "stage3 distribution"):                 (("STAGE_3_DIST_DIST",),   "Stage 3 · Distribution"),
+        ("breakdown", "stage4 breakdown"):       (("STAGE_4_BREAKDOWN",),   "Stage 4 · Breakdown"),
+        ("downtrend", "stage4 downtrend"):       (("STAGE_4_DOWNTREND",),   "Stage 4 · Downtrend"),
     }
-    for aliases, (sub_stage_const, label) in SUB_STAGE_FILTERS.items():
+    for aliases, (sub_stage_consts, label) in SUB_STAGE_FILTERS.items():
         if c in aliases:
+            target_set = set(sub_stage_consts)
             sigs = [s for s in _last_signals
-                    if getattr(s, "sub_stage", "") == sub_stage_const]
+                    if getattr(s, "sub_stage", "") in target_set]
             sigs.sort(key=lambda s: s.strength_score, reverse=True)
             return summary(sigs, label)
 
@@ -912,11 +932,25 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
     # use the existing list-summary helper.
     # Sub-stage tokens that the per-index drill-down also recognises.
     # Same vocab as the global SUB_STAGE_FILTERS above; allows e.g.
-    # 'set50 pullback' to filter SET50 constituents to STAGE_2_PULLBACK.
+    # 'set50 pivot_ready' to filter SET50 constituents.
+    # Single-target tokens map to ONE constant; legacy aliases (early/
+    # running/pullback) map to the NEW constant since per-index UNION
+    # filters aren't worth the parse complexity here — the legacy
+    # tokens just route to the nearest equivalent.
     SUB_STAGE_TOKEN_MAP = {
         "base": "STAGE_1_BASE", "prep": "STAGE_1_PREP",
-        "early": "STAGE_2_EARLY", "running": "STAGE_2_RUNNING",
-        "pullback": "STAGE_2_PULLBACK",
+        # New Stage 2 vocabulary (preferred)
+        "ignition": "STAGE_2_IGNITION",
+        "overextended": "STAGE_2_OVEREXTENDED",
+        "extended": "STAGE_2_OVEREXTENDED",
+        "contraction": "STAGE_2_CONTRACTION",
+        "ready": "STAGE_2_PIVOT_READY",
+        "pivot_ready": "STAGE_2_PIVOT_READY",
+        "markup": "STAGE_2_MARKUP",
+        # Legacy aliases — route to nearest new constant
+        "early": "STAGE_2_IGNITION",
+        "running": "STAGE_2_MARKUP",
+        "pullback": "STAGE_2_CONTRACTION",  # legacy → CONTRACTION (closer to old "consolidating" semantics)
         "volatile": "STAGE_3_VOLATILE",
         "dist": "STAGE_3_DIST_DIST", "distribution": "STAGE_3_DIST_DIST",
         "breakdown": "STAGE_4_BREAKDOWN", "downtrend": "STAGE_4_DOWNTREND",
@@ -2447,29 +2481,51 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     # and long ('stage2 pullback') forms accepted. Long form is what
     # tappable rows from the breadth card emit.
     elif cmd in ("base", "stage1 base", "prep", "stage1 prep",
+                  # New Stage 2 vocabulary
+                  "ignition", "stage2 ignition",
+                  "overextended", "extended", "stage2 overextended",
+                  "contraction", "stage2 contraction",
+                  "ready", "pivot_ready", "pivot ready", "stage2 ready",
+                  "markup", "stage2 markup",
+                  # Legacy Stage 2 aliases (still recognised; route to new constants)
                   "early", "stage2 early", "running", "stage2 running",
                   "pullback", "stage2 pullback",
+                  # Stage 3 / 4
                   "volatile", "stage3 volatile",
                   "dist", "distribution", "stage3 dist", "stage3 distribution",
                   "breakdown", "stage4 breakdown",
                   "downtrend", "stage4 downtrend"):
         SUB_STAGE_LABELS = {
-            "STAGE_1_BASE":      "⚪ Stage 1 · Base",
-            "STAGE_1_PREP":      "🟢 Stage 1 · Prep",
-            "STAGE_2_EARLY":     "🟢 Stage 2 · Early",
-            "STAGE_2_RUNNING":   "🟢 Stage 2 · Running",
-            "STAGE_2_PULLBACK":  "🔵 Stage 2 · Pullback",
-            "STAGE_3_VOLATILE":  "🟡 Stage 3 · Volatile",
-            "STAGE_3_DIST_DIST": "🟠 Stage 3 · Distribution",
-            "STAGE_4_BREAKDOWN": "🔴 Stage 4 · Breakdown",
-            "STAGE_4_DOWNTREND": "🔴 Stage 4 · Downtrend",
+            "STAGE_1_BASE":         "⚪ Stage 1 · Base",
+            "STAGE_1_PREP":         "🌱 Stage 1 · Prep",
+            "STAGE_2_IGNITION":     "🚀 Stage 2 · Ignition",
+            "STAGE_2_OVEREXTENDED": "⚠ Stage 2 · Overextended",
+            "STAGE_2_CONTRACTION":  "👀 Stage 2 · Contraction",
+            "STAGE_2_PIVOT_READY":  "🎯 Stage 2 · Pivot Ready",
+            "STAGE_2_MARKUP":       "✅ Stage 2 · Markup",
+            "STAGE_3_VOLATILE":     "🟡 Stage 3 · Volatile",
+            "STAGE_3_DIST_DIST":    "🟠 Stage 3 · Distribution",
+            "STAGE_4_BREAKDOWN":    "🔴 Stage 4 · Breakdown",
+            "STAGE_4_DOWNTREND":    "🔴 Stage 4 · Downtrend",
         }
+        # Legacy Stage 2 commands route to the nearest NEW constant for
+        # the lookup, but render with the legacy-flavoured label noting
+        # the route ("Early → Ignition") so users learn the new vocab.
         TOKEN_TO_SUB = {
             "base": "STAGE_1_BASE", "stage1 base": "STAGE_1_BASE",
             "prep": "STAGE_1_PREP", "stage1 prep": "STAGE_1_PREP",
-            "early": "STAGE_2_EARLY", "stage2 early": "STAGE_2_EARLY",
-            "running": "STAGE_2_RUNNING", "stage2 running": "STAGE_2_RUNNING",
-            "pullback": "STAGE_2_PULLBACK", "stage2 pullback": "STAGE_2_PULLBACK",
+            "ignition": "STAGE_2_IGNITION", "stage2 ignition": "STAGE_2_IGNITION",
+            "overextended": "STAGE_2_OVEREXTENDED",
+            "extended": "STAGE_2_OVEREXTENDED",
+            "stage2 overextended": "STAGE_2_OVEREXTENDED",
+            "contraction": "STAGE_2_CONTRACTION", "stage2 contraction": "STAGE_2_CONTRACTION",
+            "ready": "STAGE_2_PIVOT_READY", "pivot_ready": "STAGE_2_PIVOT_READY",
+            "pivot ready": "STAGE_2_PIVOT_READY", "stage2 ready": "STAGE_2_PIVOT_READY",
+            "markup": "STAGE_2_MARKUP", "stage2 markup": "STAGE_2_MARKUP",
+            # Legacy aliases — route to nearest new constant
+            "early": "STAGE_2_IGNITION", "stage2 early": "STAGE_2_IGNITION",
+            "running": "STAGE_2_MARKUP", "stage2 running": "STAGE_2_MARKUP",
+            "pullback": "STAGE_2_CONTRACTION", "stage2 pullback": "STAGE_2_CONTRACTION",
             "volatile": "STAGE_3_VOLATILE", "stage3 volatile": "STAGE_3_VOLATILE",
             "dist": "STAGE_3_DIST_DIST", "distribution": "STAGE_3_DIST_DIST",
             "stage3 dist": "STAGE_3_DIST_DIST", "stage3 distribution": "STAGE_3_DIST_DIST",
@@ -2477,8 +2533,17 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             "downtrend": "STAGE_4_DOWNTREND", "stage4 downtrend": "STAGE_4_DOWNTREND",
         }
         sub_stage_const = TOKEN_TO_SUB[cmd]
+        # Legacy-pullback union: also include CONTRACTION + PIVOT_READY
+        # so users typing 'pullback' get the FULL pullback cohort, not
+        # just CONTRACTION. Other legacy aliases route to single
+        # constants since the old 1-to-1 mapping is preserved.
+        if cmd in ("pullback", "stage2 pullback"):
+            target_set = {"STAGE_2_CONTRACTION", "STAGE_2_PIVOT_READY",
+                          "STAGE_2_PULLBACK"}
+        else:
+            target_set = {sub_stage_const}
         signals = [s for s in _last_signals
-                   if getattr(s, "sub_stage", "") == sub_stage_const]
+                   if getattr(s, "sub_stage", "") in target_set]
         signals.sort(key=lambda s: s.strength_score, reverse=True)
         _reply_stock_list(reply_token, signals, SUB_STAGE_LABELS[sub_stage_const])
 

@@ -205,6 +205,32 @@ def _range_contraction(df: pd.DataFrame, n: int = 10) -> bool:
     return recent < prior
 
 
+def _price_tightness_5bar(df: pd.DataFrame) -> float:
+    """Tightness ratio over last 5 bars: (max High − min Low) / min Low.
+    Drives STAGE_2_PIVOT_READY's < 0.07 (7%) gate. Returns 1.0 (= 100%
+    range, i.e. NOT tight) when there isn't enough data."""
+    if len(df) < 5:
+        return 1.0
+    h = float(df["High"].iloc[-5:].max())
+    l = float(df["Low"].iloc[-5:].min())
+    if l <= 0:
+        return 1.0
+    return (h - l) / l
+
+
+def _vol_dry_up_strict(df: pd.DataFrame, window: int = 50, threshold: float = 0.5) -> bool:
+    """Strict volume dry-up: today's volume < SMA_volume_{window} × threshold.
+    Drives STAGE_2_PIVOT_READY's < 50% of 50-day avg gate. Distinct from
+    the looser _volume_dry_up which compares last N bars to 20-bar avg."""
+    if len(df) < window:
+        return False
+    today_vol = float(df["Volume"].iloc[-1])
+    avg_vol = float(df["Volume"].iloc[-window:].mean())
+    if avg_vol <= 0:
+        return False
+    return today_vol < avg_vol * threshold
+
+
 def _oscillates_around(close: pd.Series, sma: pd.Series, n: int = 20) -> bool:
     """True if Close has crossed `sma` BOTH directions in the last n bars
     (i.e. is sloshing around the line, not trending). Drives STAGE_1_BASE."""
@@ -223,9 +249,22 @@ def _oscillates_around(close: pd.Series, sma: pd.Series, n: int = 20) -> bool:
 
 SUB_STAGE_1_BASE      = "STAGE_1_BASE"
 SUB_STAGE_1_PREP      = "STAGE_1_PREP"
-SUB_STAGE_2_EARLY     = "STAGE_2_EARLY"
-SUB_STAGE_2_RUNNING   = "STAGE_2_RUNNING"
-SUB_STAGE_2_PULLBACK  = "STAGE_2_PULLBACK"
+# Legacy Stage 2 sub-stages — kept as module constants so old Firestore
+# docs that store these strings still load via the StockSignal
+# dataclass. The classifier no longer EMITS these names; new scans
+# emit IGNITION / OVEREXTENDED / CONTRACTION / PIVOT_READY / MARKUP.
+# Filter commands `early` / `running` / `pullback` map through to the
+# new constants (see SUB_STAGE_FILTERS in main.py).
+SUB_STAGE_2_EARLY     = "STAGE_2_EARLY"          # legacy → STAGE_2_IGNITION
+SUB_STAGE_2_RUNNING   = "STAGE_2_RUNNING"        # legacy → STAGE_2_MARKUP
+SUB_STAGE_2_PULLBACK  = "STAGE_2_PULLBACK"       # legacy → CONTRACTION ∪ PIVOT_READY
+# New Stage 2 sub-stages from the 2-layer classifier refactor.
+# Priority: OVEREXTENDED > PIVOT_READY > IGNITION > CONTRACTION > MARKUP.
+SUB_STAGE_2_OVEREXTENDED = "STAGE_2_OVEREXTENDED"
+SUB_STAGE_2_PIVOT_READY  = "STAGE_2_PIVOT_READY"
+SUB_STAGE_2_IGNITION     = "STAGE_2_IGNITION"
+SUB_STAGE_2_CONTRACTION  = "STAGE_2_CONTRACTION"
+SUB_STAGE_2_MARKUP       = "STAGE_2_MARKUP"
 SUB_STAGE_3_VOLATILE  = "STAGE_3_VOLATILE"
 SUB_STAGE_3_DIST_DIST = "STAGE_3_DIST_DIST"
 SUB_STAGE_4_BREAKDOWN = "STAGE_4_BREAKDOWN"
@@ -234,6 +273,8 @@ SUB_STAGE_4_DOWNTREND = "STAGE_4_DOWNTREND"
 ALL_SUB_STAGES: frozenset = frozenset({
     SUB_STAGE_1_BASE, SUB_STAGE_1_PREP,
     SUB_STAGE_2_EARLY, SUB_STAGE_2_RUNNING, SUB_STAGE_2_PULLBACK,
+    SUB_STAGE_2_OVEREXTENDED, SUB_STAGE_2_PIVOT_READY,
+    SUB_STAGE_2_IGNITION, SUB_STAGE_2_CONTRACTION, SUB_STAGE_2_MARKUP,
     SUB_STAGE_3_VOLATILE, SUB_STAGE_3_DIST_DIST,
     SUB_STAGE_4_BREAKDOWN, SUB_STAGE_4_DOWNTREND,
 })
@@ -272,25 +313,55 @@ def classify_sub_stage(df: pd.DataFrame, parent_stage: int) -> str:
     roc200 = _sma_roc(close, window=200, lookback=20)
     vol_now = float(df["Volume"].iloc[-1])
     vol_avg_20 = float(df["Volume"].iloc[-20:].mean())
-    vol_above_avg = vol_avg_20 > 0 and vol_now > vol_avg_20
+    vol_avg_50 = float(df["Volume"].iloc[-50:].mean()) if len(df) >= 50 else 0.0
 
-    # ── Parent stage 2: EARLY → PULLBACK → RUNNING (priority order) ──
+    # ── Parent stage 2 — Layer 2 sub-stage classifier ──────────────
+    # Five sub-stages, evaluated in this STRICT priority order so
+    # multi-condition stocks resolve deterministically:
+    #   1. OVEREXTENDED — wins over everything (defensive: warn first).
+    #      Even a fresh-golden-cross stock at +25% above SMA50 gets
+    #      WARNING, not IGNITION.
+    #   2. PIVOT_READY  — actionable VCP setup (CONTRACTION + tightness
+    #      + volume dry-up triggers all firing). Spec calls this out
+    #      as "the trigger to calculate the Pivot Point".
+    #   3. IGNITION     — fresh momentum (golden cross within 20 bars
+    #      OR new 52W high on 1.5× volume).
+    #   4. CONTRACTION  — base building (PIVOT_READY MA structure
+    #      WITHOUT the tightness/dry-up triggers).
+    #   5. MARKUP       — riding short-term MAs; default fallback for
+    #      any Stage 2 stock that doesn't match the others.
     if parent_stage == 2:
-        if (c > m20 > m50 > m200
-                and _cross_within(s50, s200, n=20, direction="up")
-                and vol_above_avg):
-            return SUB_STAGE_2_EARLY
-        if (c < m20 and c > m50
-                and _range_contraction(df, n=10)
-                and _volume_dry_up(df, n=10, threshold=0.7)):
-            return SUB_STAGE_2_PULLBACK
-        if c > m10 and c > m20 and m20 > m50 > m200 and roc200 > 0:
-            return SUB_STAGE_2_RUNNING
-        # Fallback: still parent-stage 2 (Minervini template passes) but
-        # none of the three discriminators fire — treat as RUNNING since
-        # the trend structure is intact even without the explicit
-        # short-MA conditions.
-        return SUB_STAGE_2_RUNNING
+        # Priority 1 — OVEREXTENDED: price stretched > 25% above SMA50.
+        # Climax-warning state; suppresses all other Stage 2 labels.
+        if m50 > 0 and c > m50 * 1.25:
+            return SUB_STAGE_2_OVEREXTENDED
+
+        # PIVOT_READY + CONTRACTION share the same MA structure
+        # (price below short-term MA but above mid-term).
+        in_contraction_zone = (c < m10 or c < m20) and c > m50
+
+        # Priority 2 — PIVOT_READY: contraction + tightness + dry-up.
+        if (in_contraction_zone
+                and _price_tightness_5bar(df) < 0.07
+                and _vol_dry_up_strict(df, window=50, threshold=0.5)):
+            return SUB_STAGE_2_PIVOT_READY
+
+        # Priority 3 — IGNITION: fresh momentum kick.
+        # Two paths: recent golden cross OR a new 52W high on heavy vol.
+        golden_cross_recent = _cross_within(s50, s200, n=20, direction="up")
+        high_52w_now = float(df["High"].iloc[-min(252, len(df)):].max())
+        new_52w_high = high_52w_now > 0 and c >= high_52w_now * 0.999
+        ignition_volume = vol_avg_50 > 0 and vol_now > vol_avg_50 * 1.5
+        if golden_cross_recent or (new_52w_high and ignition_volume):
+            return SUB_STAGE_2_IGNITION
+
+        # Priority 4 — CONTRACTION: same MA structure as PIVOT_READY
+        # but the tightness/dry-up gates haven't fired yet.
+        if in_contraction_zone:
+            return SUB_STAGE_2_CONTRACTION
+
+        # Priority 5 (default) — MARKUP: riding short-term MAs.
+        return SUB_STAGE_2_MARKUP
 
     # ── Parent stage 3: DIST_DIST (deeper distribution) → VOLATILE ──
     if parent_stage == 3:
@@ -348,9 +419,32 @@ def classify_sub_stage(df: pd.DataFrame, parent_stage: int) -> str:
 
 def _derive_pattern(sub_stage: str, vcp_result: str, is_ath: bool,
                     breakout_confirmed: bool) -> str:
-    """Map the 9 sub-stages back to the legacy `pattern` vocabulary so
-    existing cards / Firestore docs / e2e assertions keep working without
-    code changes elsewhere. Source of truth is sub_stage; this is a view."""
+    """Map sub-stages back to the legacy `pattern` vocabulary so existing
+    cards / Firestore docs / e2e assertions keep working without code
+    changes elsewhere. Source of truth is sub_stage; this is a view.
+
+    Includes mappings for both the new Stage 2 sub-stages (IGNITION /
+    OVEREXTENDED / CONTRACTION / PIVOT_READY / MARKUP) and the legacy
+    ones (EARLY / RUNNING / PULLBACK) for backward compat with old
+    Firestore docs that haven't been re-scanned yet.
+    """
+    # NEW Stage 2 sub-stages
+    if sub_stage == SUB_STAGE_2_IGNITION:
+        if breakout_confirmed and is_ath:
+            return "ath_breakout"
+        if breakout_confirmed:
+            return "breakout"
+        return "breakout_attempt"
+    if sub_stage == SUB_STAGE_2_PIVOT_READY:
+        if vcp_result == "vcp_low_cheat":
+            return "vcp_low_cheat"
+        if vcp_result == "vcp":
+            return "vcp"
+        return "consolidating"
+    if sub_stage in (SUB_STAGE_2_CONTRACTION, SUB_STAGE_2_MARKUP,
+                      SUB_STAGE_2_OVEREXTENDED):
+        return "consolidating"
+    # LEGACY Stage 2 sub-stages (kept for backward compat)
     if sub_stage == SUB_STAGE_2_EARLY:
         if breakout_confirmed and is_ath:
             return "ath_breakout"
@@ -368,12 +462,19 @@ def _derive_pattern(sub_stage: str, vcp_result: str, is_ath: bool,
     return "consolidating"
 
 
-# Sub-stages that get pivot-point computation. Picked per design decision:
-# pre-stage-2 watchlist (PREP) + the three actionable Stage 2 states
-# (EARLY / RUNNING / PULLBACK). Excludes Stage 1 BASE (no setup yet),
-# Stage 3 (defensive — not a buy zone), and Stage 4 (not a buy zone).
+# Sub-stages that get pivot-point computation. Per the locked-in 5-state
+# scope: PREP + the four actionable Stage 2 states (IGNITION /
+# CONTRACTION / PIVOT_READY / MARKUP). OVEREXTENDED is EXCLUDED — it's
+# a warning state, not a buy zone, even though parent is Stage 2.
 _PIVOT_SUB_STAGES: frozenset = frozenset({
     SUB_STAGE_1_PREP,
+    SUB_STAGE_2_IGNITION,
+    SUB_STAGE_2_CONTRACTION,
+    SUB_STAGE_2_PIVOT_READY,
+    SUB_STAGE_2_MARKUP,
+    # Legacy aliases retained so old Firestore docs (loaded mid-migration)
+    # still get pivot computed when re-scanned. Once every doc has been
+    # re-classified with new constants, these can be removed.
     SUB_STAGE_2_EARLY,
     SUB_STAGE_2_RUNNING,
     SUB_STAGE_2_PULLBACK,
@@ -408,11 +509,15 @@ def compute_pivot(df: pd.DataFrame, sub_stage: str) -> tuple[float, float]:
 # ─── Stage classification ──────────────────────────────────────────────────────
 
 def classify_stage(df: pd.DataFrame) -> int:
-    """
-    Classify current Minervini stage based on OHLCV DataFrame.
+    """Layer 1 — general regime classification. Returns 1, 2, 3, or 4.
 
-    Returns 1, 2, 3, or 4.
-    Falls back to stage 1 if data is insufficient.
+    Spec-driven SMA conditions with Minervini's canonical 52W proximity
+    gates retained on Stage 2 (price ≥ 52W_low × 1.25 AND price ≥
+    52W_high × 0.75) so dead-cat stocks that pass MA slope conditions
+    but are still −50% from peak don't slip into the buy zone.
+
+    Priority order: Stage 2 → 4 → 3 → 1 (default). Layer 2 sub-stage
+    classification runs separately via classify_sub_stage().
     """
     if len(df) < MIN_ROWS:
         return 1
@@ -421,57 +526,47 @@ def classify_stage(df: pd.DataFrame) -> int:
     high = df["High"]
 
     sma50 = _sma(close, 50)
-    sma150 = _sma(close, 150)
     sma200 = _sma(close, 200)
 
     c = float(close.iloc[-1])
     s50 = float(sma50.iloc[-1])
-    s150 = float(sma150.iloc[-1])
     s200 = float(sma200.iloc[-1])
 
-    if any(np.isnan(x) for x in [c, s50, s150, s200]):
+    if any(np.isnan(x) for x in [c, s50, s200]):
         return 1
 
-    # Is the 200-day MA rising? Compare to value 20 trading days ago
-    sma200_now = float(sma200.iloc[-1])
-    sma200_20d_ago = float(sma200.iloc[-21]) if len(sma200.dropna()) > 21 else np.nan
-    sma200_rising = (not np.isnan(sma200_20d_ago)) and (sma200_now > sma200_20d_ago)
-
-    # 52-week high and low
+    roc200 = _sma_roc(close, window=200, lookback=20)
     lookback = min(252, len(df))
     high_52w = float(high.iloc[-lookback:].max())
     low_52w = float(close.iloc[-lookback:].min())
 
-    # ── Stage 2 (Uptrend) — Minervini Template of Excellence ──
-    # 1. Price above 150-day and 200-day MA
-    # 2. 150-day MA above 200-day MA
-    # 3. 200-day MA is trending upward
-    # 4. Price is at least 25% above its 52-week low
-    # 5. Price is within 25% of its 52-week high
-    stage2 = (
-        c > s150
-        and c > s200
-        and s150 > s200
-        and sma200_rising
-        and c >= low_52w * 1.25
-        and c >= high_52w * 0.75
-    )
-    if stage2:
+    # ── Stage 2 (Uptrend) — spec + canonical 52W proximity gates ──
+    #   1. SMA50 > SMA200 (golden cross active)
+    #   2. Price > SMA200
+    #   3. SMA200 rising (ROC(200, 20d) > 0)
+    #   4. Price ≥ 52W low × 1.25  (Minervini, retained)
+    #   5. Price ≥ 52W high × 0.75 (Minervini, retained)
+    if (s50 > s200 and c > s200 and roc200 > 0
+            and c >= low_52w * 1.25
+            and c >= high_52w * 0.75):
         return 2
 
     # ── Stage 4 (Downtrend) ──
-    # Price below both 150 and 200 MA, and 200 MA is declining
-    stage4 = c < s150 and c < s200 and not sma200_rising
-    if stage4:
+    #   Price < SMA200 AND SMA200 declining (ROC < 0).
+    if c < s200 and roc200 < 0:
         return 4
 
-    # ── Stage 3 (Distribution) ──
-    # Was in Stage 2 territory but close broke below 150-day MA;
-    # use the sign of recent price action relative to 200-day MA
-    if c < s150 and c > s200:
+    # ── Stage 3 (Distribution) — intermediate / topping ──
+    #   ROC(SMA200) flat (−1% < ROC < +1%) — the "rolling over" zone
+    #   between confirmed uptrend (Stage 2) and confirmed downtrend
+    #   (Stage 4). Captures stocks where the long-term slope has
+    #   stalled regardless of where price sits relative to SMA200.
+    if -1.0 < roc200 < 1.0:
         return 3
 
-    # ── Stage 1 (Basing / Neglect) ──
+    # ── Stage 1 (Accumulation / Basing) — default fallback ──
+    #   Catches everything else: SMA50 < SMA200 with non-rising ROC,
+    #   or any other non-classified state.
     return 1
 
 
@@ -737,9 +832,22 @@ def _strength_score(df: pd.DataFrame, stage: int, pattern: str, volume_ratio: fl
     score = 0.0
 
     sub_stage_scores = {
-        SUB_STAGE_2_EARLY:     65,
-        SUB_STAGE_2_PULLBACK:  55,
-        SUB_STAGE_2_RUNNING:   50,
+        # New Stage 2 sub-stages — PIVOT_READY ranks highest (actionable
+        # entry with a computed pivot trigger), followed by IGNITION
+        # (fresh momentum), then MARKUP (already running), CONTRACTION
+        # (watching). OVEREXTENDED scores low to deprioritise warnings
+        # in ranked lists like 'top breakout' / 'best score'.
+        SUB_STAGE_2_PIVOT_READY:    65,
+        SUB_STAGE_2_IGNITION:       60,
+        SUB_STAGE_2_MARKUP:         50,
+        SUB_STAGE_2_CONTRACTION:    45,
+        SUB_STAGE_2_OVEREXTENDED:   10,
+        # Legacy Stage 2 (kept so old Firestore docs score sensibly
+        # mid-migration; deletable once every doc is re-scanned).
+        SUB_STAGE_2_EARLY:          60,   # ≈ IGNITION
+        SUB_STAGE_2_PULLBACK:       55,   # ≈ CONTRACTION ∪ PIVOT_READY
+        SUB_STAGE_2_RUNNING:        50,   # ≈ MARKUP
+        # Stage 1, 3, 4 sub-stages — unchanged
         SUB_STAGE_1_PREP:      30,
         SUB_STAGE_3_VOLATILE:  20,
         SUB_STAGE_1_BASE:      10,

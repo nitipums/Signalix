@@ -335,17 +335,28 @@ def suite_sub_stage(base, secret):
     """
     section("Sub-stage finite state machine (9 states)")
     fails = 0
+    # 2-layer classifier — 11 sub-stages. Stage 2 expanded from 3 to 5
+    # (IGNITION/OVEREXTENDED/CONTRACTION/PIVOT_READY/MARKUP); legacy
+    # `early`/`running`/`pullback` filters route to the new constants
+    # (UNION for `pullback` → CONTRACTION ∪ PIVOT_READY).
     SUB_STAGES = [
-        ("base",      "STAGE_1_BASE",      1),
-        ("prep",      "STAGE_1_PREP",      1),
-        ("early",     "STAGE_2_EARLY",     2),
-        ("running",   "STAGE_2_RUNNING",   2),
-        ("pullback",  "STAGE_2_PULLBACK",  2),
-        ("volatile",  "STAGE_3_VOLATILE",  3),
-        ("dist",      "STAGE_3_DIST_DIST", 3),
-        ("breakdown", "STAGE_4_BREAKDOWN", 4),
-        ("downtrend", "STAGE_4_DOWNTREND", 4),
+        ("base",         "STAGE_1_BASE",         1),
+        ("prep",         "STAGE_1_PREP",         1),
+        # New Stage 2 (preferred)
+        ("ignition",     "STAGE_2_IGNITION",     2),
+        ("overextended", "STAGE_2_OVEREXTENDED", 2),
+        ("contraction",  "STAGE_2_CONTRACTION",  2),
+        ("ready",        "STAGE_2_PIVOT_READY",  2),
+        ("markup",       "STAGE_2_MARKUP",       2),
+        # Stage 3 / 4
+        ("volatile",     "STAGE_3_VOLATILE",     3),
+        ("dist",         "STAGE_3_DIST_DIST",    3),
+        ("breakdown",    "STAGE_4_BREAKDOWN",    4),
+        ("downtrend",    "STAGE_4_DOWNTREND",    4),
     ]
+    # Legacy command aliases — assert they still dispatch but skip the
+    # exact-constant assertion (route to new constants per refactor).
+    LEGACY_ALIAS_CMDS = ("early", "running", "pullback")
     seen_any_sub_stage = False
     for cmd, expected_const, expected_parent in SUB_STAGES:
         try:
@@ -371,8 +382,18 @@ def suite_sub_stage(base, secret):
     # the sub_stage field never made it into the live cache.
     fails += check("sub_stage/field_populated_somewhere",
                    seen_any_sub_stage,
-                   "no sub_stage strings observed across all 9 filters — "
+                   "no sub_stage strings observed across all 11 filters — "
                    "scan path may not be writing the field")
+    # Legacy alias commands — assert dispatch only (constants vary
+    # per route; pullback is a UNION of CONTRACTION+PIVOT_READY).
+    for cmd in LEGACY_ALIAS_CMDS:
+        try:
+            q, _ = query(base, secret, cmd)
+            fails += check(f"legacy/{cmd}/dispatched",
+                           q.get("kind") == "list",
+                           f"kind={q.get('kind')} count={q.get('count')}")
+        except Exception as e:
+            fails += check(f"legacy/{cmd}", False, f"err: {e}")
     return fails
 
 

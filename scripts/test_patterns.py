@@ -337,8 +337,13 @@ expect("downtrend: stage != 2 → weakening False",
 print("\nclassify_sub_stage — 9-state taxonomy")
 from analyzer import classify_sub_stage, classify_stage
 from analyzer import (SUB_STAGE_1_BASE, SUB_STAGE_1_PREP,
+                      # Legacy Stage 2 (kept for backward compat)
                       SUB_STAGE_2_EARLY, SUB_STAGE_2_RUNNING,
                       SUB_STAGE_2_PULLBACK,
+                      # New Stage 2 (2-layer refactor)
+                      SUB_STAGE_2_OVEREXTENDED, SUB_STAGE_2_PIVOT_READY,
+                      SUB_STAGE_2_IGNITION, SUB_STAGE_2_CONTRACTION,
+                      SUB_STAGE_2_MARKUP,
                       SUB_STAGE_3_VOLATILE, SUB_STAGE_3_DIST_DIST,
                       SUB_STAGE_4_BREAKDOWN, SUB_STAGE_4_DOWNTREND,
                       ALL_SUB_STAGES)
@@ -355,11 +360,11 @@ p_dt, s_dt = _classify(df_dt)
 expect("downtrend → STAGE_4_DOWNTREND",
        (p_dt, s_dt), (4, SUB_STAGE_4_DOWNTREND))
 
-# 2_RUNNING: pure uptrend (the strong-uptrend fixture from earlier).
+# 2_MARKUP: pure uptrend (was 2_RUNNING under the old taxonomy).
 df_run = _build_strong_uptrend()
 p_run, s_run = _classify(df_run)
-expect("strong uptrend → STAGE_2_RUNNING",
-       (p_run, s_run), (2, SUB_STAGE_2_RUNNING))
+expect("strong uptrend → STAGE_2_MARKUP (formerly RUNNING)",
+       (p_run, s_run), (2, SUB_STAGE_2_MARKUP))
 
 # 2_PULLBACK: uptrend with recent pullback below SMA20 but above SMA50,
 # narrowing range, drying volume on the last 10 bars.
@@ -394,8 +399,12 @@ df_pb = _build_uptrend_then_tight_pullback()
 p_pb, s_pb = _classify(df_pb)
 sma20_pb = float(df_pb["Close"].rolling(20).mean().iloc[-1])
 sma50_pb = float(df_pb["Close"].rolling(50).mean().iloc[-1])
-expect("uptrend with narrowing low-vol pullback → STAGE_2_PULLBACK",
-       (p_pb, s_pb), (2, SUB_STAGE_2_PULLBACK),
+# Under the 2-layer refactor this fixture (narrowing range + dry-up vol)
+# now satisfies PIVOT_READY's stricter triggers (5-bar tightness < 7%
+# AND today_vol < 50d × 0.5), so it's classified as PIVOT_READY rather
+# than the looser legacy PULLBACK.
+expect("uptrend with narrowing low-vol pullback → STAGE_2_PIVOT_READY",
+       (p_pb, s_pb), (2, SUB_STAGE_2_PIVOT_READY),
        extra=f"close={float(df_pb['Close'].iloc[-1]):.2f} sma20={sma20_pb:.2f} sma50={sma50_pb:.2f}")
 
 # ── Pivot point computation ───────────────────────────────────────────────
@@ -438,9 +447,87 @@ sig_bear_pivot = scan_stock("BEARPIVOT", df_bear)
 expect("downtrend scan: pivot_price=0 (out of scope)",
        sig_bear_pivot.pivot_price, 0.0)
 
+# ── 2_OVEREXTENDED: price stretched > 25% above SMA50 ───────────────
+def _build_overextended():
+    # 200 bars rising 50→100 (steady SMA50 build) + 30 bars MOON-shot
+    # to 150 (price ends ~50% above SMA50, well beyond the 25% gate).
+    base = list(np.linspace(50, 100, 200))
+    moon = list(np.linspace(100, 150, 30))
+    prices = base + moon
+    highs = [p + 1 for p in prices]
+    lows = [p - 1 for p in prices]
+    vols = [1_500_000] * len(prices)
+    return _mk_df(highs, lows=lows, closes=prices, volumes=vols)
+
+df_oe = _build_overextended()
+p_oe, s_oe = _classify(df_oe)
+sma50_oe = float(df_oe["Close"].rolling(50).mean().iloc[-1])
+close_oe = float(df_oe["Close"].iloc[-1])
+expect("moon-shot uptrend → STAGE_2_OVEREXTENDED (close > sma50 × 1.25)",
+       (p_oe, s_oe), (2, SUB_STAGE_2_OVEREXTENDED),
+       extra=f"close={close_oe:.2f} sma50={sma50_oe:.2f} ratio={close_oe/sma50_oe:.3f}")
+
+# ── 2_IGNITION: golden cross within last 20 bars ────────────────────
+def _build_ignition():
+    # Long flat base + recent sharp rally so:
+    #   • SMA200 stays near 80 with ROC slightly positive (rally lifts it)
+    #   • SMA50 climbs from 80 toward 95 and CROSSES above SMA200 within
+    #     the last 20 bars (the IGNITION trigger)
+    base    = [80.0] * 270                      # extended flat base
+    rally   = list(np.linspace(80, 100, 15))    # compact 15-bar rally; rises
+                                                # to 100 (close stays under
+                                                # SMA50 × 1.25 so the
+                                                # OVEREXTENDED gate doesn't
+                                                # pre-empt IGNITION)
+    prices = base + rally
+    highs = [p + 1 for p in prices]
+    lows  = [p - 1 for p in prices]
+    # Volume normal during base, surge on the rally
+    vols  = [1_500_000] * len(base) + [4_500_000] * len(rally)
+    return _mk_df(highs, lows=lows, closes=prices, volumes=vols)
+
+df_ig = _build_ignition()
+p_ig, s_ig = _classify(df_ig)
+expect("golden cross within last 20 bars → STAGE_2_IGNITION",
+       (p_ig, s_ig), (2, SUB_STAGE_2_IGNITION),
+       extra=f"close={float(df_ig['Close'].iloc[-1]):.2f}")
+
+# ── 2_CONTRACTION: pullback below SMA10/20 above SMA50, but NOT
+# tight enough or dry enough to qualify as PIVOT_READY ──
+def _build_contraction_loose():
+    # Same MA structure as pullback fixture (close < SMA10/20 but >
+    # SMA50) but the recent 5-bar range is WIDE (intraday wicks ±4)
+    # so 5-bar tightness > 7% — fails PIVOT_READY tightness gate.
+    # Volume normal so dry-up gate also fails. Should land in
+    # CONTRACTION (the looser sibling of PIVOT_READY).
+    base = [50.0] * 100
+    rise = list(np.linspace(50, 100, 250))   # very long rise → SMA50
+                                             # heavily weighted to the rise,
+                                             # ends near 95-100
+    consol = [110.0] * 10                    # SHORT consol so SMA50 stays low
+    pullback_closes = list(np.linspace(108, 106, 10))  # shallow pullback
+    prices = base + rise + consol + pullback_closes
+    pre_pullback_count = len(prices) - len(pullback_closes)
+    # Wide intraday wicks during pullback so 5-bar tightness > 7%
+    highs = ([p + 1.5 for p in prices[:pre_pullback_count]]
+             + [p + 4.0 for p in pullback_closes])
+    lows  = ([p - 1.5 for p in prices[:pre_pullback_count]]
+             + [p - 4.0 for p in pullback_closes])
+    # Vol stays normal — no dry-up trigger.
+    vols = [2_000_000] * len(prices)
+    return _mk_df(highs, lows=lows, closes=prices, volumes=vols)
+
+df_ct = _build_contraction_loose()
+p_ct, s_ct = _classify(df_ct)
+tightness_ct = (float(df_ct["High"].iloc[-5:].max()) - float(df_ct["Low"].iloc[-5:].min())) / float(df_ct["Low"].iloc[-5:].min())
+expect("wide pullback above SMA50 → STAGE_2_CONTRACTION (not PIVOT_READY)",
+       (p_ct, s_ct), (2, SUB_STAGE_2_CONTRACTION),
+       extra=f"close={float(df_ct['Close'].iloc[-1]):.2f} tightness={tightness_ct:.3f}")
+
 # Invariant: every sub-stage emitted must be in ALL_SUB_STAGES (or "").
 for sym, df in [("DT", df_dt), ("RUN", df_run), ("PB", df_pb), ("BEAR", df_bear),
-                ("WEAK", df_weak), ("STRONG", df_strong)]:
+                ("WEAK", df_weak), ("STRONG", df_strong),
+                ("OE", df_oe), ("IG", df_ig), ("CT", df_ct)]:
     p = classify_stage(df)
     s = classify_sub_stage(df, p)
     expect(f"{sym}/sub_stage_in_enum",
@@ -448,7 +535,8 @@ for sym, df in [("DT", df_dt), ("RUN", df_run), ("PB", df_pb), ("BEAR", df_bear)
            f"got sub_stage={s!r} parent={p}")
 
 # Invariant: parent prefix matches parent stage (e.g. STAGE_2_* on stage 2).
-for sym, df in [("DT", df_dt), ("RUN", df_run), ("PB", df_pb), ("BEAR", df_bear)]:
+for sym, df in [("DT", df_dt), ("RUN", df_run), ("PB", df_pb), ("BEAR", df_bear),
+                ("OE", df_oe), ("IG", df_ig), ("CT", df_ct)]:
     p = classify_stage(df)
     s = classify_sub_stage(df, p)
     if s:
