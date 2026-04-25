@@ -1906,16 +1906,52 @@ def build_sector_overview_card(sectors: list[SectorSummary],
     }
 
 
-def build_stage_picker_card(breadth: Optional[MarketBreadth] = None) -> dict:
-    """4-bubble carousel for stage picker (Stage 1–4) with counts from breadth."""
+def build_stage_picker_card(
+    breadth: Optional[MarketBreadth] = None,
+    signals: Optional[list] = None,
+) -> dict:
+    """4-bubble carousel for stage picker (Stage 1–4).
+
+    Each bubble surfaces its sub-stages with counts (computed from
+    `signals` when provided) and a prescriptive verb top-bar:
+    Stage 1 = WATCH, Stage 2 = TRADE, Stage 3 = TRIM, Stage 4 = AVOID.
+
+    Stage 2 bubble gets a dual footer: full-list button + jump-to-
+    Pivot-Ready button (the most actionable cohort).
+    """
     STAGE_BG = {1: "#555555", 2: "#1B5E20", 3: "#E65100", 4: "#B71C1C"}
-    STAGE_DESC = {
-        1: "Basing — สะสมตัว\nรอ breakout",
-        2: "Uptrend ✅\nโซนซื้อที่ดีที่สุด",
-        3: "Topping ⚠️\nระวัง",
-        4: "Downtrend ❌\nหลีกเลี่ยง",
-    }
+    STAGE_VERB = {1: "WATCH", 2: "TRADE", 3: "TRIM", 4: "AVOID"}
     STAGE_ICON = {1: "⚪", 2: "🟢", 3: "🟡", 4: "🔴"}
+    STAGE_DESC = {
+        1: "Basing — สะสมตัว",
+        2: "Uptrend ✅",
+        3: "Topping ⚠️",
+        4: "Downtrend ❌",
+    }
+
+    # Sub-stages per parent, in display order. Each tuple = (icon,
+    # short label, sub_stage constant, filter command).
+    SUBS = {
+        1: [
+            ("⚪", "Base",       "STAGE_1_BASE",         "base"),
+            ("🌱", "Prep",       "STAGE_1_PREP",         "prep"),
+        ],
+        2: [
+            ("🎯", "Pivot Ready ✨", "STAGE_2_PIVOT_READY",  "ready"),
+            ("🚀", "Ignition",       "STAGE_2_IGNITION",     "ignition"),
+            ("✅", "Markup",         "STAGE_2_MARKUP",       "markup"),
+            ("👀", "Contraction",    "STAGE_2_CONTRACTION",  "contraction"),
+            ("⚠",  "Overextended",   "STAGE_2_OVEREXTENDED", "overextended"),
+        ],
+        3: [
+            ("🟡", "Volatile",     "STAGE_3_VOLATILE",  "volatile"),
+            ("🟠", "Distribution", "STAGE_3_DIST_DIST", "dist"),
+        ],
+        4: [
+            ("🔴", "Breakdown",   "STAGE_4_BREAKDOWN", "breakdown"),
+            ("🔴", "Downtrend",   "STAGE_4_DOWNTREND", "downtrend"),
+        ],
+    }
 
     stage_counts: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
     if breadth:
@@ -1926,9 +1962,52 @@ def build_stage_picker_card(breadth: Optional[MarketBreadth] = None) -> dict:
             4: getattr(breadth, "stage4_count", 0),
         }
 
+    # Tally sub-stage counts from signals (if provided). Falls back to
+    # zeros when signals empty so the bubble still renders cleanly.
+    sub_counts: dict[str, int] = {}
+    if signals:
+        from collections import Counter
+        sub_counts = Counter(getattr(s, "sub_stage", "") or "" for s in signals)
+
+    def _sub_row(icon: str, label: str, sub_const: str, cmd: str) -> dict:
+        cnt = sub_counts.get(sub_const, 0)
+        color = SUB_STAGE_COLOR.get(sub_const, "#7F8C8D")
+        return {
+            "type": "box", "layout": "horizontal",
+            "action": {"type": "message", "label": cmd, "text": cmd},
+            "paddingTop": "3px", "paddingBottom": "3px",
+            "contents": [
+                {"type": "text", "text": f"{icon} {label}",
+                 "size": "xxs", "color": color, "flex": 5, "weight": "bold"},
+                {"type": "text", "text": str(cnt),
+                 "size": "xxs", "color": "#CCCCCC", "flex": 2, "align": "end"},
+            ],
+        }
+
     bubbles = []
     for s in range(1, 5):
         count = stage_counts.get(s, 0)
+        sub_rows = [_sub_row(*tup) for tup in SUBS[s]]
+
+        # Footer button — Stage 2 gets dual buttons (full + Pivot Ready);
+        # other stages get a single full-list button.
+        footer_btns = [
+            {"type": "button",
+             "action": {"type": "message",
+                        "label": f"ดู Stage {s} ({count})",
+                        "text": f"stage{s}"},
+             "style": "primary", "color": STAGE_BG[s], "height": "sm"},
+        ]
+        if s == 2:
+            ready_count = sub_counts.get("STAGE_2_PIVOT_READY", 0)
+            footer_btns.append({
+                "type": "button",
+                "action": {"type": "message",
+                           "label": f"🎯 Pivot Ready ({ready_count})",
+                           "text": "ready"},
+                "style": "secondary", "height": "sm", "margin": "xs",
+            })
+
         bubbles.append({
             "type": "bubble",
             "size": "kilo",
@@ -1936,7 +2015,16 @@ def build_stage_picker_card(breadth: Optional[MarketBreadth] = None) -> dict:
                 "type": "box",
                 "layout": "vertical",
                 "contents": [
-                    {"type": "text", "text": f"{STAGE_ICON[s]} Stage {s}", "weight": "bold", "size": "md", "color": "#FFFFFF"},
+                    {"type": "box", "layout": "horizontal", "contents": [
+                        {"type": "text", "text": f"{STAGE_ICON[s]} Stage {s}",
+                         "weight": "bold", "size": "md", "color": "#FFFFFF",
+                         "flex": 3},
+                        {"type": "text", "text": STAGE_VERB[s],
+                         "size": "xxs", "color": "#FFD54F", "weight": "bold",
+                         "flex": 2, "align": "end", "gravity": "center"},
+                    ]},
+                    {"type": "text", "text": STAGE_DESC[s],
+                     "size": "xxs", "color": "#FFFFFF", "wrap": True},
                 ],
                 "backgroundColor": STAGE_BG[s],
                 "paddingAll": "12px",
@@ -1946,21 +2034,155 @@ def build_stage_picker_card(breadth: Optional[MarketBreadth] = None) -> dict:
                 "layout": "vertical",
                 "spacing": "xs",
                 "contents": [
-                    {"type": "text", "text": STAGE_DESC[s], "size": "xxs", "color": "#555555", "wrap": True},
-                    {"type": "text", "text": f"{count} หุ้น", "size": "sm", "weight": "bold", "color": STAGE_COLOR.get(s, "#333333")},
+                    {"type": "text", "text": f"{count} หุ้น",
+                     "size": "sm", "weight": "bold",
+                     "color": STAGE_COLOR.get(s, "#333333")},
+                    {"type": "separator", "margin": "xs"},
+                    *sub_rows,
                 ],
                 "paddingAll": "10px",
             },
             "footer": {
                 "type": "box",
                 "layout": "vertical",
-                "contents": [
-                    {"type": "button", "action": {"type": "message", "label": f"ดู Stage {s}", "text": f"stage{s}"}, "style": "primary", "color": STAGE_BG[s], "height": "sm"},
-                ],
+                "contents": footer_btns,
                 "paddingAll": "6px",
             },
         })
     return {"type": "carousel", "contents": bubbles}
+
+
+def build_stages_dashboard_card(
+    signals: list,
+    breadth: Optional[MarketBreadth] = None,
+) -> dict:
+    """Single-bubble 11-row overview matrix — the post-2-layer-classifier
+    'one screen, all states' dashboard. Triggered by the `stages` command.
+
+    Layout (per parent stage section): parent header (count + verb badge)
+    followed by sub-stage rows (icon + label + count). Every row is
+    tappable → its filter command. Color-coded per SUB_STAGE_COLOR.
+    """
+    from collections import Counter
+    sub_counts = Counter(getattr(s, "sub_stage", "") or "" for s in (signals or []))
+
+    stage_counts: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
+    if breadth:
+        stage_counts = {
+            1: getattr(breadth, "stage1_count", 0),
+            2: getattr(breadth, "stage2_count", 0),
+            3: getattr(breadth, "stage3_count", 0),
+            4: getattr(breadth, "stage4_count", 0),
+        }
+    total = sum(stage_counts.values()) or len(signals or [])
+
+    STAGE_VERB = {1: "WATCH", 2: "TRADE", 3: "TRIM", 4: "AVOID"}
+    STAGE_BG = {1: "#7F8C8D", 2: "#1B5E20", 3: "#E65100", 4: "#B71C1C"}
+
+    SECTIONS = [
+        (1, "⚪ STAGE 1", [
+            ("⚪", "Base",          "STAGE_1_BASE",         "base",         False),
+            ("🌱", "Prep",          "STAGE_1_PREP",         "prep",         True),
+        ]),
+        (2, "🟢 STAGE 2", [
+            ("🎯", "Pivot Ready ✨", "STAGE_2_PIVOT_READY",  "ready",        True),
+            ("🚀", "Ignition",       "STAGE_2_IGNITION",     "ignition",     True),
+            ("✅", "Markup",         "STAGE_2_MARKUP",       "markup",       False),
+            ("👀", "Contraction",    "STAGE_2_CONTRACTION",  "contraction",  False),
+            ("⚠",  "Overextended",   "STAGE_2_OVEREXTENDED", "overextended", False),
+        ]),
+        (3, "🟡 STAGE 3", [
+            ("🟡", "Volatile",      "STAGE_3_VOLATILE",  "volatile", False),
+            ("🟠", "Distribution",  "STAGE_3_DIST_DIST", "dist",     False),
+        ]),
+        (4, "🔴 STAGE 4", [
+            ("🔴", "Breakdown",     "STAGE_4_BREAKDOWN", "breakdown", False),
+            ("🔴", "Downtrend",     "STAGE_4_DOWNTREND", "downtrend", False),
+        ]),
+    ]
+
+    def _sub_row(icon: str, label: str, sub_const: str, cmd: str,
+                 highlight: bool) -> dict:
+        cnt = sub_counts.get(sub_const, 0)
+        color = SUB_STAGE_COLOR.get(sub_const, "#7F8C8D")
+        # Highlight (gold pop) for actionable rows: PREP, PIVOT_READY,
+        # IGNITION. Surfaces the user's "what to do today" cohorts at
+        # the top of each stage section.
+        suffix = " ←" if highlight and cnt > 0 else ""
+        return {
+            "type": "box", "layout": "horizontal",
+            "action": {"type": "message", "label": cmd, "text": cmd},
+            "paddingTop": "4px", "paddingBottom": "4px", "paddingStart": "12px",
+            "contents": [
+                {"type": "text", "text": f"{icon} {label}{suffix}",
+                 "size": "xxs", "color": color, "flex": 6,
+                 "weight": "bold" if highlight else "regular"},
+                {"type": "text", "text": str(cnt),
+                 "size": "xxs", "color": "#CCCCCC", "flex": 2, "align": "end",
+                 "weight": "bold" if highlight else "regular"},
+            ],
+        }
+
+    def _section_header(stage_int: int, label: str, count: int) -> list:
+        return [
+            {"type": "separator", "margin": "sm"},
+            {"type": "box", "layout": "horizontal",
+             "action": {"type": "message", "label": f"stage{stage_int}",
+                        "text": f"stage{stage_int}"},
+             "paddingTop": "8px", "paddingBottom": "4px",
+             "contents": [
+                {"type": "text", "text": label,
+                 "size": "sm", "weight": "bold",
+                 "color": STAGE_BG.get(stage_int, "#FFFFFF"),
+                 "flex": 4},
+                {"type": "text", "text": STAGE_VERB.get(stage_int, ""),
+                 "size": "xxs", "color": "#FFD54F", "weight": "bold",
+                 "flex": 2, "align": "end", "gravity": "center"},
+                {"type": "text", "text": str(count),
+                 "size": "sm", "weight": "bold", "color": "#FFFFFF",
+                 "flex": 2, "align": "end"},
+            ]},
+        ]
+
+    body_contents = [
+        {"type": "text", "text": f"{total} stocks scanned",
+         "size": "xxs", "color": "#7F8C8D", "align": "center"},
+    ]
+    for stage_int, label, subs in SECTIONS:
+        body_contents.extend(_section_header(stage_int, label, stage_counts.get(stage_int, 0)))
+        for tup in subs:
+            body_contents.append(_sub_row(*tup))
+
+    body_contents.extend([
+        {"type": "separator", "margin": "md"},
+        {"type": "text",
+         "text": "← = actionable today · tap any row to filter",
+         "size": "xxs", "color": "#7F8C8D", "wrap": True, "align": "center"},
+    ])
+
+    return {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "📊 State Distribution",
+                 "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+                {"type": "text", "text": "11 sub-stages · one screen",
+                 "size": "xxs", "color": "#BBDDFF"},
+            ],
+            "backgroundColor": "#0D47A1",
+            "paddingAll": "14px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "none",
+            "contents": body_contents,
+            "paddingAll": "12px",
+        },
+    }
 
 
 def build_pattern_overview_card(signals: list[StockSignal], breadth=None) -> dict:

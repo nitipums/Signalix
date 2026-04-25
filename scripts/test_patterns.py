@@ -421,10 +421,22 @@ expect("pullback fixture: stop > 0", stop_pb > 0, True,
        f"stop={stop_pb:.2f}")
 expect("pullback fixture: stop < pivot", stop_pb < pivot_pb, True,
        f"stop={stop_pb:.2f} pivot={pivot_pb:.2f}")
-expect("pullback fixture: pivot is recent 15-bar high",
-       pivot_pb, float(df_pb["High"].iloc[-15:].max()))
-expect("pullback fixture: stop is recent 10-bar low",
-       stop_pb, float(df_pb["Low"].iloc[-10:].min()))
+# PIVOT_READY uses TIGHT 5-bar window (matches the tightness range
+# that classify_sub_stage uses to admit the stock). Other actionable
+# sub-stages (PREP/IGNITION/CONTRACTION/MARKUP) keep the wider 15/10.
+expect("pullback fixture: pivot is recent 5-bar high (PIVOT_READY tight pivot)",
+       pivot_pb, float(df_pb["High"].iloc[-5:].max()))
+expect("pullback fixture: stop is recent 5-bar low (PIVOT_READY tight stop)",
+       stop_pb, float(df_pb["Low"].iloc[-5:].min()))
+
+# Sanity: a non-PIVOT_READY actionable state should still get the
+# wider 15-bar pivot. Use the strong-uptrend fixture (STAGE_2_MARKUP).
+from analyzer import compute_pivot as _cp
+pivot_run, stop_run = _cp(df_run, SUB_STAGE_2_MARKUP)
+expect("strong-uptrend fixture: pivot is 15-bar high (MARKUP wider pivot)",
+       pivot_run, float(df_run["High"].iloc[-15:].max()))
+expect("strong-uptrend fixture: stop is 10-bar low (MARKUP wider stop)",
+       stop_run, float(df_run["Low"].iloc[-10:].min()))
 
 # Out-of-scope sub-stage: STAGE_4_DOWNTREND should return (0, 0).
 pivot_dt, stop_dt = compute_pivot(df_dt, SUB_STAGE_4_DOWNTREND)
@@ -596,6 +608,32 @@ expect("col_header: 7 cells (matches row width)",
        len(header_row["contents"]), 7)
 expect("col_header: 6th cell text is 'Piv'",
        header_row["contents"][5]["text"], "Piv")
+
+
+# ── Stages dashboard + enhanced stage picker ─────────────────────────────
+print("\nbuild_stages_dashboard_card + enhanced build_stage_picker_card")
+from notifier import build_stages_dashboard_card, build_stage_picker_card
+import json as _json
+# Build with the synthetic signals we have on hand. Both functions
+# should JSON-serialise cleanly and contain key sub-stage labels.
+_smoke_sigs = [sig_pb, sig_bear, sig_strong, sig_weak, sig_bear_pivot]
+dash = build_stages_dashboard_card(_smoke_sigs)
+expect("dashboard: bubble (single-bubble overview)", dash["type"], "bubble")
+dash_json = _json.dumps(dash)
+for label in ("STAGE 1", "STAGE 2", "STAGE 3", "STAGE 4",
+              "Pivot Ready", "Ignition", "Markup", "Breakdown"):
+    expect(f"dashboard: contains label {label!r}",
+           label in dash_json, True)
+
+# Enhanced picker should still be a 4-bubble carousel and JSON-serialise.
+picker = build_stage_picker_card(signals=_smoke_sigs)
+expect("picker: carousel of 4 bubbles", len(picker["contents"]), 4)
+picker_json = _json.dumps(picker)
+for verb in ("WATCH", "TRADE", "TRIM", "AVOID"):
+    expect(f"picker: contains verb {verb!r}",
+           verb in picker_json, True)
+expect("picker: Stage 2 bubble has dual footer (full + Pivot Ready)",
+       "Pivot Ready" in picker_json, True)
 
 
 print()
