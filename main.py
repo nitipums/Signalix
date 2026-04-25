@@ -843,6 +843,34 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
             ],
         }
 
+    # Per-sub-index drill-down: 'set50 members' / 'set50 stage2' / etc.
+    # Returns kind=list (same shape as /test/query?cmd=stage2) so e2e can
+    # use the existing list-summary helper.
+    for prefix in ("set50 ", "set100 ", "mai "):
+        if c.startswith(prefix):
+            from data import get_index_members
+            index_name = "SET50" if prefix.startswith("set50") else (
+                         "SET100" if prefix.startswith("set100") else "MAI")
+            members = get_index_members(index_name)
+            rest = c[len(prefix):].strip().replace(" ", "")
+            constituents = [s for s in _last_signals if s.symbol in members]
+            stage_filter = None
+            for n in (1, 2, 3, 4):
+                if rest in (f"stage{n}", f"s{n}"):
+                    stage_filter = n
+                    break
+            if stage_filter is not None:
+                sigs = [s for s in constituents if s.stage == stage_filter]
+                label = f"{index_name} Stage {stage_filter}"
+            elif rest in ("members", "list", "all"):
+                sigs = list(constituents)
+                label = f"{index_name} members"
+            else:
+                sigs = []
+                label = f"{index_name} {rest}"
+            sigs.sort(key=lambda s: s.strength_score, reverse=True)
+            return summary(sigs, label)
+
     # Per-sub-index breadth (SET50 / SET100 / MAI)
     if c in ("set50", "set 50", "set100", "set 100", "mai"):
         from data import get_index_members
@@ -1998,8 +2026,20 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             else:
                 reply_text(reply_token, f'ไม่พบคำอธิบายสำหรับ "{metric_name}"')
 
-    # ── Market Breadth ──
     # ── Per-index breadth: SET50 / SET100 / MAI ──
+    # Catch the more-specific filter forms first so they don't fall into
+    # the generic 'set50' breadth command.
+    elif cmd.startswith("set50 ") or cmd.startswith("set100 ") or cmd in ("mai members", "mai list", "mai all"):
+        # Support both 'set50 stage2' (filter by stage) and 'set50 list' /
+        # 'set50 members' / 'set50 all' (full member list).
+        parts = cmd.split(maxsplit=1)
+        index_name = parts[0].upper()
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        if cmd.startswith("mai "):
+            index_name = "MAI"
+            rest = cmd[len("mai "):].strip()
+        await _reply_index_filter(reply_token, index_name, rest)
+
     elif cmd in ("set50", "set 50"):
         await _reply_index_breadth(reply_token, "SET50")
 
@@ -2455,6 +2495,59 @@ def _reply_stock_list(reply_token: str, signals: list[StockSignal], title: str,
     bubble = build_ranked_stock_list_bubble(chunk, title, next_cmd=next_cmd,
                                             rank_offset=start, subtitle=subtitle)
     reply_flex(reply_token, title, bubble)
+
+
+async def _reply_index_filter(reply_token: str, index_name: str, rest: str) -> None:
+    """Drill-down list inside an index. Two modes:
+      • rest in {'members', 'list', 'all'} → all members sorted by score
+      • rest in {'stage1', 'stage2', 'stage3', 'stage4'} or 'stage 2' etc.
+        → members filtered to that stage
+    Tap a row → single-stock detail card. Empty universe → friendly text.
+    """
+    from data import get_index_members
+    members = get_index_members(index_name)
+    if not members:
+        reply_text(reply_token,
+                   f"{index_name}: ยังไม่มีรายชื่อสมาชิก (กำลังเตรียมข้อมูล)")
+        return
+    if not _last_signals:
+        reply_text(reply_token, "ยังไม่มีข้อมูลการสแกน กรุณารอการสแกนครั้งถัดไป")
+        return
+
+    # Constituent universe (signals filtered to index members).
+    constituents = [s for s in _last_signals if s.symbol in members]
+    if not constituents:
+        reply_text(reply_token, f"{index_name}: ไม่มีข้อมูล constituent ขณะนี้")
+        return
+
+    # Normalise rest: 'stage 2' / 'stage2' / 's2' all map to stage=2.
+    rest_norm = rest.lower().replace(" ", "")
+    stage_filter: Optional[int] = None
+    for n in (1, 2, 3, 4):
+        if rest_norm in (f"stage{n}", f"s{n}"):
+            stage_filter = n
+            break
+    members_only = rest_norm in ("members", "list", "all", "")
+
+    if stage_filter is not None:
+        signals = [s for s in constituents if s.stage == stage_filter]
+        title = f"📊 {index_name} · Stage {stage_filter} ({len(signals)})"
+    elif members_only:
+        signals = constituents
+        title = f"📊 {index_name} · Members ({len(signals)})"
+    else:
+        reply_text(reply_token,
+                   f"คำสั่งไม่ถูกต้อง: '{index_name.lower()} {rest}'\n"
+                   f"ลอง: '{index_name.lower()} members' หรือ "
+                   f"'{index_name.lower()} stage2'")
+        return
+
+    if not signals:
+        reply_text(reply_token, f"{title}\nไม่มีหุ้นในกลุ่มนี้")
+        return
+
+    _reply_stock_list(reply_token, signals, title,
+                      base_cmd=f"{index_name.lower()} {rest_norm}")
 
 
 async def _reply_index_breadth(reply_token: str, index_name: str) -> None:
