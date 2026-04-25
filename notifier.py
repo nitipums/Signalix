@@ -243,8 +243,9 @@ def build_index_breadth_card(
     movers_up = (movers_up or [])[:3]
     movers_down = (movers_down or [])[:3]
 
-    def _row(label: str, value: str, value_color: str = "#FFFFFF") -> dict:
-        return {
+    def _row(label: str, value: str, value_color: str = "#FFFFFF",
+             tap_cmd: Optional[str] = None) -> dict:
+        box: dict = {
             "type": "box", "layout": "horizontal",
             "paddingTop": "4px", "paddingBottom": "4px",
             "contents": [
@@ -253,6 +254,9 @@ def build_index_breadth_card(
                  "weight": "bold", "flex": 5, "align": "end"},
             ],
         }
+        if tap_cmd:
+            box["action"] = {"type": "message", "label": label[:20], "text": tap_cmd}
+        return box
 
     def _mover_row(s: StockSignal, color: str) -> dict:
         sign = "+" if s.change_pct > 0 else ""
@@ -292,12 +296,22 @@ def build_index_breadth_card(
              value_color="#27AE60" if above_pct >= 50 else "#E74C3C"),
 
         {"type": "separator", "color": "#333333", "margin": "md"},
-        {"type": "text", "text": "Stage distribution", "size": "xs",
-         "weight": "bold", "color": "#FFD54F", "margin": "sm"},
-        _row("Stage 1 (Basing)", f"{s1}", value_color="#95A5A6"),
-        _row("Stage 2 (Uptrend)", f"{s2}", value_color="#27AE60"),
-        _row("Stage 3 (Topping)", f"{s3}", value_color="#E67E22"),
-        _row("Stage 4 (Downtrend)", f"{s4}", value_color="#E74C3C"),
+        {"type": "text", "text": "Stage distribution · tap to filter",
+         "size": "xs", "weight": "bold", "color": "#FFD54F", "margin": "sm"},
+        # Each stage row taps to e.g. 'set50 stage2' → constituent list filtered
+        # to that stage. Mirrors the existing 'top mover → detail card' gesture.
+        _row("Stage 1 (Basing)", f"{s1}", value_color="#95A5A6",
+             tap_cmd=f"{index_name.lower()} stage1"),
+        _row("Stage 2 (Uptrend)", f"{s2}", value_color="#27AE60",
+             tap_cmd=f"{index_name.lower()} stage2"),
+        _row("Stage 3 (Topping)", f"{s3}", value_color="#E67E22",
+             tap_cmd=f"{index_name.lower()} stage3"),
+        _row("Stage 4 (Downtrend)", f"{s4}", value_color="#E74C3C",
+             tap_cmd=f"{index_name.lower()} stage4"),
+        # Members-list shortcut at the bottom of the stage block
+        _row("All members", "→",
+             value_color="#1ABC9C",
+             tap_cmd=f"{index_name.lower()} members"),
     ]
 
     if movers_up:

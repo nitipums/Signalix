@@ -303,6 +303,23 @@ def suite_index_breadth(base, secret):
                                f"stages_sum={total_staged} scanned={scanned}")
         except Exception as e:
             fails += check(cmd, False, f"err: {e}")
+
+    # Drill-down filters: 'set50 members' / 'set50 stage2' / etc. These
+    # were added so users can tap the breadth card stage rows or type
+    # commands to drill into the constituent list. Verify the dispatch
+    # returns kind='list' (re-uses the standard stock-list summary path).
+    for cmd in ("set50 members", "set50 stage2", "set100 members", "set100 stage1"):
+        try:
+            q, _ = query(base, secret, cmd)
+            fails += check(f"{cmd}/kind_list", q.get("kind") == "list",
+                           f"kind={q.get('kind')} count={q.get('count')}")
+            # Members commands should non-empty (SET50/SET100 have ≥40 in fallback).
+            if cmd.endswith(" members"):
+                fails += check(f"{cmd}/non_empty",
+                               (q.get("count") or 0) > 0,
+                               f"count={q.get('count')}")
+        except Exception as e:
+            fails += check(cmd, False, f"err: {e}")
     return fails
 
 
