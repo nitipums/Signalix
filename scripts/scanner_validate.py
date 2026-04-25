@@ -37,10 +37,23 @@ from analyzer import analyze_index, classify_stage, detect_pattern, scan_stock
 # symbol, display name, yfinance ticker, path ("stock" runs scan_stock,
 # "index" runs analyze_index)
 SAMPLES = [
+    # Original 4 — KKP/STECON/DELTA/SCC reference Stage 2 cohort
     ("STECON",  "Sino-Thai Engineering & Construction",  "STECON.BK", "stock"),
     ("KKP",     "Kiatnakin Phatra Bank",                 "KKP.BK",    "stock"),
     ("DELTA",   "Delta Electronics (Thailand)",          "DELTA.BK",  "stock"),
     ("SCC",     "Siam Cement Group",                     "SCC.BK",    "stock"),
+    # Diagnostic regressions (chart-review iteration):
+    #   HANA  — fresh breakout from VCP, was wrongly OVEREXTENDED
+    #   GLORY — long flat base + explosive breakout, was wrongly Stage 3
+    #   GPI   — same long-base pattern as GLORY, was wrongly Stage 3
+    #   PREB  — Stage 2 with healthy pullback, was wrongly Stage 3
+    #   KCG   — entrenched Stage 2 with shallow pullback, was Stage 1
+    ("HANA",    "Hana Microelectronics",                 "HANA.BK",   "stock"),
+    ("GLORY",   "Glory Industrial",                      "GLORY.BK",  "stock"),
+    ("GPI",     "Grand Prix International",              "GPI.BK",    "stock"),
+    ("PREB",    "Pre-Built",                             "PREB.BK",   "stock"),
+    ("KCG",     "KCG Corporation",                       "KCG.BK",    "stock"),
+    # Indexes + crypto — non-stock paths
     ("SET",     "SET Composite Index",                   "^SET.BK",   "index"),
     ("KOSPI",   "KOSPI (Korea)",                         "^KS11",     "index"),
     ("BTC",     "Bitcoin (USD)",                         "BTC-USD",   "stock"),
