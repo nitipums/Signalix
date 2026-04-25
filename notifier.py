@@ -79,6 +79,58 @@ PATTERN_COLOR = {
 STAGE_COLOR = {1: "#95A5A6", 2: "#27AE60", 3: "#E67E22", 4: "#E74C3C"}
 STAGE_LABEL = {1: "Stage 1 – Basing", 2: "Stage 2 – Uptrend", 3: "Stage 3 – Topping", 4: "Stage 4 – Downtrend"}
 
+# ─── Sub-stage taxonomy (9-state finite state machine) ─────────────────────────
+# Source-of-truth labels/colors/recommendations for the new sub_stage field on
+# StockSignal. Cards display SUB_STAGE_LABEL[sub_stage] as the primary
+# classification (replaces the legacy STAGE_LABEL + weakening suffix combo)
+# when the signal has a sub_stage; falls back to STAGE_LABEL otherwise.
+SUB_STAGE_LABEL = {
+    "STAGE_1_BASE":      "Stage 1 · Base (frozen)",
+    "STAGE_1_PREP":      "Stage 1 · Prep (loading)",
+    "STAGE_2_EARLY":     "Stage 2 · Early (fresh breakout)",
+    "STAGE_2_RUNNING":   "Stage 2 · Running (trending)",
+    "STAGE_2_PULLBACK":  "Stage 2 · Pullback (entry setup)",
+    "STAGE_3_VOLATILE":  "Stage 3 · Volatile (distribution)",
+    "STAGE_3_DIST_DIST": "Stage 3 · Distribution (defend)",
+    "STAGE_4_BREAKDOWN": "Stage 4 · Breakdown (cut loss)",
+    "STAGE_4_DOWNTREND": "Stage 4 · Downtrend (avoid)",
+}
+SUB_STAGE_COLOR = {
+    "STAGE_1_BASE":      "#7F8C8D",
+    "STAGE_1_PREP":      "#1ABC9C",
+    "STAGE_2_EARLY":     "#27AE60",
+    "STAGE_2_RUNNING":   "#16A085",
+    "STAGE_2_PULLBACK":  "#2980B9",
+    "STAGE_3_VOLATILE":  "#F39C12",
+    "STAGE_3_DIST_DIST": "#E67E22",
+    "STAGE_4_BREAKDOWN": "#C0392B",
+    "STAGE_4_DOWNTREND": "#922B21",
+}
+SUB_STAGE_ACTION = {
+    "STAGE_1_BASE":      "Ignore — no setup yet",
+    "STAGE_1_PREP":      "Watchlist — pre-Stage-2 watch",
+    "STAGE_2_EARLY":     "Alert / Trade — focus on breakout entry",
+    "STAGE_2_RUNNING":   "Hold / Trail Stop — don't add",
+    "STAGE_2_PULLBACK":  "Setup Entry — pivot point coming",
+    "STAGE_3_VOLATILE":  "Take Profit / Tighten Stop",
+    "STAGE_3_DIST_DIST": "Defend — no new buys",
+    "STAGE_4_BREAKDOWN": "Cut Loss — exit",
+    "STAGE_4_DOWNTREND": "Delete — remove from watch",
+}
+
+
+def _resolve_stage_label(signal) -> tuple[str, str]:
+    """Return (label, color) for displaying the signal's primary classification.
+    Prefers the new sub_stage when set; falls back to STAGE_LABEL +
+    weakening suffix for old Firestore docs that pre-date sub_stage."""
+    sub = getattr(signal, "sub_stage", "") or ""
+    if sub and sub in SUB_STAGE_LABEL:
+        return SUB_STAGE_LABEL[sub], SUB_STAGE_COLOR.get(sub, "#7F8C8D")
+    label = STAGE_LABEL.get(signal.stage, f"Stage {signal.stage}")
+    if getattr(signal, "stage_weakening", False):
+        label = f"{label} ⚠ Weakening"
+    return label, STAGE_COLOR.get(signal.stage, "#7F8C8D")
+
 # Direct HTTPS PNG/JPEG URLs used as hero images in guide cards.
 # LINE fetches these directly — must be publicly accessible.
 # Set to empty string to skip the hero for that pattern.
@@ -699,12 +751,13 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
     """Build a detailed Flex Bubble for a single stock query."""
     pcolor = PATTERN_COLOR.get(signal.pattern, "#7F8C8D")
     pattern_label = PATTERN_LABEL.get(signal.pattern, signal.pattern)
-    stage_label = STAGE_LABEL.get(signal.stage, f"Stage {signal.stage}")
-    # Weakening modifier: Minervini template passes but close < SMA50.
-    # Appended to the stage label so users see the nuance without losing
-    # the clean int-stage taxonomy.
-    if getattr(signal, "stage_weakening", False):
-        stage_label = f"{stage_label} ⚠ Weakening"
+    # Sub-stage is the primary classification (new finite state machine);
+    # falls back to STAGE_LABEL + weakening suffix for old Firestore docs
+    # without sub_stage. Recommendation text drives the user-facing
+    # "what to do" line below the price hero.
+    stage_label, _stage_color = _resolve_stage_label(signal)
+    sub_stage = getattr(signal, "sub_stage", "") or ""
+    sub_stage_action = SUB_STAGE_ACTION.get(sub_stage, "") if sub_stage else ""
     chg_color = _pct_color(signal.change_pct)
     chg_sign = "+" if signal.change_pct > 0 else ""
 
@@ -816,9 +869,17 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                     {"type": "text", "text": f"{chg_sign}{signal.change_pct:.2f}%", "size": "md", "color": chg_color, "align": "end", "weight": "bold"},
                 ]},
                 {"type": "box", "layout": "horizontal", "contents": [
-                    {"type": "text", "text": stage_label, "size": "xs", "color": "#AAAAAA", "flex": 1},
+                    {"type": "text", "text": stage_label, "size": "xs", "color": _stage_color, "flex": 1, "weight": "bold"},
                     {"type": "text", "text": pattern_label, "size": "xs", "color": pcolor, "weight": "bold", "align": "end"},
                 ]},
+                # Sub-stage recommendation row — prescriptive "what to do".
+                # Only renders when sub_stage is set (skip for legacy docs).
+                *(
+                    [{"type": "text", "text": f"💡 {sub_stage_action}",
+                      "size": "xxs", "color": "#FFD54F", "wrap": True,
+                      "margin": "xs"}]
+                    if sub_stage_action else []
+                ),
             ],
             "backgroundColor": "#0D0D1A",
             "paddingAll": "16px",
@@ -1893,11 +1954,12 @@ def build_pattern_overview_card(signals: list[StockSignal], breadth=None) -> dic
 def build_watchlist_stock_card(signal: StockSignal, fundamentals: dict) -> dict:
     """Deep insight card: Technical + Fundamental data for watchlist view."""
     pcolor = PATTERN_COLOR.get(signal.pattern, "#7F8C8D")
-    # Weakening suffix applied identically to the single-stock card.
     pattern_label = PATTERN_LABEL.get(signal.pattern, signal.pattern)
-    stage_label = STAGE_LABEL.get(signal.stage, f"Stage {signal.stage}")
-    if getattr(signal, "stage_weakening", False):
-        stage_label = f"{stage_label} ⚠ Weakening"
+    # Sub-stage primary classification (with backward-compat fallback to
+    # STAGE_LABEL + weakening suffix for old Firestore docs).
+    stage_label, _stage_color = _resolve_stage_label(signal)
+    sub_stage = getattr(signal, "sub_stage", "") or ""
+    sub_stage_action = SUB_STAGE_ACTION.get(sub_stage, "") if sub_stage else ""
     chg_color = _pct_color(signal.change_pct)
     chg_sign = "+" if signal.change_pct > 0 else ""
 
@@ -1987,9 +2049,16 @@ def build_watchlist_stock_card(signal: StockSignal, fundamentals: dict) -> dict:
                     {"type": "text", "text": f"{chg_sign}{signal.change_pct:.2f}%", "size": "md", "color": chg_color, "align": "end", "weight": "bold"},
                 ]},
                 {"type": "box", "layout": "horizontal", "contents": [
-                    {"type": "text", "text": stage_label, "size": "xs", "color": "#AAAAAA", "flex": 1},
+                    {"type": "text", "text": stage_label, "size": "xs", "color": _stage_color, "flex": 1, "weight": "bold"},
                     {"type": "text", "text": pattern_label, "size": "xs", "color": pcolor, "weight": "bold", "align": "end"},
                 ]},
+                # Sub-stage recommendation row — same gesture as single-stock card.
+                *(
+                    [{"type": "text", "text": f"💡 {sub_stage_action}",
+                      "size": "xxs", "color": "#FFD54F", "wrap": True,
+                      "margin": "xs"}]
+                    if sub_stage_action else []
+                ),
             ],
             "backgroundColor": "#0D0D1A",
             "paddingAll": "16px",

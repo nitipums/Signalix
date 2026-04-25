@@ -69,6 +69,13 @@ class StockSignal:
     target_price: float = 0.0      # 2:1 risk/reward: close + 2 * (close - stop_loss)
     breakout_count_1y: int = 0     # Number of distinct breakout events in past year
     data_date: str = ""            # Date of the last candle used (YYYY-MM-DD) — separate from scanned_at
+    # Sub-stage finite state machine (one of 9 SUB_STAGE_* constants, or "" for
+    # old Firestore docs / unclassified). Source of truth for "what state is
+    # this stock in"; the legacy `pattern` field is auto-derived from this.
+    sub_stage: str = ""
+    sma10: float = 0.0             # Short-term MA needed by STAGE_2_RUNNING
+    sma20: float = 0.0             # Short-term MA used across multiple sub-stages
+    sma200_roc20: float = 0.0      # SMA200 % change vs 20 bars ago — slope signal
     # Stage-2 weakening modifier: True when stage == 2 AND close < SMA50.
     # Minervini's stage-2 template (MA150/200 alignment) can stay true while
     # near-term momentum rolls over below SMA50 — a classic precursor to a
@@ -132,6 +139,228 @@ def _atr(df: pd.DataFrame, window: int = 14) -> pd.Series:
 
 def _vol_avg(df: pd.DataFrame, window: int = 20) -> pd.Series:
     return df["Volume"].rolling(window=window, min_periods=window).mean()
+
+
+# ─── Sub-stage helpers ─────────────────────────────────────────────────────────
+# All return scalar floats / bools using the LAST bar of the input series.
+# Designed to be cheap (single tail operation each) so classify_sub_stage
+# can run them per stock without measurable overhead.
+
+def _sma_roc(series: pd.Series, window: int = 200, lookback: int = 20) -> float:
+    """Rate of change of SMA{window} now vs `lookback` bars ago, as percent.
+    Returns 0.0 when there isn't enough data to compute either point."""
+    sma = _sma(series, window)
+    sma_clean = sma.dropna()
+    if len(sma_clean) <= lookback:
+        return 0.0
+    now = float(sma_clean.iloc[-1])
+    then = float(sma_clean.iloc[-(lookback + 1)])
+    if then == 0:
+        return 0.0
+    return (now - then) / then * 100.0
+
+
+def _cross_within(short: pd.Series, long: pd.Series, n: int = 20,
+                  direction: str = "up") -> bool:
+    """True if `short` crossed the `long` series anywhere in the last n bars
+    in the given direction. direction='up' = golden cross; 'down' = death."""
+    if len(short) < n + 1 or len(long) < n + 1:
+        return False
+    s_tail = short.iloc[-(n + 1):]
+    l_tail = long.iloc[-(n + 1):]
+    if direction == "up":
+        # cross up: previous bar short<=long, current bar short>long
+        diff = (s_tail.values - l_tail.values)
+        return any((diff[i - 1] <= 0 < diff[i]) for i in range(1, len(diff)))
+    diff = (s_tail.values - l_tail.values)
+    return any((diff[i - 1] >= 0 > diff[i]) for i in range(1, len(diff)))
+
+
+def _volume_dry_up(df: pd.DataFrame, n: int = 10, threshold: float = 0.7) -> bool:
+    """True when last-n-bar avg volume < threshold × 20-bar avg volume.
+    Captures the 'volume drying up' fingerprint for STAGE_2_PULLBACK."""
+    if len(df) < 20:
+        return False
+    last_n_avg = float(df["Volume"].iloc[-n:].mean())
+    avg_20 = float(df["Volume"].iloc[-20:].mean())
+    if avg_20 <= 0:
+        return False
+    return last_n_avg < avg_20 * threshold
+
+
+def _range_contraction(df: pd.DataFrame, n: int = 10) -> bool:
+    """True when last-n-bar (high-low) range is narrower than the prior n-bar
+    range. Used by STAGE_2_PULLBACK to confirm 'narrowing range'."""
+    if len(df) < 2 * n:
+        return False
+    recent = float((df["High"].iloc[-n:] - df["Low"].iloc[-n:]).mean())
+    prior = float((df["High"].iloc[-(2 * n):-n] - df["Low"].iloc[-(2 * n):-n]).mean())
+    if prior <= 0:
+        return False
+    return recent < prior
+
+
+def _oscillates_around(close: pd.Series, sma: pd.Series, n: int = 20) -> bool:
+    """True if Close has crossed `sma` BOTH directions in the last n bars
+    (i.e. is sloshing around the line, not trending). Drives STAGE_1_BASE."""
+    if len(close) < n + 1 or len(sma) < n + 1:
+        return False
+    diff = (close.iloc[-(n + 1):].values - sma.iloc[-(n + 1):].values)
+    has_up = any(diff[i - 1] <= 0 < diff[i] for i in range(1, len(diff)))
+    has_dn = any(diff[i - 1] >= 0 > diff[i] for i in range(1, len(diff)))
+    return has_up and has_dn
+
+
+# ─── Sub-stage taxonomy ────────────────────────────────────────────────────────
+# 9-state finite state machine spanning stocks' full life-cycle. Source of truth
+# for the new classification; the legacy `pattern` field on StockSignal is
+# auto-derived from this via _derive_pattern() during scan.
+
+SUB_STAGE_1_BASE      = "STAGE_1_BASE"
+SUB_STAGE_1_PREP      = "STAGE_1_PREP"
+SUB_STAGE_2_EARLY     = "STAGE_2_EARLY"
+SUB_STAGE_2_RUNNING   = "STAGE_2_RUNNING"
+SUB_STAGE_2_PULLBACK  = "STAGE_2_PULLBACK"
+SUB_STAGE_3_VOLATILE  = "STAGE_3_VOLATILE"
+SUB_STAGE_3_DIST_DIST = "STAGE_3_DIST_DIST"
+SUB_STAGE_4_BREAKDOWN = "STAGE_4_BREAKDOWN"
+SUB_STAGE_4_DOWNTREND = "STAGE_4_DOWNTREND"
+
+ALL_SUB_STAGES: frozenset = frozenset({
+    SUB_STAGE_1_BASE, SUB_STAGE_1_PREP,
+    SUB_STAGE_2_EARLY, SUB_STAGE_2_RUNNING, SUB_STAGE_2_PULLBACK,
+    SUB_STAGE_3_VOLATILE, SUB_STAGE_3_DIST_DIST,
+    SUB_STAGE_4_BREAKDOWN, SUB_STAGE_4_DOWNTREND,
+})
+
+
+def classify_sub_stage(df: pd.DataFrame, parent_stage: int) -> str:
+    """Return one of the 9 SUB_STAGE constants, or '' if no condition fires.
+
+    Parent stage drives which condition tree runs. Within each parent, sub-
+    stages are evaluated in priority order — the more 'actionable' state
+    wins on tie (e.g. STAGE_2_EARLY beats STAGE_2_PULLBACK beats RUNNING).
+
+    All conditions use SMA (no EMA) per the locked-in design decision.
+    """
+    if df is None or len(df) < 60:
+        return ""
+
+    close = df["Close"]
+    s10 = _sma(close, 10)
+    s20 = _sma(close, 20)
+    s50 = _sma(close, 50)
+    s200 = _sma(close, 200)
+
+    if any(s.dropna().empty for s in (s10, s20, s50, s200)):
+        return ""
+
+    c = float(close.iloc[-1])
+    m10 = float(s10.iloc[-1])
+    m20 = float(s20.iloc[-1])
+    m50 = float(s50.iloc[-1])
+    m200 = float(s200.iloc[-1])
+
+    if any(np.isnan(x) for x in (c, m10, m20, m50, m200)):
+        return ""
+
+    roc200 = _sma_roc(close, window=200, lookback=20)
+    vol_now = float(df["Volume"].iloc[-1])
+    vol_avg_20 = float(df["Volume"].iloc[-20:].mean())
+    vol_above_avg = vol_avg_20 > 0 and vol_now > vol_avg_20
+
+    # ── Parent stage 2: EARLY → PULLBACK → RUNNING (priority order) ──
+    if parent_stage == 2:
+        if (c > m20 > m50 > m200
+                and _cross_within(s50, s200, n=20, direction="up")
+                and vol_above_avg):
+            return SUB_STAGE_2_EARLY
+        if (c < m20 and c > m50
+                and _range_contraction(df, n=10)
+                and _volume_dry_up(df, n=10, threshold=0.7)):
+            return SUB_STAGE_2_PULLBACK
+        if c > m10 and c > m20 and m20 > m50 > m200 and roc200 > 0:
+            return SUB_STAGE_2_RUNNING
+        # Fallback: still parent-stage 2 (Minervini template passes) but
+        # none of the three discriminators fire — treat as RUNNING since
+        # the trend structure is intact even without the explicit
+        # short-MA conditions.
+        return SUB_STAGE_2_RUNNING
+
+    # ── Parent stage 3: DIST_DIST (deeper distribution) → VOLATILE ──
+    if parent_stage == 3:
+        # Dead cross of SMA20 below SMA50 within last 10 bars + close near
+        # SMA200 (within ±5%) = late-distribution defending support.
+        near_sma200 = m200 > 0 and abs(c - m200) / m200 < 0.05
+        if (_cross_within(s20, s50, n=10, direction="down")
+                and c < m50
+                and near_sma200):
+            return SUB_STAGE_3_DIST_DIST
+        # Volatile = wide swings + close repeatedly under SMA20.
+        atr_now = float(_atr(df).iloc[-1]) if len(df) >= 14 else 0.0
+        atr_20d_ago = float(_atr(df).iloc[-21]) if len(df) > 21 else atr_now
+        wide_swings = atr_20d_ago > 0 and atr_now > atr_20d_ago * 1.5
+        below_sma20_count = sum(
+            1 for k in range(1, 6)
+            if k <= len(close) and float(close.iloc[-k]) < float(s20.iloc[-k])
+        )
+        if wide_swings or below_sma20_count >= 3:
+            return SUB_STAGE_3_VOLATILE
+        return SUB_STAGE_3_VOLATILE  # default for parent 3
+
+    # ── Parent stage 4: BREAKDOWN (fresh) → DOWNTREND (entrenched) ──
+    if parent_stage == 4:
+        # Breakdown = today's vol > 1.5× avg AND SMA50 death-crossed SMA200
+        # in the last 10 bars. The 'fresh and ugly' state.
+        breakdown_vol = vol_avg_20 > 0 and vol_now > vol_avg_20 * 1.5
+        death_cross_recent = _cross_within(s50, s200, n=10, direction="down")
+        if c < m200 and breakdown_vol and death_cross_recent:
+            return SUB_STAGE_4_BREAKDOWN
+        if c < m20 < m50 < m200 and roc200 < 0:
+            return SUB_STAGE_4_DOWNTREND
+        return SUB_STAGE_4_DOWNTREND  # default for parent 4
+
+    # ── Parent stage 1: PREP (loading) → BASE (frozen) ──
+    if parent_stage == 1:
+        # Prep: close above SMA200 sustained, SMA50 within 3% of SMA200
+        # (squeezing), ROC(200,20) ≥ 0.
+        sma50_near_sma200 = m200 > 0 and abs(m50 - m200) / m200 < 0.03
+        close_above_sma200_5bar = (
+            len(close) >= 5
+            and all(float(close.iloc[-k]) > float(s200.iloc[-k])
+                    for k in range(1, 6))
+        )
+        if close_above_sma200_5bar and sma50_near_sma200 and roc200 >= 0:
+            return SUB_STAGE_1_PREP
+        # Base: oscillating around SMA200 with SMA50 below SMA200 and
+        # ROC flat-or-negative.
+        if _oscillates_around(close, s200, n=20) and m50 < m200 and roc200 <= 0:
+            return SUB_STAGE_1_BASE
+        return SUB_STAGE_1_BASE  # default for parent 1
+
+    return ""
+
+
+def _derive_pattern(sub_stage: str, vcp_result: str, is_ath: bool,
+                    breakout_confirmed: bool) -> str:
+    """Map the 9 sub-stages back to the legacy `pattern` vocabulary so
+    existing cards / Firestore docs / e2e assertions keep working without
+    code changes elsewhere. Source of truth is sub_stage; this is a view."""
+    if sub_stage == SUB_STAGE_2_EARLY:
+        if breakout_confirmed and is_ath:
+            return "ath_breakout"
+        if breakout_confirmed:
+            return "breakout"
+        return "breakout_attempt"
+    if sub_stage == SUB_STAGE_2_PULLBACK:
+        if vcp_result == "vcp_low_cheat":
+            return "vcp_low_cheat"
+        if vcp_result == "vcp":
+            return "vcp"
+        return "consolidating"
+    if sub_stage in (SUB_STAGE_4_BREAKDOWN, SUB_STAGE_4_DOWNTREND):
+        return "going_down"
+    return "consolidating"
 
 
 # ─── Stage classification ──────────────────────────────────────────────────────
@@ -443,38 +672,61 @@ def _detect_vcp(df: pd.DataFrame) -> tuple[str, dict]:
 
 # ─── Strength score ────────────────────────────────────────────────────────────
 
-def _strength_score(df: pd.DataFrame, stage: int, pattern: str, volume_ratio: float) -> float:
-    """
-    Composite score 0–100.
+def _strength_score(df: pd.DataFrame, stage: int, pattern: str, volume_ratio: float,
+                    sub_stage: str = "") -> float:
+    """Composite score 0–100, sub-stage aware.
 
-    Rewards:
-    - Being in Stage 2 (+40)
-    - Breakout pattern (+20), VCP (+15), ATH breakout (+25)
-    - High volume ratio on breakout (+up to 15)
-    - RS: how close price is to 52-week high (+up to 20)
+    When sub_stage is set (current scans), the sub-stage score map drives
+    the primary classification component. When sub_stage is empty (old
+    Firestore docs loaded mid-migration), falls back to the legacy
+    stage+pattern lookup so historical scores stay sensible.
+
+    Rewards (sub-stage scoring):
+      • STAGE_2_EARLY    +65   (fresh entry, biggest alpha)
+      • STAGE_2_PULLBACK +55   (setup forming)
+      • STAGE_2_RUNNING  +50   (already running, less alpha)
+      • STAGE_1_PREP     +30   (watchlist)
+      • STAGE_3_VOLATILE +20   (defensive — trim)
+      • STAGE_1_BASE     +10
+      • STAGE_3_DIST_DIST +5   (no buy)
+      • STAGE_4_*         +0
+      Plus volume bonus (max +15) and 52W proximity (max +20).
     """
     score = 0.0
 
-    stage_scores = {1: 10, 2: 40, 3: 15, 4: 0}
-    score += stage_scores.get(stage, 0)
-
-    pattern_scores = {
-        "ath_breakout": 25,
-        "breakout": 20,
-        "vcp_low_cheat": 18,
-        "vcp": 15,
-        "breakout_attempt": 12,  # halfway between consolidating and vcp —
-                                 # real signal but weaker than a confirmed close
-        "consolidating": 5,
-        "going_down": 0,
+    sub_stage_scores = {
+        SUB_STAGE_2_EARLY:     65,
+        SUB_STAGE_2_PULLBACK:  55,
+        SUB_STAGE_2_RUNNING:   50,
+        SUB_STAGE_1_PREP:      30,
+        SUB_STAGE_3_VOLATILE:  20,
+        SUB_STAGE_1_BASE:      10,
+        SUB_STAGE_3_DIST_DIST:  5,
+        SUB_STAGE_4_BREAKDOWN:  0,
+        SUB_STAGE_4_DOWNTREND:  0,
     }
-    score += pattern_scores.get(pattern, 0)
+    if sub_stage and sub_stage in sub_stage_scores:
+        score += sub_stage_scores[sub_stage]
+    else:
+        # Legacy fallback for Firestore docs without sub_stage.
+        stage_scores = {1: 10, 2: 40, 3: 15, 4: 0}
+        score += stage_scores.get(stage, 0)
+        pattern_scores = {
+            "ath_breakout":     25,
+            "breakout":         20,
+            "vcp_low_cheat":    18,
+            "vcp":              15,
+            "breakout_attempt": 12,
+            "consolidating":     5,
+            "going_down":        0,
+        }
+        score += pattern_scores.get(pattern, 0)
 
-    # Volume bonus (capped at 15)
+    # Volume bonus (capped at 15) — applies in both branches.
     vol_bonus = min(15, (volume_ratio - 1.0) * 10) if volume_ratio > 1.0 else 0
     score += vol_bonus
 
-    # RS: proximity to 52-week high
+    # RS: proximity to 52-week high — applies in both branches.
     if len(df) >= 20:
         high_52w = float(df["High"].iloc[-252:].max()) if len(df) >= 252 else float(df["High"].max())
         c = float(df["Close"].iloc[-1])
@@ -518,22 +770,26 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
     volume_ratio = vol_now / vol_avg_20 if vol_avg_20 > 0 else 1.0
 
     stage = classify_stage(df)
+    sub_stage = classify_sub_stage(df, stage)
     pattern, bp_details = detect_pattern(df, stage, ath_override=ath_override, is_index=is_index)
 
     lookback = min(252, len(df))
     high_52w = float(high.iloc[-lookback:].max())
     low_52w = float(close.iloc[-lookback:].min())
 
+    sma10 = float(_sma(close, 10).iloc[-1]) if len(df) >= 10 else float("nan")
+    sma20 = float(_sma(close, 20).iloc[-1]) if len(df) >= 20 else float("nan")
     sma50 = float(_sma(close, 50).iloc[-1]) if len(df) >= 50 else float("nan")
     sma150 = float(_sma(close, 150).iloc[-1]) if len(df) >= 150 else float("nan")
     sma200 = float(_sma(close, 200).iloc[-1]) if len(df) >= 200 else float("nan")
+    sma200_roc20 = _sma_roc(close, window=200, lookback=20)
 
     # Stage-2 weakening: Minervini template still passes but short-term
-    # momentum has rolled over below SMA50. Signals a potential stage-3
-    # transition without changing the stage integer itself.
+    # momentum has rolled over below SMA50. Retained alongside sub_stage
+    # for backward compat with existing cards/e2e.
     stage_weakening = (stage == 2 and not np.isnan(sma50) and c < sma50)
 
-    score = _strength_score(df, stage, pattern, volume_ratio)
+    score = _strength_score(df, stage, pattern, volume_ratio, sub_stage=sub_stage)
 
     # Risk/reward calculations
     atr_series = _atr(df)
@@ -564,9 +820,12 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
         change_pct=round(change_pct, 2),
         volume=vol_now,
         volume_ratio=round(volume_ratio, 2),
+        sma10=round(sma10, 2) if not np.isnan(sma10) else 0.0,
+        sma20=round(sma20, 2) if not np.isnan(sma20) else 0.0,
         sma50=round(sma50, 2) if not np.isnan(sma50) else 0.0,
         sma150=round(sma150, 2) if not np.isnan(sma150) else 0.0,
         sma200=round(sma200, 2) if not np.isnan(sma200) else 0.0,
+        sma200_roc20=round(sma200_roc20, 4),
         high_52w=round(high_52w, 2),
         low_52w=round(low_52w, 2),
         strength_score=score,
@@ -580,6 +839,7 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
         target_price=target,
         breakout_count_1y=bo_count,
         data_date=data_date,
+        sub_stage=sub_stage,
         stage_weakening=bool(stage_weakening),
     )
 

@@ -127,12 +127,14 @@ def dump_stock(code: str, name: str, yf_tk: str, df) -> dict:
         print(f"    {mark} {label:<30s}  {detail}")
     print()
     weak = " ⚠ WEAKENING (close < SMA50)" if getattr(sig, "stage_weakening", False) else ""
-    print(f"  >>> SCANNER DECISION: stage={sig.stage}{weak}  pattern={sig.pattern}")
+    sub = getattr(sig, "sub_stage", "") or "(none)"
+    print(f"  >>> SCANNER DECISION: stage={sig.stage}{weak}  pattern={sig.pattern}  sub_stage={sub}")
     if sig.breakout_details:
         print(f"      breakout_details: {sig.breakout_details}")
     return {"code": code, "stage": sig.stage, "pattern": sig.pattern,
             "data_date": sig.data_date, "close": sig.close,
-            "weakening": getattr(sig, "stage_weakening", False)}
+            "weakening": getattr(sig, "stage_weakening", False),
+            "sub_stage": sub}
 
 
 def dump_index(code: str, name: str, yf_tk: str, df) -> dict:
@@ -184,17 +186,17 @@ def main():
     # Summary table
     print()
     print("=" * 68)
-    print("SUMMARY — compare the Stage/Pattern columns with your TradingView read")
-    print("=" * 68)
-    print(f"  {'SYMBOL':<8s} {'STAGE':<6s} {'PATTERN':<16s} {'CLOSE':>12s}   DATA DATE")
-    print(f"  {'-' * 8} {'-' * 6} {'-' * 16} {'-' * 12}   {'-' * 10}")
+    print("SUMMARY — compare the Stage / Sub-stage columns with your TradingView read")
+    print("=" * 84)
+    print(f"  {'SYMBOL':<8s} {'STAGE':<6s} {'SUB_STAGE':<22s} {'PATTERN':<16s} {'CLOSE':>10s}")
+    print(f"  {'-' * 8} {'-' * 6} {'-' * 22} {'-' * 16} {'-' * 10}")
     for r in results:
         stg_raw = str(r["stage"]) if r["stage"] is not None else "—"
         stg = f"{stg_raw}⚠" if r.get("weakening") else stg_raw
+        sub = (r.get("sub_stage") or "—").replace("STAGE_", "S")
         pat = r["pattern"] or "—"
         close = f"{r['close']:,.2f}" if r.get("close") else "—"
-        date = r.get("data_date") or ""
-        print(f"  {r['code']:<8s} {stg:<6s} {pat:<16s} {close:>12s}   {date}")
+        print(f"  {r['code']:<8s} {stg:<6s} {sub:<22s} {pat:<16s} {close:>10s}")
 
 
 if __name__ == "__main__":

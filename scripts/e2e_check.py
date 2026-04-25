@@ -323,6 +323,59 @@ def suite_index_breadth(base, secret):
     return fails
 
 
+def suite_sub_stage(base, secret):
+    """Per-sub-stage filter dispatch + invariant coverage for the 9-state
+    finite state machine that replaces orthogonal stage+pattern as the
+    primary classification.
+
+    Confirms (a) every sub-stage filter command dispatches kind=list,
+    (b) the parent stage of every returned signal matches the sub-stage's
+    parent prefix (STAGE_2_PULLBACK only on stocks with stage==2),
+    (c) the sub_stage field round-trips through /test/query.
+    """
+    section("Sub-stage finite state machine (9 states)")
+    fails = 0
+    SUB_STAGES = [
+        ("base",      "STAGE_1_BASE",      1),
+        ("prep",      "STAGE_1_PREP",      1),
+        ("early",     "STAGE_2_EARLY",     2),
+        ("running",   "STAGE_2_RUNNING",   2),
+        ("pullback",  "STAGE_2_PULLBACK",  2),
+        ("volatile",  "STAGE_3_VOLATILE",  3),
+        ("dist",      "STAGE_3_DIST_DIST", 3),
+        ("breakdown", "STAGE_4_BREAKDOWN", 4),
+        ("downtrend", "STAGE_4_DOWNTREND", 4),
+    ]
+    seen_any_sub_stage = False
+    for cmd, expected_const, expected_parent in SUB_STAGES:
+        try:
+            q, _ = query(base, secret, cmd)
+            fails += check(f"{cmd}/dispatched", q.get("kind") == "list",
+                           f"kind={q.get('kind')} count={q.get('count')}")
+            # If non-empty, every first_5 entry must have the right
+            # parent stage AND the right sub_stage field.
+            for r in q.get("first_5") or []:
+                got_sub = r.get("sub_stage")
+                got_stage = r.get("stage")
+                if got_sub:
+                    seen_any_sub_stage = True
+                fails += check(f"{cmd}/{r.get('symbol')}/sub_stage_match",
+                               got_sub == expected_const,
+                               f"sub_stage={got_sub!r} expected={expected_const!r}")
+                fails += check(f"{cmd}/{r.get('symbol')}/parent_match",
+                               got_stage == expected_parent,
+                               f"stage={got_stage} expected={expected_parent}")
+        except Exception as e:
+            fails += check(cmd, False, f"err: {e}")
+    # Sanity: at least ONE sub-stage filter must have returned data — else
+    # the sub_stage field never made it into the live cache.
+    fails += check("sub_stage/field_populated_somewhere",
+                   seen_any_sub_stage,
+                   "no sub_stage strings observed across all 9 filters — "
+                   "scan path may not be writing the field")
+    return fails
+
+
 def suite_stage_weakening(base, secret):
     """Invariant coverage for the stage_weakening modifier shipped
     alongside breakout_attempt + unclosed-VCP. Works by probing a
@@ -753,6 +806,7 @@ def main():
     total_fails += suite_stage_lists(base, secret)
     total_fails += suite_patterns(base, secret)
     total_fails += suite_stage_weakening(base, secret)
+    total_fails += suite_sub_stage(base, secret)
     total_fails += suite_index_breadth(base, secret)
     total_fails += suite_sector_drill(base, secret)
     total_fails += suite_sector_coverage(base, secret)
