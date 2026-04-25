@@ -748,7 +748,8 @@ def suite_static_cards(base, secret):
     fails = 0
     for cmd, handler in (("guide", "guide"), ("help", "help"),
                          ("stage", "stage_picker"), ("patterns", "pattern_overview"),
-                         ("explain stage2", "explain"), ("explain breakout", "explain")):
+                         ("explain stage2", "explain"), ("explain breakout", "explain"),
+                         ("explain pivot", "explain")):
         try:
             q, _ = query(base, secret, cmd)
             fails += check(f"static/{cmd!r}", q.get("kind") == "static",

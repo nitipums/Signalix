@@ -63,6 +63,7 @@ from notifier import (
     build_index_carousel,
     build_market_breadth_card,
     build_pattern_detail_card,
+    build_pivot_explainer_card,
     build_pattern_overview_card,
     build_ranked_stock_list_bubble,
     build_simple_tappable_list,
@@ -2102,6 +2103,9 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         # Route stage queries to the comprehensive stage cycle card
         if metric_name in ("stage", "stage1", "stage2", "stage3", "stage4"):
             reply_flex(reply_token, "📊 Stage Analysis Guide", build_stage_cycle_card())
+        # Route pivot query to dedicated explainer card
+        elif metric_name in ("pivot", "pivot_point", "pivot point"):
+            reply_flex(reply_token, "🎯 Pivot Point", build_pivot_explainer_card())
         # Route pattern queries to rich pattern cards
         elif metric_name in ("breakout", "ath_breakout", "vcp", "vcp_low_cheat", "consolidating", "going_down"):
             reply_flex(reply_token, f"📈 {metric_name.replace('_', ' ').title()}", build_pattern_detail_card(metric_name))

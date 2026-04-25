@@ -2146,17 +2146,17 @@ def build_guide_carousel() -> dict:
     first-time user can scroll through and understand what's available:
 
       1. Quick Reference   — every text command grouped by category
-      2. Stage Analysis    — Minervini stages 1-4 + Weakening modifier
-      3. Pattern Guide     — breakout / attempt / VCP / consolidating
-      4. Global Assets     — 'global' card + tap-to-detail + watchlist
+      2. Global Assets     — 50 curated tickers + watchlist gesture
+      3. Stage Analysis    — Minervini parent stages 1-4
+      4. State Machine     — 9 sub-stages with recommendations + pivot
       5. Score & Volume    — how stocks are ranked
 
-    Order is intentional: WHAT (commands) → HOW each domain works (stages,
-    patterns, globals) → HOW the ranking is computed.
+    Order: WHAT (commands) → adjacent context (globals near Thai market)
+    → HOW each domain works (parent stages → sub-stages) → HOW ranking works.
     """
     # ── Bubble 1: Quick Reference ───────────────────────────────────
     # Compact section headers between command rows so the bubble reads
-    # as four small categories instead of one long flat list.
+    # as several small categories instead of one long flat list.
     def _section(label: str, color: str = "#F39C12") -> dict:
         return {
             "type": "text", "text": label, "size": "xs",
@@ -2185,24 +2185,30 @@ def build_guide_carousel() -> dict:
                 _section("MARKET OVERVIEW"),
                 _cmd_row("market", "SET Market Breadth"),
                 _cmd_row("index", "All Indexes Snapshot"),
-                _cmd_row("set50", "SET50 Breadth ⭐ NEW"),
-                _cmd_row("set100", "SET100 Breadth ⭐ NEW"),
+                _cmd_row("set50", "SET50 Breadth"),
+                _cmd_row("set100", "SET100 Breadth"),
                 _cmd_row("sector", "Sector Trends"),
-                _cmd_row("subsector", "Subsector Breakdown"),
 
-                _section("STOCK PATTERNS"),
+                _section("ACTIONABLE BUY", "#27AE60"),
+                _cmd_row("pullback", "Stage 2 Pullback (entry setup) 🎯"),
+                _cmd_row("early", "Stage 2 Early (fresh breakout) 🎯"),
+                _cmd_row("running", "Stage 2 Running (hold/trail)"),
+                _cmd_row("prep", "Stage 1 Prep (watchlist)"),
+                _cmd_row("pivot", "At Pivot Trigger 🎯 NEW"),
+
+                _section("DEFENSE / EXIT", "#E67E22"),
+                _cmd_row("volatile", "Stage 3 Volatile (take profit)"),
+                _cmd_row("dist", "Stage 3 Distribution (defend)"),
+                _cmd_row("breakdown", "Stage 4 Breakdown (cut loss)"),
+
+                _section("LEGACY PATTERNS"),
                 _cmd_row("breakout", "Confirmed Breakouts"),
-                _cmd_row("attempt", "Breakout Attempts ⚡ NEW"),
                 _cmd_row("ath", "ATH Breakout"),
                 _cmd_row("vcp", "VCP Setups"),
-
-                _section("STAGES"),
-                _cmd_row("stage2", "Stage 2 Stocks"),
-                _cmd_row("weakening", "Stage 2 Weakening ⚠ NEW"),
-                _cmd_row("stage1", "Stage 1 (Basing)"),
+                _cmd_row("weakening", "Stage 2 Weakening ⚠"),
 
                 _section("GLOBAL & WATCHLIST", "#1ABC9C"),
-                _cmd_row("global", "World/Crypto Snapshot 🌏 NEW"),
+                _cmd_row("global", "World/Crypto Snapshot 🌏"),
                 _cmd_row("watchlist", "Your Watchlist"),
 
                 {"type": "separator", "margin": "md"},
@@ -2225,7 +2231,10 @@ def build_guide_carousel() -> dict:
         "header": {
             "type": "box",
             "layout": "vertical",
-            "contents": [{"type": "text", "text": "📊 Stage Analysis", "weight": "bold", "size": "lg", "color": "#FFFFFF"}],
+            "contents": [
+                {"type": "text", "text": "📊 Stage Analysis", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+                {"type": "text", "text": "Parent stages 1-4 (Minervini)", "size": "xxs", "color": "#7F8C8D"},
+            ],
             "backgroundColor": "#1A237E",
             "paddingAll": "16px",
         },
@@ -2234,29 +2243,37 @@ def build_guide_carousel() -> dict:
             "layout": "vertical",
             "spacing": "sm",
             "contents": [
-                {"type": "text", "text": "Minervini Stage วิเคราะห์ตาม MA50/150/200", "size": "xs", "color": "#7F8C8D", "wrap": True},
+                {"type": "text", "text": "วิเคราะห์ตาม SMA50/150/200", "size": "xs", "color": "#7F8C8D", "wrap": True},
                 {"type": "separator"},
                 _guide_row("⚪ Stage 1", "Basing — สะสมตัว รอ breakout", "#95A5A6", cmd="stage1"),
                 _guide_row("🟢 Stage 2", "Uptrend ✅ — โซนซื้อที่ดีที่สุด", "#27AE60", cmd="stage2"),
-                _guide_row("🟢 Stage 2 ⚠", "Uptrend แต่ราคาหลุด SMA50 — ระวัง", "#F39C12", cmd="weakening"),
                 _guide_row("🟡 Stage 3", "Topping ⚠️ — ระวัง smart money ขาย", "#E67E22", cmd="stage3"),
                 _guide_row("🔴 Stage 4", "Downtrend ❌ — หลีกเลี่ยง", "#E74C3C", cmd="stage4"),
                 {"type": "separator"},
                 {"type": "text", "text": "Stage 2 เงื่อนไข:", "weight": "bold", "size": "xs", "color": "#27AE60"},
-                {"type": "text", "text": "ราคา > MA150 > MA200\nMA200 กำลังขึ้น\nราคา ≥ 52W low × 1.25\nราคา ≥ 52W high × 0.75", "size": "xxs", "color": "#555555", "wrap": True},
-                {"type": "text", "text": "⚠ Weakening: stage 2 ทุกข้อยังผ่าน แต่ราคาวันนี้ต่ำกว่า SMA50 — โมเมนตัมเริ่มอ่อน, ดูเป็นสัญญาณก่อน Stage 3", "size": "xxs", "color": "#F39C12", "wrap": True, "margin": "sm"},
+                {"type": "text", "text": "ราคา > SMA150 > SMA200\nSMA200 กำลังขึ้น\nราคา ≥ 52W low × 1.25\nราคา ≥ 52W high × 0.75", "size": "xxs", "color": "#555555", "wrap": True},
+                {"type": "separator", "margin": "md"},
+                {"type": "text", "text": "🔄 ดูสับ-สเตจทั้ง 9 รัฐ พร้อมคำแนะนำ →", "size": "xs", "color": "#1ABC9C", "wrap": True, "weight": "bold"},
+                {"type": "text", "text": "เลื่อนไปการ์ด State Machine ถัดไป", "size": "xxs", "color": "#7F8C8D"},
             ],
             "paddingAll": "16px",
         },
     }
 
-    pattern_bubble = {
+    # ── Bubble 4: State Machine (replaces former Pattern Guide) ─────
+    # Surfaces the 9-state finite state machine with prescriptive
+    # recommendations per state. Each row is tappable → filter command.
+    # Source: SUB_STAGE_LABEL / SUB_STAGE_ACTION / SUB_STAGE_COLOR maps.
+    state_machine_bubble = {
         "type": "bubble",
         "size": "mega",
         "header": {
             "type": "box",
             "layout": "vertical",
-            "contents": [{"type": "text", "text": "📈 Pattern Guide", "weight": "bold", "size": "lg", "color": "#FFFFFF"}],
+            "contents": [
+                {"type": "text", "text": "🔄 State Machine", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+                {"type": "text", "text": "9 sub-stages · tap to filter", "size": "xxs", "color": "#B2DFDB"},
+            ],
             "backgroundColor": "#0D47A1",
             "paddingAll": "16px",
         },
@@ -2265,16 +2282,26 @@ def build_guide_carousel() -> dict:
             "layout": "vertical",
             "spacing": "sm",
             "contents": [
-                _guide_row("🚀 Breakout", "ราคา > 52W high + Vol ≥ 1.4x avg", "#27AE60", cmd="breakout"),
-                _guide_row("🏆 ATH Breakout", "Breakout + ใกล้/สูงกว่า All-Time High", "#F39C12", cmd="ath"),
-                _guide_row("⚡ Breakout Attempt", "High > pivot + Vol ≥ 1.4x แต่ close ยังไม่ยืนยัน", "#16A085", cmd="attempt"),
-                _guide_row("🔍 VCP", "ความผันผวนหดตัว 3+ ครั้ง + Vol แห้ง", "#2980B9", cmd="vcp"),
-                _guide_row("🎯 VCP Low Cheat", "Entry ที่ low ของ VCP contraction สุดท้าย", "#1ABC9C", cmd="vcp low cheat"),
-                _guide_row("⚙️ Consolidating", "Base หดตัว รอ breakout", "#95A5A6", cmd="consolidating"),
-                _guide_row("📉 Going Down", "Stage 4 downtrend ชัดเจน", "#E74C3C"),
+                {"type": "text", "text": "Each state → 'what to do' recommendation",
+                 "size": "xs", "color": "#7F8C8D", "wrap": True},
                 {"type": "separator"},
-                {"type": "text", "text": "Strategy: ซื้อ Breakout/VCP ใน Stage 2 เท่านั้น", "size": "xxs", "color": "#7F8C8D", "wrap": True},
-                {"type": "text", "text": "⚡ Breakout Attempt = หุ้นกำลัง breakout intraday แต่ close ยังต่ำกว่า pivot — มอนิเตอร์ก่อน confirm", "size": "xxs", "color": "#16A085", "wrap": True, "margin": "sm"},
+                _guide_row("⚪ Stage 1 · Base",      "Ignore — no setup yet",            SUB_STAGE_COLOR["STAGE_1_BASE"],      cmd="base"),
+                _guide_row("🌱 Stage 1 · Prep",      "Watchlist — pre-Stage-2 watch 🎯", SUB_STAGE_COLOR["STAGE_1_PREP"],      cmd="prep"),
+                _guide_row("🟢 Stage 2 · Early",     "Alert / Trade — fresh breakout 🎯", SUB_STAGE_COLOR["STAGE_2_EARLY"],     cmd="early"),
+                _guide_row("🟢 Stage 2 · Running",   "Hold / Trail Stop — don't add",    SUB_STAGE_COLOR["STAGE_2_RUNNING"],   cmd="running"),
+                _guide_row("🔵 Stage 2 · Pullback",  "Setup Entry — pivot point 🎯",      SUB_STAGE_COLOR["STAGE_2_PULLBACK"],  cmd="pullback"),
+                _guide_row("🟡 Stage 3 · Volatile",  "Take Profit / Tighten Stop",        SUB_STAGE_COLOR["STAGE_3_VOLATILE"],  cmd="volatile"),
+                _guide_row("🟠 Stage 3 · Distribu'n","Defend — no new buys",              SUB_STAGE_COLOR["STAGE_3_DIST_DIST"], cmd="dist"),
+                _guide_row("🔴 Stage 4 · Breakdown", "Cut Loss — exit",                   SUB_STAGE_COLOR["STAGE_4_BREAKDOWN"], cmd="breakdown"),
+                _guide_row("🔴 Stage 4 · Downtrend", "Delete — remove from watch",        SUB_STAGE_COLOR["STAGE_4_DOWNTREND"], cmd="downtrend"),
+                {"type": "separator", "margin": "md"},
+                {"type": "text", "text": "🎯 Pivot point", "weight": "bold", "size": "xs", "color": "#F39C12"},
+                {"type": "text",
+                 "text": "Stage 1 PREP + ทุก Stage 2 sub-stage จะมี pivot price (buy trigger) คำนวณจาก high สูงสุด 15 แท่งล่าสุด + stop จาก low ต่ำสุด 10 แท่ง",
+                 "size": "xxs", "color": "#555555", "wrap": True},
+                _guide_row("🎯 At Pivot", "หุ้นที่ใกล้/ถึง trigger ทุกรัฐ", "#F39C12", cmd="pivot"),
+                {"type": "text", "text": "💡 sub_stage = primary classification. ⚠ stage_weakening = legacy modifier (close < SMA50 ใน Stage 2 — type 'weakening')",
+                 "size": "xxs", "color": "#7F8C8D", "wrap": True, "margin": "sm"},
             ],
             "paddingAll": "16px",
         },
@@ -2362,14 +2389,19 @@ def build_guide_carousel() -> dict:
             "spacing": "sm",
             "contents": [
                 {"type": "text", "text": "Strength Score (0–100)", "weight": "bold", "size": "sm", "color": "#F39C12"},
-                _guide_row("Stage 2", "+40 คะแนน", "#27AE60"),
-                _guide_row("ATH Breakout", "+25 คะแนน", "#F39C12"),
-                _guide_row("Breakout", "+20 คะแนน", "#27AE60"),
-                _guide_row("VCP Low Cheat", "+18 คะแนน", "#1ABC9C"),
-                _guide_row("VCP", "+15 คะแนน", "#2980B9"),
-                _guide_row("Breakout Attempt", "+12 คะแนน", "#16A085"),
-                _guide_row("Volume bonus", "สูงสุด +15 คะแนน", "#E67E22"),
-                _guide_row("52W proximity", "สูงสุด +20 คะแนน", "#9B59B6"),
+                {"type": "text", "text": "By sub-stage (primary):", "size": "xxs", "color": "#7F8C8D"},
+                _guide_row("Stage 2 · Early",     "+65 คะแนน  (fresh entry)",      SUB_STAGE_COLOR["STAGE_2_EARLY"]),
+                _guide_row("Stage 2 · Pullback",  "+55 คะแนน  (setup entry)",      SUB_STAGE_COLOR["STAGE_2_PULLBACK"]),
+                _guide_row("Stage 2 · Running",   "+50 คะแนน  (already running)",  SUB_STAGE_COLOR["STAGE_2_RUNNING"]),
+                _guide_row("Stage 1 · Prep",      "+30 คะแนน  (watchlist)",        SUB_STAGE_COLOR["STAGE_1_PREP"]),
+                _guide_row("Stage 3 · Volatile",  "+20 คะแนน  (defensive)",        SUB_STAGE_COLOR["STAGE_3_VOLATILE"]),
+                _guide_row("Stage 1 · Base",      "+10 คะแนน",                     SUB_STAGE_COLOR["STAGE_1_BASE"]),
+                _guide_row("Stage 3 · Distrib'n", "+5 คะแนน",                      SUB_STAGE_COLOR["STAGE_3_DIST_DIST"]),
+                _guide_row("Stage 4 · ทุกแบบ",   "+0 คะแนน",                      SUB_STAGE_COLOR["STAGE_4_DOWNTREND"]),
+                {"type": "separator", "margin": "md"},
+                {"type": "text", "text": "+ บวกเพิ่ม:", "weight": "bold", "size": "xs", "color": "#F39C12"},
+                _guide_row("Volume bonus",  "สูงสุด +15 คะแนน",  "#E67E22"),
+                _guide_row("52W proximity", "สูงสุด +20 คะแนน",  "#9B59B6"),
                 {"type": "separator"},
                 {"type": "text", "text": "Volume Ratio", "weight": "bold", "size": "sm", "color": "#F39C12"},
                 {"type": "text", "text": "= Volume วันนี้ ÷ ค่าเฉลี่ย 20 วัน\n1.0x ปกติ  |  1.4x+ สูง  |  2.0x+ สูงมาก", "size": "xxs", "color": "#555555", "wrap": True},
@@ -2378,20 +2410,26 @@ def build_guide_carousel() -> dict:
         },
     }
 
-    # Bubble order: Quick Reference → Global Assets → Stage → Pattern → Score.
-    # Global is moved to position 2 (right after Quick Reference) so it sits
-    # adjacent to the Thai-market commands in user mental model — a Thai
-    # SET-stock trader's first swipe lands them in the world-context bubble
-    # before the deeper Stage/Pattern theory bubbles. Per user feedback:
-    # "Global should be closed to the Thai market".
+    # Bubble order: Quick Reference → Global → Stage Analysis → State
+    # Machine → Score. Stage Analysis explains parent stages (1-4); State
+    # Machine drills into the 9-state taxonomy that REPLACED the former
+    # Pattern Guide (per the FSM refactor — sub_stage is now the primary
+    # classification; pattern field is auto-derived).
     return {"type": "carousel", "contents": [
-        quickref_bubble, global_bubble, stage_bubble, pattern_bubble, score_vol_bubble,
+        quickref_bubble, global_bubble, stage_bubble, state_machine_bubble, score_vol_bubble,
     ]}
 
 
 def build_stage_cycle_card() -> dict:
-    """Comprehensive Minervini 4-stage cycle card. Each stage row is tappable → shows that stage's stocks."""
-    def _stage_row(icon: str, stage_name: str, color: str, detail: str, badge: str, cmd: str) -> list:
+    """Comprehensive Minervini 4-stage cycle card with sub-stage breakdown.
+
+    Each parent-stage section shows the parent stage row (tappable to
+    that stage's filter) followed by its sub-stages (each tappable to
+    its sub-stage filter) — surfaces the full 9-state taxonomy in a
+    natural Stage 1 → 2 → 3 → 4 reading order.
+    """
+    def _parent_row(icon: str, stage_name: str, color: str, detail: str,
+                    badge: str, cmd: str) -> list:
         return [
             {
                 "type": "box",
@@ -2404,8 +2442,18 @@ def build_stage_cycle_card() -> dict:
                 ],
             },
             {"type": "text", "text": detail, "size": "xxs", "color": "#555555", "wrap": True, "margin": "xs"},
-            {"type": "separator"},
         ]
+
+    def _sub_row(label: str, action: str, color: str, cmd: str) -> dict:
+        return {
+            "type": "box", "layout": "horizontal",
+            "action": {"type": "message", "label": label, "text": cmd},
+            "paddingStart": "12px", "margin": "xs",
+            "contents": [
+                {"type": "text", "text": label, "size": "xxs", "color": color, "flex": 4, "weight": "bold"},
+                {"type": "text", "text": action, "size": "xxs", "color": "#555555", "flex": 5, "align": "end", "wrap": True},
+            ],
+        }
 
     bubble: dict = {
         "type": "bubble",
@@ -2415,7 +2463,7 @@ def build_stage_cycle_card() -> dict:
             "layout": "vertical",
             "contents": [
                 {"type": "text", "text": "📊 Minervini 4-Stage Cycle", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
-                {"type": "text", "text": "Tap a stage to see matching stocks", "size": "xs", "color": "#BBDDFF"},
+                {"type": "text", "text": "Parent stage + 9 sub-stages · tap any row", "size": "xs", "color": "#BBDDFF"},
             ],
             "backgroundColor": "#1A237E",
             "paddingAll": "16px",
@@ -2427,26 +2475,43 @@ def build_stage_cycle_card() -> dict:
             "contents": [
                 {"type": "text", "text": "Cycle: 1 → 2 → 3 → 4 → 1", "size": "xs", "color": "#7F8C8D", "align": "center"},
                 {"type": "separator"},
-                *_stage_row("⚪", "Stage 1 – Basing", "#95A5A6",
-                    "MA200 flattening, price consolidating.\nWait for Stage 2 entry before buying.",
+
+                *_parent_row("⚪", "Stage 1 – Basing", "#95A5A6",
+                    "SMA200 flattening, price consolidating.\nWait for Stage 2 entry before buying.",
                     "Wait", "stage1"),
-                *_stage_row("🟢", "Stage 2 – Uptrend", "#27AE60",
-                    "Price > MA150 > MA200 (rising).\n"
-                    "Entry: Breakout/VCP + Volume ≥ 1.4x avg\n"
-                    "Stop: -7–8% from entry or ATR × 1.5\n"
-                    "Target: R:R ≥ 2:1",
+                _sub_row("⚪ Base",  "Ignore — no setup yet",     SUB_STAGE_COLOR["STAGE_1_BASE"], cmd="base"),
+                _sub_row("🌱 Prep", "Watchlist — pre-Stage 2 🎯", SUB_STAGE_COLOR["STAGE_1_PREP"], cmd="prep"),
+                {"type": "separator", "margin": "md"},
+
+                *_parent_row("🟢", "Stage 2 – Uptrend", "#27AE60",
+                    "Price > SMA150 > SMA200 (rising).\n"
+                    "Entry zone — three sub-stages below have specific triggers.",
                     "Buy/Hold", "stage2"),
-                *_stage_row("🟡", "Stage 3 – Distribution", "#E67E22",
-                    "Smart money selling, price breaks MA150.\n"
-                    "Reduce position, set trailing stop.\n"
-                    "No new buys. Watch for false breakouts.",
+                _sub_row("🟢 Early",    "Alert / Trade — fresh breakout 🎯", SUB_STAGE_COLOR["STAGE_2_EARLY"],    cmd="early"),
+                _sub_row("🟢 Running",  "Hold / Trail — don't add",          SUB_STAGE_COLOR["STAGE_2_RUNNING"],  cmd="running"),
+                _sub_row("🔵 Pullback", "Setup Entry — pivot point 🎯",       SUB_STAGE_COLOR["STAGE_2_PULLBACK"], cmd="pullback"),
+                {"type": "separator", "margin": "md"},
+
+                *_parent_row("🟡", "Stage 3 – Distribution", "#E67E22",
+                    "Smart money selling, price breaks SMA150.\nReduce position, no new buys.",
                     "Trim", "stage3"),
-                *_stage_row("🔴", "Stage 4 – Downtrend", "#E74C3C",
-                    "Price below declining MA150 & MA200.\n"
-                    "Sell all remaining positions.\n"
-                    "Wait for Stage 1 base before re-entry.",
+                _sub_row("🟡 Volatile",     "Take Profit / Tighten Stop", SUB_STAGE_COLOR["STAGE_3_VOLATILE"],  cmd="volatile"),
+                _sub_row("🟠 Distribution", "Defend — no new buys",       SUB_STAGE_COLOR["STAGE_3_DIST_DIST"], cmd="dist"),
+                {"type": "separator", "margin": "md"},
+
+                *_parent_row("🔴", "Stage 4 – Downtrend", "#E74C3C",
+                    "Price below declining SMA150 & SMA200.\nSell remaining; wait for Stage 1 base before re-entry.",
                     "Sell/Avoid", "stage4"),
-                {"type": "text", "text": "Risk Rule: Cut loss immediately at -7-8% from entry. Never average down in downtrend.", "size": "xxs", "color": "#E74C3C", "wrap": True},
+                _sub_row("🔴 Breakdown", "Cut Loss — exit",            SUB_STAGE_COLOR["STAGE_4_BREAKDOWN"], cmd="breakdown"),
+                _sub_row("🔴 Downtrend", "Delete — remove from watch", SUB_STAGE_COLOR["STAGE_4_DOWNTREND"], cmd="downtrend"),
+                {"type": "separator", "margin": "md"},
+
+                {"type": "text", "text": "🎯 Pivot Point", "weight": "bold", "size": "xs", "color": "#F39C12"},
+                {"type": "text",
+                 "text": "Stage 1 PREP + ทุก Stage 2 sub-stage จะมี pivot price (15-bar high) + stop (10-bar low) — type 'pivot' to see candidates.",
+                 "size": "xxs", "color": "#555555", "wrap": True},
+                {"type": "text", "text": "Risk Rule: Cut loss immediately at -7-8% from entry, or at pivot_stop. Never average down in Stage 4.",
+                 "size": "xxs", "color": "#E74C3C", "wrap": True, "margin": "sm"},
             ],
             "paddingAll": "16px",
         },
@@ -2461,6 +2526,63 @@ def build_stage_cycle_card() -> dict:
             "aspectRatio": "20:13",
         }
     return bubble
+
+
+def build_pivot_explainer_card() -> dict:
+    """Rich explanation of the pivot-point system: what it is, how it's
+    computed, which sub-stages get one, and how to use it. Shown when
+    user types 'explain pivot' or taps a Pivot row in another card.
+    """
+    return {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "🎯 Pivot Point", "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+                {"type": "text", "text": "Buy trigger + setup invalidation stop", "size": "xxs", "color": "#FFD54F"},
+            ],
+            "backgroundColor": "#F39C12",
+            "paddingAll": "16px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": "What it is", "weight": "bold", "size": "sm", "color": "#F39C12"},
+                {"type": "text",
+                 "text": "Pivot = local resistance (15-bar high). Buy when price closes ABOVE pivot — that's the breakout trigger.\nStop = recent setup floor (10-bar low). If price falls back below stop, the setup is invalidated; cut loss.",
+                 "size": "xxs", "color": "#555555", "wrap": True},
+                {"type": "separator", "margin": "md"},
+
+                {"type": "text", "text": "Who gets a pivot", "weight": "bold", "size": "sm", "color": "#F39C12"},
+                _guide_row("🌱 Stage 1 · Prep",     "Loading toward Stage 2",      SUB_STAGE_COLOR["STAGE_1_PREP"],     cmd="prep"),
+                _guide_row("🟢 Stage 2 · Early",    "Fresh breakout — re-entry",   SUB_STAGE_COLOR["STAGE_2_EARLY"],    cmd="early"),
+                _guide_row("🟢 Stage 2 · Running",  "Next-resistance breakout",    SUB_STAGE_COLOR["STAGE_2_RUNNING"],  cmd="running"),
+                _guide_row("🔵 Stage 2 · Pullback", "Setup forming — entry zone",  SUB_STAGE_COLOR["STAGE_2_PULLBACK"], cmd="pullback"),
+                {"type": "text", "text": "Stage 3, 4 — no pivot (defensive / downtrend zones).",
+                 "size": "xxs", "color": "#7F8C8D", "wrap": True},
+                {"type": "separator", "margin": "md"},
+
+                {"type": "text", "text": "How to use it", "weight": "bold", "size": "sm", "color": "#F39C12"},
+                {"type": "text",
+                 "text": "1. Type 'pivot' → list of all candidates sorted by closeness to pivot.\n"
+                         "2. Stocks at gap=+0.00% are AT the trigger right now (breaking out).\n"
+                         "3. Buy when close > pivot (intraday wicks alone don't count).\n"
+                         "4. Stop loss = pivot_stop (or your -1.5×ATR — whichever fits).\n"
+                         "5. Target = R:R ≥ 2:1 vs distance to stop.",
+                 "size": "xxs", "color": "#555555", "wrap": True},
+                {"type": "separator", "margin": "md"},
+
+                _guide_row("🎯 Show pivot list", "หุ้นที่ใกล้/ถึง trigger", "#F39C12", cmd="pivot"),
+                {"type": "text", "text": "💡 Pivot is a price-only signal — no volume gate. Combine with breakout/early filters for the highest-conviction setups.",
+                 "size": "xxs", "color": "#1ABC9C", "wrap": True, "margin": "sm"},
+            ],
+            "paddingAll": "16px",
+        },
+    }
 
 
 def build_pattern_detail_card(pattern: str) -> dict:
