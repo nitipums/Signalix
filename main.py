@@ -724,6 +724,12 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
                 "week52_high": asset["week52_high"],
                 "week52_low": asset["week52_low"],
                 "volume": asset["volume"],
+                # Stage + pattern fields added with the global stage/pattern
+                # rollout — let e2e verify they round-trip correctly.
+                "stage": asset.get("stage"),
+                "pattern": asset.get("pattern"),
+                "stage_weakening": asset.get("stage_weakening", False),
+                "sma50": asset.get("sma50", 0.0),
             },
         }
 

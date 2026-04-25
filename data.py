@@ -776,21 +776,27 @@ def is_global_code(text: str) -> bool:
 def fetch_global_asset(code: str) -> Optional[dict]:
     """Richer single-asset fetch for the tap-to-detail card.
 
-    Returns all of fetch_global_snapshot's fields plus day_high/low,
-    week52_high/low, and volume. One ticker, single HTTP call. Used when a
-    user taps a row on the Global Snapshot card or types a global code
-    directly in chat.
+    Returns price + day/52W ranges + volume PLUS Minervini stage and
+    pattern detection (stage 1-4, pattern breakout/vcp/etc., SMAs,
+    stage_weakening flag). Same analysis the SET-stock card runs, applied
+    uniformly to every global asset class. The is_index flag passed to
+    detect_pattern depends on class — price-only patterns for asset
+    classes with aggregate/nil volume (indexes, ETFs, FX, commodities),
+    full volume-confirmed patterns for stocks and crypto.
 
     Returns None if the code isn't known or yfinance returns no data.
     """
     import yfinance as yf
+    from analyzer import (classify_stage, detect_pattern, _sma)
+    import numpy as np
 
     code = (code or "").strip().upper()
     meta = GLOBAL_SYMBOLS.get(code)
     if not meta:
         return None
     try:
-        # 1y history gives us the 52W range + comfortable day data margin.
+        # 1y history gives us 52W range + ~250 bars (enough for SMA200 +
+        # 20-bar SMA200-rising lookback that classify_stage needs).
         df = yf.Ticker(meta["yf"]).history(period="1y", auto_adjust=False)
         if df is None or df.empty:
             logger.warning("fetch_global_asset(%s): empty dataframe", code)
@@ -804,24 +810,48 @@ def fetch_global_asset(code: str) -> Optional[dict]:
         prev = float(df["Close"].iloc[-2]) if len(df) >= 2 else close
         chg = round((close - prev) / prev * 100, 2) if prev else 0.0
 
-        # 52W range. "Close" alone loses intraday highs/lows, so use High/Low.
         week52_high = float(df["High"].max()) if "High" in df else close
         week52_low = float(df["Low"].min()) if "Low" in df else close
 
-        # Day range from the latest bar.
         day_high = float(last_row.get("High", close))
         day_low = float(last_row.get("Low", close))
 
-        # Volume — crypto volumes are in USD notional, stocks/ETFs in shares.
-        # yfinance index tickers (^GSPC etc.) often return 0 volume; we just
-        # show blank in the card when that happens.
         vol = float(last_row.get("Volume", 0) or 0)
+
+        # ── Stage + pattern analysis ─────────────────────────────────
+        # Price-only patterns for asset classes where volume is
+        # aggregate / nil; volume-confirmed patterns for stocks + crypto.
+        asset_class = meta["class"]
+        price_only = asset_class in ("index", "etf", "fx", "commodity")
+
+        stage: Optional[int] = None
+        pattern: Optional[str] = None
+        breakout_details: dict = {}
+        sma50 = sma150 = sma200 = float("nan")
+        stage_weakening = False
+        if len(df) >= 60:  # detect_pattern's minimum bar requirement
+            try:
+                stage = classify_stage(df) if len(df) >= 200 else None
+                if stage is not None:
+                    pattern, breakout_details = detect_pattern(
+                        df, stage, is_index=price_only,
+                    )
+                if len(df) >= 50:
+                    sma50 = float(_sma(df["Close"], 50).iloc[-1])
+                if len(df) >= 150:
+                    sma150 = float(_sma(df["Close"], 150).iloc[-1])
+                if len(df) >= 200:
+                    sma200 = float(_sma(df["Close"], 200).iloc[-1])
+                if (stage == 2 and not np.isnan(sma50) and close < sma50):
+                    stage_weakening = True
+            except Exception as exc:
+                logger.warning("fetch_global_asset(%s): stage/pattern failed: %s", code, exc)
 
         return {
             "code": code,
             "yf": meta["yf"],
             "name": meta["name"],
-            "class": meta["class"],
+            "class": asset_class,
             "close": close,
             "change_pct": chg,
             "day_high": day_high,
@@ -829,6 +859,16 @@ def fetch_global_asset(code: str) -> Optional[dict]:
             "week52_high": week52_high,
             "week52_low": week52_low,
             "volume": vol,
+            # Stage + pattern fields — same vocabulary as StockSignal so
+            # the card can render with the existing PATTERN_LABEL /
+            # STAGE_LABEL maps. None when history is too short.
+            "stage": stage,
+            "pattern": pattern,
+            "breakout_details": breakout_details,
+            "sma50": (round(sma50, 4) if not np.isnan(sma50) else 0.0),
+            "sma150": (round(sma150, 4) if not np.isnan(sma150) else 0.0),
+            "sma200": (round(sma200, 4) if not np.isnan(sma200) else 0.0),
+            "stage_weakening": stage_weakening,
             "scanned_at": datetime.now(BANGKOK_TZ).isoformat(),
         }
     except Exception as exc:

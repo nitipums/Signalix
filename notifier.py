@@ -959,30 +959,35 @@ def _ma_row(label: str, value: float, close: float) -> dict:
 
 
 def build_global_snapshot_card(snapshot: dict[str, dict]) -> dict:
-    """Bulk global view — single mega bubble organised by section.
+    """Bulk global view — carousel of section bubbles.
 
-    With ~50 curated assets (US/Asia indexes, FX, commodities, ETFs,
-    US stocks, crypto), a flat sorted list is too noisy. Instead, render
-    each section as a labelled sub-block, with rows inside the section
-    sorted by % change. Section headers appear in GLOBAL_SECTION_ORDER.
+    Earlier iteration used one giant scroll-to-bottom bubble with all 50
+    assets. Users reported "the list is too long, we need a sub-card" —
+    sections are the natural breaking point so we split into one bubble
+    per section. Each bubble fits on screen (5-9 rows), user swipes
+    between sections.
+
+    Section order matches GLOBAL_SECTION_ORDER (US Indexes first because
+    they set the daily tone, FX/Commodities right after for Thai-relevant
+    macros, then ETFs/stocks, crypto last). Within each section, rows
+    are sorted by today's % change so the section's leader pops to top.
 
     Each row is tappable → sends the code as a text message so the
-    single-asset handler can render a detail card.
+    single-asset handler can render the detail card.
 
     snapshot shape: {code: {name, class, section, close, change_pct,
     scanned_at}} produced by data.fetch_global_snapshot().
     """
     from data import GLOBAL_SECTION_ORDER, GLOBAL_SYMBOLS
 
-    # Class icons: each maps to a glyph the user sees at the start of
-    # every row. fx + commodity were added with the 50-asset expansion.
+    # Class icons: glyph at the start of every row. fx + commodity were
+    # added with the 50-asset expansion.
     CLASS_ICON = {
         "index": "📊", "etf": "📈", "stock": "🏢",
         "crypto": "₿", "fx": "💱", "commodity": "🛢",
     }
 
     def _fmt_price(asset_class: str, close: float) -> str:
-        # FX rates and low-value crypto show 4 decimals; everything else 2.
         if asset_class == "fx":
             return f"{close:,.4f}"
         if asset_class == "crypto" and close < 100:
@@ -990,29 +995,45 @@ def build_global_snapshot_card(snapshot: dict[str, dict]) -> dict:
         return f"{close:,.2f}"
 
     # Group snapshot entries by section using GLOBAL_SYMBOLS as the source
-    # of truth. snapshot rows that lack a section (legacy data, recent
-    # fetch failure) drop into "Other" so they're still visible.
+    # of truth. snapshot entries that lack a section (legacy / fetch race)
+    # drop into "other" so they're still visible somewhere.
     by_section: dict[str, list[tuple[str, dict]]] = {}
     for code, d in snapshot.items():
         section = (GLOBAL_SYMBOLS.get(code) or {}).get("section") or "other"
         by_section.setdefault(section, []).append((code, d))
 
-    body_contents: list = []
-    total_rendered = 0
+    # Subtitle shared across all bubbles — shows the scan timestamp once
+    # so users don't see it repeated per bubble. Uses the first available
+    # snapshot entry's scanned_at since fetch_global_snapshot stamps them
+    # all with the same value.
+    ts_subtitle = ""
+    if snapshot:
+        ts = next(iter(snapshot.values())).get("scanned_at", "")
+        if ts:
+            try:
+                dt = datetime.fromisoformat(ts)
+                ts_subtitle = dt.strftime("%H:%M %d/%m/%y")
+            except Exception:
+                pass
+
+    bubbles: list[dict] = []
     for section_id, section_label in GLOBAL_SECTION_ORDER:
         items = by_section.get(section_id) or []
         if not items:
             continue
         items.sort(key=lambda kv: -(kv[1].get("change_pct") or 0))
 
-        # Section header: bigger margin top so groups read as distinct blocks.
-        body_contents.append({
-            "type": "text", "text": section_label,
-            "weight": "bold", "size": "sm", "color": "#FFD54F",
-            "margin": "lg" if total_rendered else "none",
-        })
-        body_contents.append({"type": "separator", "color": "#333333"})
+        # Bubble header summary: count + best mover for at-a-glance scan
+        # while swiping. e.g. "8 assets · TWII +3.23%"
+        leader_code, leader = items[0]
+        leader_chg = leader.get("change_pct") or 0.0
+        leader_sign = "+" if leader_chg > 0 else ""
+        bubble_subtitle = (f"{len(items)} assets · top {leader_code} "
+                           f"{leader_sign}{leader_chg:.2f}%")
+        if ts_subtitle:
+            bubble_subtitle += f" · {ts_subtitle}"
 
+        rows: list[dict] = []
         for code, d in items:
             chg = d.get("change_pct") or 0.0
             color = "#27AE60" if chg > 0 else ("#E74C3C" if chg < 0 else "#7F8C8D")
@@ -1021,10 +1042,10 @@ def build_global_snapshot_card(snapshot: dict[str, dict]) -> dict:
             icon = CLASS_ICON.get(asset_class, "•")
             close = d.get("close") or 0.0
             price_text = _fmt_price(asset_class, close)
-            body_contents.append({
+            rows.append({
                 "type": "box", "layout": "horizontal",
                 "action": {"type": "message", "label": code[:20], "text": code},
-                "paddingTop": "5px", "paddingBottom": "5px",
+                "paddingTop": "6px", "paddingBottom": "6px",
                 "contents": [
                     {"type": "text", "text": f"{icon} {code}", "flex": 3, "size": "sm",
                      "weight": "bold", "color": "#FFFFFF"},
@@ -1036,46 +1057,48 @@ def build_global_snapshot_card(snapshot: dict[str, dict]) -> dict:
                      "color": color, "weight": "bold", "align": "end"},
                 ],
             })
-            total_rendered += 1
+            rows.append({"type": "separator", "color": "#2A2A2A"})
 
-    # Fall back to the empty state if nothing came through (no fetch results).
-    if not body_contents:
-        body_contents = [
-            {"type": "text", "text": "ไม่มีข้อมูลขณะนี้",
-             "size": "sm", "color": "#7F8C8D", "align": "center"},
-        ]
+        bubbles.append({
+            "type": "bubble", "size": "mega",
+            "header": {
+                "type": "box", "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": section_label, "weight": "bold",
+                     "size": "lg", "color": "#FFFFFF"},
+                    {"type": "text", "text": bubble_subtitle, "size": "xxs",
+                     "color": "#B2DFDB", "wrap": True},
+                ],
+                "backgroundColor": "#0D0D1A",
+                "paddingAll": "14px",
+            },
+            "body": {
+                "type": "box", "layout": "vertical", "spacing": "none",
+                "backgroundColor": "#1A1A1A",
+                "contents": rows,
+                "paddingAll": "12px",
+            },
+        })
 
-    hdr_subtitle = f"{total_rendered} assets · grouped by section"
-    if snapshot:
-        ts = next(iter(snapshot.values())).get("scanned_at", "")
-        if ts:
-            try:
-                dt = datetime.fromisoformat(ts)
-                hdr_subtitle += f" · {dt.strftime('%H:%M %d/%m/%y')}"
-            except Exception:
-                pass
+    if not bubbles:
+        return {
+            "type": "bubble", "size": "mega",
+            "header": {
+                "type": "box", "layout": "vertical",
+                "contents": [{"type": "text", "text": "🌏 Global Snapshot",
+                              "weight": "bold", "size": "lg", "color": "#FFFFFF"}],
+                "backgroundColor": "#0D0D1A", "paddingAll": "14px",
+            },
+            "body": {
+                "type": "box", "layout": "vertical",
+                "backgroundColor": "#1A1A1A",
+                "contents": [{"type": "text", "text": "ไม่มีข้อมูลขณะนี้",
+                              "size": "sm", "color": "#7F8C8D", "align": "center"}],
+                "paddingAll": "20px",
+            },
+        }
 
-    return {
-        "type": "bubble", "size": "mega",
-        "header": {
-            "type": "box", "layout": "vertical",
-            "contents": [
-                {"type": "text", "text": "🌏 Global Snapshot", "weight": "bold",
-                 "size": "lg", "color": "#FFFFFF"},
-                {"type": "text", "text": hdr_subtitle, "size": "xxs", "color": "#CCCCCC"},
-            ],
-            "backgroundColor": "#0D0D1A",
-            "paddingAll": "14px",
-        },
-        "body": {
-            "type": "box", "layout": "vertical", "spacing": "none",
-            # Dark body — matches single_stock_card et al, ensures the
-            # white text in rows reads correctly.
-            "backgroundColor": "#1A1A1A",
-            "contents": body_contents,
-            "paddingAll": "12px",
-        },
-    }
+    return {"type": "carousel", "contents": bubbles}
 
 
 def build_global_single_card(asset: dict, in_watchlist: bool = False) -> dict:
@@ -1181,12 +1204,8 @@ def build_global_single_card(asset: dict, in_watchlist: bool = False) -> dict:
     else:
         vol_display = f"{vol:,.0f}"
 
-    # Conditional emphasis: red when from-high < -10% (drawdown), green
-    # when from-low > 10% (extended). Otherwise use the default bright
-    # white text on the dark body. The previous default of pure white
-    # was ALSO used as the conditional fallback, but the body bg back
-    # then was unset so it rendered white-on-white — invisible. Body
-    # is now explicitly dark (set below) so #FFFFFF reads correctly.
+    # Conditional emphasis: red on > -10% drawdown, green on > +10% extended.
+    # Plain white default reads correctly on the dark body.
     body_rows = [
         _kv_row("Day range",
                 f"{_fmt_price(asset.get('day_low', 0))} → {_fmt_price(asset.get('day_high', 0))}"),
@@ -1199,58 +1218,101 @@ def build_global_single_card(asset: dict, in_watchlist: bool = False) -> dict:
         _kv_row("Volume", vol_display),
     ]
 
+    # ── Stage + pattern badges (when computable) ─────────────────────
+    # Same Minervini analysis the SET-stock card runs. None for assets
+    # with too-short history (<200 bars); falls back gracefully.
+    stage = asset.get("stage")
+    pattern = asset.get("pattern")
+    stage_weakening = asset.get("stage_weakening", False)
+    stage_pattern_row = None
+    if stage is not None:
+        stage_label = STAGE_LABEL.get(stage, f"Stage {stage}")
+        stage_color = STAGE_COLOR.get(stage, "#7F8C8D")
+        if stage_weakening:
+            stage_label = f"{stage_label} ⚠"
+        contents = [
+            {"type": "text", "text": stage_label, "size": "xs",
+             "color": stage_color, "weight": "bold", "flex": 3},
+        ]
+        if pattern and pattern != "consolidating":
+            pcolor = PATTERN_COLOR.get(pattern, "#7F8C8D")
+            plabel = PATTERN_LABEL.get(pattern, pattern)
+            contents.append({
+                "type": "text", "text": plabel, "size": "xs",
+                "color": pcolor, "weight": "bold", "flex": 3,
+                "align": "end",
+            })
+        stage_pattern_row = {
+            "type": "box", "layout": "horizontal",
+            "paddingTop": "4px", "paddingBottom": "8px",
+            "contents": contents,
+        }
+
+    # SMA row — show MA50 gap when meaningful (helps users see the
+    # weakening modifier in context).
+    sma50 = asset.get("sma50") or 0
+    if sma50 > 0:
+        gap50 = (close - sma50) / sma50 * 100
+        body_rows.append(_kv_row(
+            "vs SMA50", f"{gap50:+.2f}%",
+            value_color="#27AE60" if gap50 > 0 else "#E74C3C",
+        ))
+
+    body_contents: list = [
+        # Price + change% hero row
+        {"type": "box", "layout": "baseline",
+         "paddingBottom": "10px",
+         "contents": [
+             {"type": "text", "text": _fmt_price(close),
+              "weight": "bold", "size": "xxl", "color": "#FFFFFF",
+              "flex": 5},
+             {"type": "text", "text": f"{chg_sign}{chg:.2f}%",
+              "weight": "bold", "size": "lg", "color": chg_color,
+              "align": "end", "flex": 3},
+         ]},
+    ]
+    if stage_pattern_row:
+        body_contents.append(stage_pattern_row)
+    body_contents.append({"type": "separator", "color": "#333333"})
+    body_contents.append({"type": "box", "layout": "vertical",
+                          "paddingTop": "10px", "spacing": "none",
+                          "contents": body_rows})
+
     return {
         "type": "bubble", "size": "mega",
         "header": {
             "type": "box", "layout": "vertical",
             "backgroundColor": accent, "paddingAll": "14px",
+            # Tap header → open TradingView (matches build_single_stock_card
+            # pattern). Dropping the redundant footer button — header tap
+            # is the standard Signalix gesture for "open chart externally".
+            "action": {"type": "uri", "uri": tv_url},
             "contents": [
-                {"type": "text", "text": f"{icon} {code}",
+                {"type": "text", "text": f"{icon} {code}  📊",
                  "weight": "bold", "size": "xl", "color": "#FFFFFF"},
                 {"type": "text", "text": asset.get("name", ""),
                  "size": "xs", "color": "#E3F2FD", "wrap": True},
+                {"type": "text", "text": "Tap header → TradingView",
+                 "size": "xxs", "color": "#B2DFDB"},
             ],
         },
         "body": {
-            # Dark body background matches Signalix's other detail cards
-            # (single_stock_card, watchlist_stock_card, breadth) — the
-            # previous unset background was rendering as default white,
-            # which made the white-text values invisible.
+            # Dark body matches Signalix's other detail cards.
             "type": "box", "layout": "vertical", "paddingAll": "14px",
             "backgroundColor": "#1A1A1A",
             "spacing": "none",
-            "contents": [
-                # Price + change% hero row
-                {"type": "box", "layout": "baseline",
-                 "paddingBottom": "10px",
-                 "contents": [
-                     {"type": "text", "text": _fmt_price(close),
-                      "weight": "bold", "size": "xxl", "color": "#FFFFFF",
-                      "flex": 5},
-                     {"type": "text", "text": f"{chg_sign}{chg:.2f}%",
-                      "weight": "bold", "size": "lg", "color": chg_color,
-                      "align": "end", "flex": 3},
-                 ]},
-                {"type": "separator", "color": "#333333"},
-                {"type": "box", "layout": "vertical",
-                 "paddingTop": "10px", "spacing": "none",
-                 "contents": body_rows},
-            ],
+            "contents": body_contents,
         },
         "footer": {
             "type": "box", "layout": "vertical", "spacing": "sm",
             "paddingAll": "10px",
             "contents": [
                 {"type": "button", "style": "link", "height": "sm",
-                 "action": {"type": "uri", "label": "📊 Open in TradingView",
-                            "uri": tv_url}},
-                {"type": "button", "style": "link", "height": "sm",
                  "action": {"type": "message",
                             "label": ("− Remove" if in_watchlist else "＋ Watchlist"),
                             "text": f"{'remove' if in_watchlist else 'add'} {code}"}},
                 # Back to Global only when the user came from a bulk view;
-                # in the watchlist carousel it'd look out of place next to
-                # the Remove button.
+                # in the watchlist carousel it'd look out of place.
                 *(
                     [{"type": "button", "style": "link", "height": "sm",
                       "action": {"type": "message",
@@ -1892,10 +1954,9 @@ def build_guide_carousel() -> dict:
                 _cmd_row("weakening", "Stage 2 Weakening ⚠ NEW"),
                 _cmd_row("stage1", "Stage 1 (Basing)"),
 
-                _section("GLOBAL & PERSONAL", "#1ABC9C"),
+                _section("GLOBAL & WATCHLIST", "#1ABC9C"),
                 _cmd_row("global", "World/Crypto Snapshot 🌏 NEW"),
                 _cmd_row("watchlist", "Your Watchlist"),
-                _cmd_row("score", "My Captain Score"),
 
                 {"type": "separator", "margin": "md"},
                 {"type": "text",
@@ -2070,8 +2131,14 @@ def build_guide_carousel() -> dict:
         },
     }
 
+    # Bubble order: Quick Reference → Global Assets → Stage → Pattern → Score.
+    # Global is moved to position 2 (right after Quick Reference) so it sits
+    # adjacent to the Thai-market commands in user mental model — a Thai
+    # SET-stock trader's first swipe lands them in the world-context bubble
+    # before the deeper Stage/Pattern theory bubbles. Per user feedback:
+    # "Global should be closed to the Thai market".
     return {"type": "carousel", "contents": [
-        quickref_bubble, stage_bubble, pattern_bubble, global_bubble, score_vol_bubble,
+        quickref_bubble, global_bubble, stage_bubble, pattern_bubble, score_vol_bubble,
     ]}
 
 
