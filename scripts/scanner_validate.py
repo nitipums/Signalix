@@ -136,7 +136,9 @@ def dump_stock(code: str, name: str, yf_tk: str, df) -> dict:
 
 
 def dump_index(code: str, name: str, yf_tk: str, df) -> dict:
-    """Run analyze_index (no pattern detection — by design)."""
+    """Run analyze_index. As of the index-pattern fix, indexes ALSO get
+    pattern detection (breakout / breakout_attempt / vcp) but with the
+    1.4× volume gate dropped — index volume is aggregate, not directional."""
     res = analyze_index(df, name)
     print(f"\n{'=' * 68}")
     print(f"{code}  ({name})     yf={yf_tk}    [index path]")
@@ -153,9 +155,15 @@ def dump_index(code: str, name: str, yf_tk: str, df) -> dict:
         mark = "[✓]" if passed is True else ("[✗]" if passed is False else "[?]")
         print(f"    {mark} {label:<30s}  {detail}")
     print()
-    print(f"  >>> SCANNER DECISION: stage={res.get('stage')}  implication: {res.get('implication', '')}")
-    return {"code": code, "stage": res.get("stage"), "pattern": "(n/a for indexes)",
-            "data_date": "", "close": res.get("close")}
+    pattern = res.get("pattern")
+    print(f"  >>> SCANNER DECISION: stage={res.get('stage')}  pattern={pattern}")
+    print(f"      implication: {res.get('implication', '')}")
+    bd = res.get("breakout_details") or {}
+    if bd:
+        print(f"      breakout_details: {bd}")
+    return {"code": code, "stage": res.get("stage"),
+            "pattern": pattern or "(none)", "data_date": "",
+            "close": res.get("close"), "weakening": False}
 
 
 def main():

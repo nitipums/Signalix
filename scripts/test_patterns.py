@@ -63,9 +63,10 @@ def _mk_df(highs, lows=None, closes=None, volumes=None,
         lows = [min(c, h) * 0.99 for c, h in zip(closes, highs)]
     if volumes is None:
         volumes = [1_000_000] * n
-    # Use a business-day index anchored to recent dates so the
-    # MAX_CANDLE_STALENESS_DAYS gate (10d) is comfortably satisfied.
-    idx = pd.date_range(end=pd.Timestamp.now().normalize(), periods=n, freq="B")
+    # Calendar-day index anchored to today. freq="B" was off-by-one when
+    # "today" landed on a weekend; analyzer doesn't care about weekday
+    # filtering — only that index is monotonic and (today - last) ≤ 10d.
+    idx = pd.date_range(end=pd.Timestamp.now().normalize(), periods=n, freq="D")
     return pd.DataFrame({
         "Open": closes,
         "High": highs,
@@ -202,6 +203,79 @@ df_noise = _mk_df(list(noise_highs), lows=list(noise_lows),
 noise_result, _ = _detect_vcp(df_noise)
 expect("random noise does NOT produce false VCP", noise_result, "none",
        "random walk shouldn't satisfy decreasing depths+vols")
+
+# ── Index pattern detection (volume gate relaxed) ────────────────────────────
+print("\nindex pattern detection (is_index=True)")
+
+# Build a clean Stage-2 uptrend that closes ABOVE the 52-bar pivot but with
+# vol_ratio = 1.0 (would NOT trigger stock breakout; SHOULD trigger index
+# breakout under is_index=True).
+def _build_index_breakout():
+    # Plateau-then-spike shape: 180 bars rising 100→105, 58 bars flat at
+    # 105 (so the 52-bar pivot stays at 105 + a hair), then today's bar
+    # spikes to 115. Today's close > 52-bar pivot by a wide margin →
+    # confirmed breakout. Volume flat (vol_ratio ≈ 1.0) so the stock-path
+    # gate blocks it but the index path doesn't.
+    base = list(np.linspace(100, 105, 180))
+    flat = [105.0] * 58
+    spike = [110.0, 115.0]  # last 2 bars
+    prices = base + flat + spike
+    vols = [1_000_000] * len(prices)
+    highs = [p + 0.3 for p in prices]
+    lows = [p - 0.3 for p in prices]
+    return _mk_df(highs, lows=lows, closes=prices, volumes=vols)
+
+df_idx_bo = _build_index_breakout()
+# Stock path (default): no breakout, vol gate blocks it
+pat_stock, _ = detect_pattern(df_idx_bo, stage=2, is_index=False)
+# Index path: breakout fires (no vol gate)
+pat_index, det_index = detect_pattern(df_idx_bo, stage=2, is_index=True)
+expect("stock path with vol_ratio≈1.0: no breakout (vol gated)",
+       pat_stock in ("consolidating", "vcp"), True, f"got={pat_stock}")
+expect("index path with vol_ratio≈1.0 + close > pivot: breakout fires",
+       pat_index in ("breakout", "ath_breakout"), True,
+       f"got={pat_index} details={det_index}")
+
+# Also: when close is JUST below pivot but high cleared it, index path
+# should fire breakout_attempt (no vol gate); stock path should not.
+def _build_index_attempt():
+    # 240 bars: rise to 115 high but close ends at 113, no vol spike.
+    base = list(np.linspace(100, 110, 200))
+    rally = list(np.linspace(110, 115, 30))
+    pull = list(np.linspace(115, 113, 10))
+    prices = base + rally + pull
+    vols = [1_000_000] * len(prices)
+    # On the rally peak day, set high above pivot (~110) but close below it
+    # for the last bars. We need at least one of the last 3 bars to have
+    # high > pivot (which it does since rally peaks at 115).
+    highs = [p + 0.5 for p in prices]
+    # Boost the recent attempt high slightly to ensure pivot-cross
+    highs[-2] = max(highs[-2], 116.0)
+    lows = [p - 0.5 for p in prices]
+    return _mk_df(highs, lows=lows, closes=prices, volumes=vols)
+
+df_idx_att = _build_index_attempt()
+pat_idx_att, det_idx_att = detect_pattern(df_idx_att, stage=2, is_index=True)
+# Could be 'breakout' (close > pivot) OR 'breakout_attempt' depending on
+# exact pivot calculation; the key invariant is the index path does NOT
+# return 'consolidating' when the chart shows a clear breakout signature.
+expect("index path on rally-then-pull: actionable pattern (not consolidating)",
+       pat_idx_att in ("breakout", "ath_breakout", "breakout_attempt"), True,
+       f"got={pat_idx_att} details={det_idx_att}")
+
+# Negative: an index in a pure downtrend should still NOT fire breakout.
+def _build_index_downtrend():
+    prices = list(np.linspace(110, 90, 240))
+    vols = [1_000_000] * len(prices)
+    highs = [p + 0.3 for p in prices]
+    lows = [p - 0.3 for p in prices]
+    return _mk_df(highs, lows=lows, closes=prices, volumes=vols)
+
+df_idx_dn = _build_index_downtrend()
+pat_idx_dn, _ = detect_pattern(df_idx_dn, stage=4, is_index=True)
+expect("index path on downtrend: going_down (no false breakout)",
+       pat_idx_dn, "going_down")
+
 
 # ── Stage-2 weakening modifier ───────────────────────────────────────────────
 print("\nstage_weakening modifier")
