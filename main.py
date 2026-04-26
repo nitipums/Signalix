@@ -1225,7 +1225,7 @@ async def test_transitions(
     `signal_transitions` collection, written on every scan.
     """
     settings = get_settings()
-    if x_scan_secret != settings.SCAN_SECRET:
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
         return JSONResponse(status_code=401, content={"detail": "secret mismatch"})
     if not (FIRESTORE_AVAILABLE and _db):
         return {"transitions": [], "count": 0, "error": "firestore unavailable"}
@@ -1249,7 +1249,7 @@ async def test_breadth_history(
     last 30 scans' queries are trivial.
     """
     settings = get_settings()
-    if x_scan_secret != settings.SCAN_SECRET:
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
         return JSONResponse(status_code=401, content={"detail": "secret mismatch"})
     if not BQ_AVAILABLE:
         return {"snapshots": [], "count": 0, "error": "bq unavailable"}
