@@ -63,3 +63,26 @@ jobs:
         Content-Type: application/json
         X-Scan-Secret: "${SCAN_SECRET}"
       body: '{}'
+
+  # Monthly margin list refresh on the 5th at 09:00 ICT — Krungsri
+  # publishes the updated Marginable Securities List early each month.
+  # The PDF URL has an unpredictable unix-timestamp suffix
+  # (Marginable_Securities_List_DDMMYYYY_<ts>.pdf) so we can't construct
+  # it programmatically. The job's body holds the URL placeholder; the
+  # user updates it monthly via:
+  #   gcloud scheduler jobs update http signalix-margin-refresh \
+  #     --location=asia-southeast1 \
+  #     --message-body='{"url":"https://www.krungsrisecurities.com/upload/Marginable_Securities_List_05<MM><YYYY>_<TS>.pdf"}'
+  # If left empty / placeholder, the endpoint returns 400 + logs an
+  # error so Cloud Logging surfaces the missed update.
+  - name: signalix-margin-refresh
+    description: "Monthly margin list refresh (5th at 09:00 ICT) — Krungsri Marginable Securities"
+    schedule: "0 9 5 * *"
+    timeZone: "Asia/Bangkok"
+    httpTarget:
+      uri: "${CLOUD_RUN_URL}/admin/refresh_margin_list"
+      httpMethod: POST
+      headers:
+        Content-Type: application/json
+        X-Scan-Secret: "${SCAN_SECRET}"
+      body: '{"url": ""}'

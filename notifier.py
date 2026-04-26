@@ -895,6 +895,20 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
             _detail_row("Target (2:1)", f"฿{signal.target_price:,.2f}",
                         f"+{(signal.target_price - signal.close) / signal.close * 100:.1f}%", "#27AE60"),
         ]
+        # Margin tier — Krungsri's Marginable Securities List. Lower IM%
+        # = more leverage; absent symbols are non-marginable (100% cash).
+        _mim = getattr(signal, "margin_im_pct", 0) or 0
+        if _mim:
+            _lev = 100.0 / _mim if _mim > 0 else 1.0
+            body_contents.append(
+                _detail_row("Margin", f"IM{_mim}%",
+                            f"{_lev:.2f}× leverage",
+                            "#1ABC9C" if _mim <= 60 else "#F39C12")
+            )
+        else:
+            body_contents.append(
+                _detail_row("Margin", "Non-marginable", "100% cash", "#7F8C8D")
+            )
 
     if getattr(signal, "breakout_count_1y", 0) > 0:
         body_contents.append({"type": "box", "layout": "horizontal", "contents": [
@@ -1045,16 +1059,19 @@ def _fmt_price(price: float) -> str:
 
 
 def _stock_row(rank: int, signal: StockSignal) -> dict:
-    """Single row in the ranked stock list. 7 columns:
-        #  | Stock | Price | Chg% | Vol | Piv | Pat
+    """Single row in the ranked stock list. 8 columns:
+        #  | Stock | Price | Chg% | Vol | Piv | Pat | Mgn
 
-    Two visual cues encode the new 2-layer taxonomy:
+    Three visual cues encode the new 2-layer taxonomy + margin:
       • Rank number is colored by SUB_STAGE_COLOR[sub_stage] so
         PIVOT_READY (gold), IGNITION (green), OVEREXTENDED (red) etc.
         stand out at a glance even when buried mid-list by score.
       • Piv column shows signed % distance to the pivot trigger for
         the 5 actionable sub-stages (PREP/IGNITION/CONTRACTION/
         PIVOT_READY/MARKUP). Stocks without a pivot show "—".
+      • Mgn column shows Krungsri margin tier ("M50"…"M80") or "—"
+        for non-marginable stocks. Color tiered: green ≤60 (best
+        leverage), amber 70/80, grey for non-marginable.
     Pat column keeps the legacy 2-letter pattern code (BO/VCP/Coil/...)
     per user preference for muscle memory.
     """
@@ -1091,6 +1108,15 @@ def _stock_row(rank: int, signal: StockSignal) -> dict:
         piv_text = "—"
         piv_color = "#7F8C8D"
 
+    # Mgn column — Krungsri margin tier. Lower = better leverage.
+    mim = getattr(signal, "margin_im_pct", 0) or 0
+    if mim:
+        mgn_text  = f"M{mim}"
+        mgn_color = "#27AE60" if mim <= 60 else "#F39C12"
+    else:
+        mgn_text  = "—"
+        mgn_color = "#7F8C8D"
+
     return {
         "type": "box",
         "layout": "horizontal",
@@ -1105,6 +1131,7 @@ def _stock_row(rank: int, signal: StockSignal) -> dict:
             {"type": "text", "text": f"{vol_ratio:.1f}x", "size": "xxs", "color": vol_color, "flex": 2, "align": "end", "gravity": "center"},
             {"type": "text", "text": piv_text, "size": "xxs", "color": piv_color, "flex": 2, "align": "end", "gravity": "center"},
             {"type": "text", "text": pattern_short, "size": "xxs", "color": PATTERN_COLOR.get(signal.pattern, "#7F8C8D"), "flex": 2, "align": "end", "gravity": "center"},
+            {"type": "text", "text": mgn_text, "size": "xxs", "color": mgn_color, "flex": 2, "align": "end", "gravity": "center", "weight": "bold"},
         ],
     }
 
@@ -1141,6 +1168,7 @@ def build_ranked_stock_list_bubble(
             {"type": "text", "text": "Vol", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
             {"type": "text", "text": "Piv", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
             {"type": "text", "text": "Pat", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+            {"type": "text", "text": "Mgn", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
         ],
     }
 
@@ -2421,6 +2449,19 @@ def build_watchlist_stock_card(signal: StockSignal, fundamentals: dict) -> dict:
             _detail_row("Target (2:1)", f"฿{signal.target_price:,.2f}",
                         f"+{(signal.target_price - signal.close) / signal.close * 100:.1f}%", "#27AE60"),
         ]
+        # Margin tier (same gesture as the single-stock card).
+        _mim2 = getattr(signal, "margin_im_pct", 0) or 0
+        if _mim2:
+            _lev2 = 100.0 / _mim2 if _mim2 > 0 else 1.0
+            body_contents.append(
+                _detail_row("Margin", f"IM{_mim2}%",
+                            f"{_lev2:.2f}× leverage",
+                            "#1ABC9C" if _mim2 <= 60 else "#F39C12")
+            )
+        else:
+            body_contents.append(
+                _detail_row("Margin", "Non-marginable", "100% cash", "#7F8C8D")
+            )
 
     if fund_rows:
         body_contents += [

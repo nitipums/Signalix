@@ -347,6 +347,15 @@ async def _warm_from_firestore():
                 _dsm.update(loaded_map)
                 logger.info("Sector map loaded: %d symbols with subsector data", len(loaded_map))
 
+            # ── Margin overlay: pick up monthly refreshes without redeploy ─
+            # Firestore `app_state/margin_securities_live` is written by
+            # /admin/refresh_margin_list (called by Cloud Scheduler on the
+            # 5th of each month). Static JSON is the bootstrap baseline.
+            from data import load_margin_overlay_from_firestore
+            await loop.run_in_executor(
+                None, load_margin_overlay_from_firestore, _db
+            )
+
         # ── Signals: Firestore first (full StockSignal dataclass via __dict__),
         # BQ fallback only when Firestore unavailable. BQ scan_results table
         # has a fixed schema that lags new dataclass fields by one
@@ -779,6 +788,7 @@ def _signal_snapshot(signal) -> dict:
         "sma200_roc20": getattr(signal, "sma200_roc20", 0.0),
         "pivot_price": getattr(signal, "pivot_price", 0.0),
         "pivot_stop": getattr(signal, "pivot_stop", 0.0),
+        "margin_im_pct": getattr(signal, "margin_im_pct", 0),
         "stage_weakening": getattr(signal, "stage_weakening", False),
     }
 
@@ -826,7 +836,8 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
                  "sub_stage": getattr(s, "sub_stage", ""),
                  "pattern": s.pattern, "strength": s.strength_score,
                  "pivot_price": getattr(s, "pivot_price", 0.0),
-                 "pivot_stop": getattr(s, "pivot_stop", 0.0)}
+                 "pivot_stop": getattr(s, "pivot_stop", 0.0),
+                 "margin_im_pct": getattr(s, "margin_im_pct", 0)}
                 for s in sigs[:5]
             ],
         }
@@ -940,6 +951,28 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
         sigs.sort(key=_pivot_distance)
         return summary(sigs, "Pivot Candidates")
 
+    # ── Margin tier filters (Krungsri Marginable Securities List) ─────
+    # Lower IM% = more leverage. `margin` (no number) = all marginable.
+    MARGIN_TIER_TOKENS = {
+        "margin50": 50, "margin 50": 50, "im50": 50,
+        "margin60": 60, "margin 60": 60, "im60": 60,
+        "margin70": 70, "margin 70": 70, "im70": 70,
+        "margin80": 80, "margin 80": 80, "im80": 80,
+    }
+    if c in MARGIN_TIER_TOKENS:
+        tier = MARGIN_TIER_TOKENS[c]
+        sigs = [s for s in _last_signals
+                if getattr(s, "margin_im_pct", 0) == tier]
+        sigs.sort(key=lambda s: s.strength_score, reverse=True)
+        return summary(sigs, f"Margin IM{tier}% ({len(sigs)})")
+    if c in ("margin", "marginable", "im"):
+        sigs = [s for s in _last_signals
+                if 0 < getattr(s, "margin_im_pct", 0) <= 80]
+        # Sort by tier ascending (best leverage first), then by score
+        sigs.sort(key=lambda s: (getattr(s, "margin_im_pct", 99),
+                                  -s.strength_score))
+        return summary(sigs, f"All Marginable ({len(sigs)})")
+
     # Sector list (e.g. "sector FINCIAL")
     if c.startswith("sector ") and len(c) > 7:
         sector_name = c[7:].strip().upper()
@@ -1037,6 +1070,12 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
                     stage_filter = n
                     break
             sub_stage_const = SUB_STAGE_TOKEN_MAP.get(rest)
+            # Margin tier filter scoped to index (e.g. `set100 margin50`)
+            margin_tier_match = None
+            if rest in ("margin50", "im50"):  margin_tier_match = 50
+            elif rest in ("margin60", "im60"): margin_tier_match = 60
+            elif rest in ("margin70", "im70"): margin_tier_match = 70
+            elif rest in ("margin80", "im80"): margin_tier_match = 80
             if stage_filter is not None:
                 sigs = [s for s in constituents if s.stage == stage_filter]
                 label = f"{index_name} Stage {stage_filter}"
@@ -1044,6 +1083,14 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
                 sigs = [s for s in constituents
                         if getattr(s, "sub_stage", "") == sub_stage_const]
                 label = f"{index_name} {rest}"
+            elif margin_tier_match is not None:
+                sigs = [s for s in constituents
+                        if getattr(s, "margin_im_pct", 0) == margin_tier_match]
+                label = f"{index_name} margin IM{margin_tier_match}%"
+            elif rest in ("margin", "marginable", "im"):
+                sigs = [s for s in constituents
+                        if 0 < getattr(s, "margin_im_pct", 0) <= 80]
+                label = f"{index_name} marginable"
             elif rest in ("members", "list", "all"):
                 sigs = list(constituents)
                 label = f"{index_name} members"
@@ -2008,6 +2055,91 @@ async def refresh_index_members_endpoint(
     }
 
 
+@app.post("/admin/refresh_margin_list")
+async def refresh_margin_list_endpoint(
+    request: Request,
+    url: Optional[str] = None,
+    x_scan_secret: Optional[str] = Header(default=None),
+):
+    """Refresh Krungsri Marginable Securities List from a PDF URL.
+
+    Auth: x-scan-secret. Idempotent — writes Firestore overlay
+    `app_state/margin_securities_live` so other Cloud Run instances
+    pick up the new list on next cold-start without redeploy.
+
+    Usage:
+      POST /admin/refresh_margin_list
+        Body: {"url": "https://www.krungsrisecurities.com/upload/Marginable_Securities_List_DDMMYYYY_xxx.pdf"}
+      OR query string: ?url=...
+
+    Cloud Scheduler entry runs this monthly on the 5th at 09:00 ICT.
+    Krungsri's PDF filename has an unpredictable unix-ts suffix, so
+    the user updates the scheduler body each month with the actual
+    URL. If the URL hasn't been refreshed (placeholder remains), the
+    endpoint returns an error and logs a warning.
+    """
+    settings = get_settings()
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
+        return JSONResponse(status_code=401, content={"detail": "Invalid scan secret"})
+
+    target_url = url
+    if not target_url:
+        try:
+            body = await request.json()
+            target_url = (body or {}).get("url")
+        except Exception:
+            target_url = None
+    if not target_url or not target_url.startswith("https://"):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "missing or invalid url",
+                     "hint": "POST {\"url\": \"https://www.krungsrisecurities.com/upload/Marginable_Securities_List_DDMMYYYY_xxx.pdf\"}"},
+        )
+
+    from data import refresh_margin_from_url
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, refresh_margin_from_url, target_url, _db, "",
+    )
+
+    if "error" in result:
+        logger.error("refresh_margin_list failed: %s", result.get("error"))
+        return JSONResponse(status_code=502, content=result)
+
+    # Trim added/removed/tier_changes to first 30 each so the response
+    # body stays compact even on large diffs (full lists are in logs).
+    logger.info("Margin list refreshed: before=%d after=%d added=%d removed=%d tier_changes=%d",
+                result["before_count"], result["after_count"],
+                len(result["added"]), len(result["removed"]),
+                len(result["tier_changes"]))
+    for k in ("added", "removed", "tier_changes"):
+        if len(result.get(k, [])) > 30:
+            result[f"{k}_truncated"] = len(result[k])
+            result[k] = result[k][:30]
+    return result
+
+
+@app.get("/test/margin_status")
+async def test_margin_status(x_scan_secret: Optional[str] = Header(default=None)):
+    """Diagnostic — current margin map metadata + tier breakdown.
+    Confirms whether the static JSON or a Firestore overlay is in
+    effect, and how many securities are loaded per tier.
+    """
+    settings = get_settings()
+    if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
+        return JSONResponse(status_code=401, content={"detail": "Invalid scan secret"})
+    from data import _margin_securities, margin_metadata
+    from collections import Counter
+    tier_counts = Counter(v.get("im_pct") for v in _margin_securities.values())
+    return {
+        "metadata": margin_metadata(),
+        "total_marginable": len(_margin_securities),
+        "tier_breakdown": dict(sorted(tier_counts.items())),
+        "sample_im50": sorted([s for s, v in _margin_securities.items()
+                               if v.get("im_pct") == 50])[:10],
+    }
+
+
 @app.post("/admin/refresh_sector_map")
 async def refresh_sector_map_endpoint(
     x_scan_secret: Optional[str] = Header(default=None),
@@ -2735,6 +2867,28 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         signals.sort(key=_pivot_distance)
         _reply_stock_list(reply_token, signals, "🎯 Pivot Candidates")
 
+    elif cmd in ("margin50", "margin 50", "im50",
+                  "margin60", "margin 60", "im60",
+                  "margin70", "margin 70", "im70",
+                  "margin80", "margin 80", "im80"):
+        # Margin tier filter (Krungsri's Marginable Securities List).
+        # Lower IM% = more leverage available.
+        tier = int(cmd.replace("margin", "").replace("im", "").strip() or "50")
+        signals = [s for s in _last_signals
+                   if getattr(s, "margin_im_pct", 0) == tier]
+        signals.sort(key=lambda s: s.strength_score, reverse=True)
+        _reply_stock_list(reply_token, signals,
+                          f"💰 Margin IM{tier}% ({100/tier:.2f}× leverage)")
+
+    elif cmd in ("margin", "marginable", "im"):
+        # All marginable stocks regardless of tier — ordered tier-first
+        # (best leverage first), score-second.
+        signals = [s for s in _last_signals
+                   if 0 < getattr(s, "margin_im_pct", 0) <= 80]
+        signals.sort(key=lambda s: (getattr(s, "margin_im_pct", 99),
+                                     -s.strength_score))
+        _reply_stock_list(reply_token, signals, "💰 All Marginable Stocks")
+
     elif cmd in ("vcp low cheat", "vcp_low_cheat", "low cheat"):
         signals = _get_signals_for(pattern="vcp_low_cheat")
         _reply_stock_list(reply_token, signals, "🎯 VCP Low Cheat Stocks")
@@ -2961,6 +3115,19 @@ async def _reply_index_filter(reply_token: str, index_name: str, rest: str) -> N
             if len(parts) > 3:  # e.g. STAGE_3_DIST_DIST → "Stage 3 · Distribution"
                 nice = f"Stage {parts[1]} · Distribution"
             title = f"📊 {index_name} · {nice} ({len(signals)})"
+    elif rest_norm in ("margin50", "im50", "margin60", "im60",
+                        "margin70", "im70", "margin80", "im80"):
+        # Margin tier filter scoped to index (e.g. `set100 margin50`).
+        tier = int(rest_norm.replace("margin", "").replace("im", ""))
+        signals = [s for s in constituents
+                   if getattr(s, "margin_im_pct", 0) == tier]
+        title = f"💰 {index_name} · Margin IM{tier}% ({len(signals)})"
+    elif rest_norm in ("margin", "marginable", "im"):
+        signals = [s for s in constituents
+                   if 0 < getattr(s, "margin_im_pct", 0) <= 80]
+        signals.sort(key=lambda s: (getattr(s, "margin_im_pct", 99),
+                                     -s.strength_score))
+        title = f"💰 {index_name} · Marginable ({len(signals)})"
     elif members_only:
         signals = constituents
         title = f"📊 {index_name} · Members ({len(signals)})"
@@ -2972,7 +3139,7 @@ async def _reply_index_filter(reply_token: str, index_name: str, rest: str) -> N
                    f"  '{idx} stage' / '{idx} stages' / '{idx} pivot'\n"
                    f"  '{idx} ready' / '{idx} ignition' / '{idx} markup'\n"
                    f"  '{idx} contraction' / '{idx} overextended'\n"
-                   f"  '{idx} stage2' / '{idx} pullback' / '{idx} members'")
+                   f"  '{idx} margin50' / '{idx} margin' / '{idx} members'")
         return
 
     if not signals:

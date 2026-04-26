@@ -81,6 +81,11 @@ class StockSignal:
     # 0.0 for stocks outside this scope. See compute_pivot() in analyzer.
     pivot_price: float = 0.0       # Local resistance / buy trigger (15-bar high)
     pivot_stop: float = 0.0        # Setup invalidation floor (10-bar low)
+    # Margin tier from Krungsri Securities Marginable Securities List:
+    # 50/60/70/80 = Initial Margin %, lower = more leverage.
+    # 0 = NOT marginable (broker rejects margin orders, must trade 100% cash).
+    # Refresh source: scripts/refresh_margin_list.py + commit + deploy.
+    margin_im_pct: int = 0
     # Stage-2 weakening modifier: True when stage == 2 AND close < SMA50.
     # Minervini's stage-2 template (MA150/200 alignment) can stay true while
     # near-term momentum rolls over below SMA50 — a classic precursor to a
@@ -1049,6 +1054,16 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
     # actionable buy-side sub-stages (PREP / EARLY / RUNNING / PULLBACK).
     pivot_price, pivot_stop = compute_pivot(df, sub_stage)
 
+    # Margin tier from Krungsri's marginable list (loaded once at startup
+    # from data_static/margin_securities.json). 0 means non-marginable.
+    # Indexes (is_index=True) and non-SET tickers don't have margin data;
+    # the lookup returns 0 for unknown symbols so the field stays 0.
+    try:
+        from data import get_margin_im_pct as _mp
+        margin_im_pct = _mp(symbol)
+    except Exception:
+        margin_im_pct = 0
+
     # Risk/reward calculations
     atr_series = _atr(df)
     atr_val = float(atr_series.iloc[-1]) if len(df) >= 14 and not np.isnan(atr_series.iloc[-1]) else 0.0
@@ -1100,6 +1115,7 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
         sub_stage=sub_stage,
         pivot_price=round(pivot_price, 2),
         pivot_stop=round(pivot_stop, 2),
+        margin_im_pct=margin_im_pct,
         stage_weakening=bool(stage_weakening),
     )
 
