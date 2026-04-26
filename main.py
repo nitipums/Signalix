@@ -37,7 +37,12 @@ from analyzer import (
 from config import get_settings
 from data import (
     SECTOR_MAP, SUBSECTOR_TO_SECTOR, SECTOR_INDEX_SYMBOLS,
-    append_new_candles_to_bq, BQ_AVAILABLE,
+    append_new_candles_to_bq,
+    # NOTE: BQ_AVAILABLE is intentionally NOT imported here. `from data
+    # import BQ_AVAILABLE` would capture the False value at import time
+    # (init_bq hasn't run yet) and freeze main.BQ_AVAILABLE = False even
+    # after data.BQ_AVAILABLE flips to True. Use `data.BQ_AVAILABLE`
+    # via the `import data as _data` alias below for the live value.
     fetch_global_asset, fetch_global_snapshot, fetch_indexes_with_history, fetch_latest_candles, fetch_sector_index_prices,
     is_global_code,
     fetch_sector_map_from_yfinance, get_fundamentals,
@@ -52,6 +57,11 @@ from data import (
     load_recent_signal_transitions, load_recent_breadth_snapshots,
     sync_ath_to_firestore, tradingview_url, update_user_score,
 )
+# Module alias so we can read `data.BQ_AVAILABLE` (live) instead of the
+# from-import snapshot. init_bq() flips data.BQ_AVAILABLE from False to
+# True at startup; without the alias every gate in main.py would stay
+# False forever and BQ writes / queries would silently no-op.
+import data as _data
 from notifier import (
     broadcast_flex,
     broadcast_text,
@@ -146,7 +156,7 @@ def _load_ath_merged() -> dict[str, float]:
     except Exception as exc:
         logger.warning("ATH load from Firestore failed: %s", exc)
     try:
-        if BQ_AVAILABLE:
+        if _data.BQ_AVAILABLE:
             for sym, v in (load_ath_from_bq() or {}).items():
                 if v and v > 0:
                     merged[sym] = max(merged.get(sym, 0.0), float(v))
@@ -347,7 +357,7 @@ async def _warm_from_firestore():
                 _last_signals = fs_signals
                 logger.info("Signals loaded from Firestore: %d stocks", len(fs_signals))
 
-        if not _last_signals and BQ_AVAILABLE:
+        if not _last_signals and _data.BQ_AVAILABLE:
             bq_signals = await loop.run_in_executor(None, load_latest_signals_from_bq)
             if bq_signals:
                 _last_signals = bq_signals
@@ -427,7 +437,7 @@ async def health():
             fs = await loop.run_in_executor(None, load_signals_from_firestore, _db)
             if fs:
                 _last_signals = fs
-        if not _last_signals and BQ_AVAILABLE:
+        if not _last_signals and _data.BQ_AVAILABLE:
             bq = await loop.run_in_executor(None, load_latest_signals_from_bq)
             if bq:
                 _last_signals = bq
@@ -798,7 +808,7 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
             fs_sigs = await loop.run_in_executor(None, load_signals_from_firestore, _db)
             if fs_sigs:
                 _last_signals = fs_sigs
-        if not _last_signals and BQ_AVAILABLE:
+        if not _last_signals and _data.BQ_AVAILABLE:
             bq_sigs = await loop.run_in_executor(None, load_latest_signals_from_bq)
             if bq_sigs:
                 _last_signals = bq_sigs
@@ -1251,7 +1261,7 @@ async def test_breadth_history(
     settings = get_settings()
     if not secrets.compare_digest(x_scan_secret or "", settings.scan_secret):
         return JSONResponse(status_code=401, content={"detail": "secret mismatch"})
-    if not BQ_AVAILABLE:
+    if not _data.BQ_AVAILABLE:
         return {"snapshots": [], "count": 0, "error": "bq unavailable"}
     loop = asyncio.get_running_loop()
     rows = await loop.run_in_executor(
@@ -1477,7 +1487,7 @@ async def test_invariants(x_scan_secret: Optional[str] = Header(default=None)):
             fs_sigs = await loop.run_in_executor(None, load_signals_from_firestore, _db)
             if fs_sigs:
                 _last_signals = fs_sigs
-        if not _last_signals and BQ_AVAILABLE:
+        if not _last_signals and _data.BQ_AVAILABLE:
             bq_sigs = await loop.run_in_executor(None, load_latest_signals_from_bq)
             if bq_sigs:
                 _last_signals = bq_sigs
@@ -1807,13 +1817,11 @@ async def scan(
     _last_breadth_card = build_market_breadth_card(breadth, sector_trends, indexes)
     _last_indexes = indexes
 
-    # Persist scan results: BQ on every scan (primary); Firestore always (cache)
-    # Use module attribute to avoid the from-import snapshot trap: at import
-    # time data.BQ_AVAILABLE is False (init_bq hasn't run yet), and
-    # `from data import BQ_AVAILABLE` would freeze the local name as False.
-    import data as _data
-    logger.info("scan persist gate: BQ_AVAILABLE=%s (module=%s) FIRESTORE_AVAILABLE=%s",
-                _data.BQ_AVAILABLE, BQ_AVAILABLE, FIRESTORE_AVAILABLE)
+    # Persist scan results: BQ on every scan (primary); Firestore always (cache).
+    # Uses _data.BQ_AVAILABLE (module-attribute, live) instead of the
+    # from-import snapshot — the from-import trap was masking BQ writes
+    # for several iterations. See top-of-file comment near `import data
+    # as _data` for the explanation.
     if _data.BQ_AVAILABLE:
         loop.run_in_executor(None, save_signals_to_bq, signals)
         # Per-scan breadth snapshot for time-series queries (sub-stage
@@ -1821,14 +1829,12 @@ async def scan(
         # dropped by the executor when Cloud Run scales the instance
         # down post-response. Single-row insert (~50ms).
         try:
-            logger.info("save_breadth_snapshot: about to await")
             await loop.run_in_executor(
                 None, functools.partial(
                     save_breadth_snapshot, breadth, signals,
                     body.scan_type, body.mode,
                 ),
             )
-            logger.info("save_breadth_snapshot: await returned")
         except Exception as exc:
             logger.exception("save_breadth_snapshot await failed: %s", exc)
     if FIRESTORE_AVAILABLE and _db:
@@ -1852,7 +1858,7 @@ async def scan(
         for _sig in signals:
             if _sig.stage == 2 and _sig.pattern in ("breakout", "ath_breakout"):
                 loop.run_in_executor(None, log_breakout, _db, _sig)
-    if BQ_AVAILABLE and body.mode == "full":
+    if _data.BQ_AVAILABLE and body.mode == "full":
         loop.run_in_executor(None, append_new_candles_to_bq, all_data)
     del all_data  # release 900+ DataFrames; BQ executor holds its own ref
 
@@ -2245,7 +2251,7 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             if fs_sigs:
                 _last_signals = fs_sigs
                 logger.info("_handle_text_query: lazy-reloaded %d signals from Firestore", len(fs_sigs))
-        if not _last_signals and BQ_AVAILABLE:
+        if not _last_signals and _data.BQ_AVAILABLE:
             bq_sigs = await loop.run_in_executor(None, load_latest_signals_from_bq)
             if bq_sigs:
                 _last_signals = bq_sigs
