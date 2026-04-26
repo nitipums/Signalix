@@ -397,6 +397,85 @@ def suite_sub_stage(base, secret):
     return fails
 
 
+def suite_persistence(base, secret):
+    """Persistence-layer coverage shipped with the FSM persistence
+    iteration. Confirms (a) /test/signal exposes the cosmetic rename
+    + persisted/last_persisted_at metadata, (b) /test/transitions
+    returns a list shape (may be empty if no scan has happened since
+    deploy), (c) /test/breadth_history returns the per-scan time
+    series.
+    """
+    section("Persistence layer (transitions + breadth history + cache rename)")
+    fails = 0
+
+    # (a) /test/signal cosmetic rename + persisted metadata
+    try:
+        url = f"{base}/test/signal/KKP"  # known live symbol
+        sig, _ = fetch(url, headers={"x-scan-secret": secret})
+        fails += check("signal/has_cache_field", "cache" in sig,
+                       f"keys={list(sig.keys())}")
+        fails += check("signal/has_in_memory_alias", "in_memory" in sig,
+                       "backward-compat alias missing")
+        fails += check("signal/has_persisted", "persisted" in sig,
+                       "persisted boolean missing")
+        fails += check("signal/has_last_persisted_at",
+                       "last_persisted_at" in sig,
+                       "last_persisted_at missing")
+        # If Firestore has the symbol, persisted should be true
+        if sig.get("firestore"):
+            fails += check("signal/persisted_true_when_firestore_present",
+                           sig.get("persisted") is True,
+                           f"persisted={sig.get('persisted')}")
+    except Exception as e:
+        fails += check("signal", False, f"err: {e}")
+
+    # (b) /test/transitions returns list shape (may be empty)
+    try:
+        url = f"{base}/test/transitions?limit=10"
+        tr, _ = fetch(url, headers={"x-scan-secret": secret})
+        fails += check("transitions/dispatched",
+                       isinstance(tr.get("transitions"), list),
+                       f"got={type(tr.get('transitions')).__name__}")
+        fails += check("transitions/has_count",
+                       isinstance(tr.get("count"), int),
+                       f"count={tr.get('count')}")
+        # If non-empty, every entry has the required diff fields
+        for entry in (tr.get("transitions") or [])[:3]:
+            for key in ("symbol", "transitioned_at",
+                        "prev_sub_stage", "new_sub_stage"):
+                fails += check(f"transitions/{entry.get('symbol')}/{key}",
+                               key in entry, f"keys={list(entry.keys())}")
+            # prev != new (transitions are real changes only)
+            if entry.get("prev_sub_stage") and entry.get("new_sub_stage"):
+                fails += check(
+                    f"transitions/{entry.get('symbol')}/prev_ne_new",
+                    entry.get("prev_sub_stage") != entry.get("new_sub_stage"),
+                    f"prev={entry.get('prev_sub_stage')!r} new={entry.get('new_sub_stage')!r}",
+                )
+    except Exception as e:
+        fails += check("transitions", False, f"err: {e}")
+
+    # (c) /test/breadth_history returns time-series rows
+    try:
+        url = f"{base}/test/breadth_history?limit=5"
+        bh, _ = fetch(url, headers={"x-scan-secret": secret})
+        fails += check("breadth_history/dispatched",
+                       isinstance(bh.get("snapshots"), list),
+                       f"got={type(bh.get('snapshots')).__name__}")
+        for snap in (bh.get("snapshots") or [])[:1]:
+            # Each snapshot must contain the per-sub-stage count fields
+            for col in ("scanned_at", "total_stocks",
+                        "stage_2_pivot_ready", "stage_2_ignition",
+                        "stage_2_overextended", "stage_2_markup",
+                        "stage_2_contraction"):
+                fails += check(f"breadth_history/has_{col}",
+                               col in snap, f"keys={list(snap.keys())[:8]}")
+    except Exception as e:
+        fails += check("breadth_history", False, f"err: {e}")
+
+    return fails
+
+
 def suite_pivot(base, secret):
     """Pivot-point coverage for the 4 actionable buy-side sub-stages.
 
@@ -887,6 +966,7 @@ def main():
     total_fails += suite_stage_weakening(base, secret)
     total_fails += suite_sub_stage(base, secret)
     total_fails += suite_pivot(base, secret)
+    total_fails += suite_persistence(base, secret)
     total_fails += suite_index_breadth(base, secret)
     total_fails += suite_sector_drill(base, secret)
     total_fails += suite_sector_coverage(base, secret)

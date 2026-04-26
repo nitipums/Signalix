@@ -1131,11 +1131,100 @@ def init_bq(project_id: str, dataset: str = "signalix") -> None:
         _bq_dataset = dataset
         _ensure_bq_table()
         _ensure_scan_results_table()
+        # Idempotent FSM-iteration migration: adds columns to scan_results
+        # for sub_stage / sma10 / sma20 / sma200_roc20 / pivot_price /
+        # pivot_stop / stage_weakening, and creates the breadth_snapshots
+        # table for per-scan dashboard time series. Auto-applies on first
+        # cold start after deploy; safe to re-run on subsequent starts
+        # because it uses ADD COLUMN IF NOT EXISTS + get-or-create.
+        try:
+            _migrate_bq_schema()
+        except Exception as exc:
+            # Don't fail BQ init if migration trips a permission edge —
+            # service can keep running without the new columns; old
+            # save_signals_to_bq path stays compatible.
+            logger.warning("BQ schema migration deferred: %s", exc)
         BQ_AVAILABLE = True
         logger.info("BigQuery initialized: %s.%s", project_id, dataset)
     except Exception as exc:
         logger.warning("BigQuery init failed (continuing without BQ): %s", exc)
         BQ_AVAILABLE = False
+
+
+def _migrate_bq_schema() -> None:
+    """Idempotent schema migration for the FSM persistence iteration.
+    Adds new columns to scan_results and creates breadth_snapshots table.
+    Runs on every BQ init (cheap — uses IF NOT EXISTS + get_table check).
+    """
+    from google.cloud import bigquery
+    client = _bq_client
+    if client is None:
+        return
+
+    # ── 1. Add new columns to scan_results ──
+    new_cols = [
+        ("sub_stage",       "STRING"),
+        ("sma10",           "FLOAT64"),
+        ("sma20",           "FLOAT64"),
+        ("sma200_roc20",    "FLOAT64"),
+        ("pivot_price",     "FLOAT64"),
+        ("pivot_stop",      "FLOAT64"),
+        ("stage_weakening", "BOOL"),
+    ]
+    table_id = f"{_bq_project}.{_bq_dataset}.scan_results"
+    for col_name, col_type in new_cols:
+        ddl = f"ALTER TABLE `{table_id}` ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+        try:
+            client.query(ddl).result(timeout=60)
+        except Exception as exc:
+            logger.warning("scan_results ADD COLUMN %s: %s", col_name, exc)
+
+    # ── 2. breadth_snapshots time-series table ──
+    breadth_id = f"{_bq_project}.{_bq_dataset}.breadth_snapshots"
+    try:
+        client.get_table(breadth_id)
+        return  # already exists
+    except Exception:
+        pass
+    breadth_schema = [
+        bigquery.SchemaField("scanned_at",      "TIMESTAMP", mode="REQUIRED"),
+        bigquery.SchemaField("scan_type",       "STRING"),
+        bigquery.SchemaField("mode",            "STRING"),
+        bigquery.SchemaField("total_stocks",    "INT64"),
+        bigquery.SchemaField("stage1_count",    "INT64"),
+        bigquery.SchemaField("stage2_count",    "INT64"),
+        bigquery.SchemaField("stage3_count",    "INT64"),
+        bigquery.SchemaField("stage4_count",    "INT64"),
+        bigquery.SchemaField("stage_1_base",         "INT64"),
+        bigquery.SchemaField("stage_1_prep",         "INT64"),
+        bigquery.SchemaField("stage_2_ignition",     "INT64"),
+        bigquery.SchemaField("stage_2_overextended", "INT64"),
+        bigquery.SchemaField("stage_2_contraction",  "INT64"),
+        bigquery.SchemaField("stage_2_pivot_ready",  "INT64"),
+        bigquery.SchemaField("stage_2_markup",       "INT64"),
+        bigquery.SchemaField("stage_3_volatile",     "INT64"),
+        bigquery.SchemaField("stage_3_dist_dist",    "INT64"),
+        bigquery.SchemaField("stage_4_breakdown",    "INT64"),
+        bigquery.SchemaField("stage_4_downtrend",    "INT64"),
+        bigquery.SchemaField("advancing",       "INT64"),
+        bigquery.SchemaField("declining",       "INT64"),
+        bigquery.SchemaField("unchanged",       "INT64"),
+        bigquery.SchemaField("new_highs_52w",   "INT64"),
+        bigquery.SchemaField("new_lows_52w",    "INT64"),
+        bigquery.SchemaField("breakout_count",  "INT64"),
+        bigquery.SchemaField("vcp_count",       "INT64"),
+        bigquery.SchemaField("above_ma200",     "INT64"),
+        bigquery.SchemaField("below_ma200",     "INT64"),
+        bigquery.SchemaField("set_index_close",      "FLOAT64"),
+        bigquery.SchemaField("set_index_change_pct", "FLOAT64"),
+    ]
+    table = bigquery.Table(breadth_id, schema=breadth_schema)
+    table.time_partitioning = bigquery.TimePartitioning(
+        type_=bigquery.TimePartitioningType.DAY,
+        field="scanned_at",
+    )
+    client.create_table(table)
+    logger.info("Created breadth_snapshots table (partitioned by scanned_at)")
 
 
 def _bq_table() -> str:
@@ -1166,7 +1255,14 @@ def _ensure_scan_results_table() -> None:
 
 
 def save_signals_to_bq(signals: list) -> None:
-    """Append scan results to BQ scan_results table. Called on every scan."""
+    """Append scan results to BQ scan_results table. Called on every scan.
+
+    Includes the FSM-iteration fields (sub_stage, sma10, sma20,
+    sma200_roc20, pivot_price, pivot_stop, stage_weakening) so historical
+    SQL queries can answer 'how many PIVOT_READY stocks 30 days ago' etc.
+    Pre-migration rows have NULLs for these columns; the schema migration
+    in init_bq adds them idempotently on next deploy.
+    """
     if not signals or _bq_client is None:
         return
     import json
@@ -1188,6 +1284,14 @@ def save_signals_to_bq(signals: list) -> None:
             "breakout_count_1y": getattr(s, "breakout_count_1y", 0),
             "tradingview_url": s.tradingview_url,
             "breakout_details": json.dumps(getattr(s, "breakout_details", {}) or {}),
+            # FSM-iteration fields (added by _migrate_bq_schema)
+            "sub_stage":       getattr(s, "sub_stage", "") or "",
+            "sma10":           getattr(s, "sma10", 0.0),
+            "sma20":           getattr(s, "sma20", 0.0),
+            "sma200_roc20":    getattr(s, "sma200_roc20", 0.0),
+            "pivot_price":     getattr(s, "pivot_price", 0.0),
+            "pivot_stop":      getattr(s, "pivot_stop", 0.0),
+            "stage_weakening": bool(getattr(s, "stage_weakening", False)),
         })
     table_id = f"{_bq_project}.{_bq_dataset}.scan_results"
     try:
@@ -1871,6 +1975,160 @@ def save_signals_to_firestore(signals: list, db) -> None:
         logger.info("Saved %d signals to Firestore (%d batches)", saved, -(-len(signals) // BATCH_LIMIT))
     except Exception as exc:
         logger.error("save_signals_to_firestore failed: %s", exc)
+
+
+def save_signal_transitions(prev_signals: list, new_signals: list, db) -> int:
+    """Detect sub_stage changes between previous and new scan, append a
+    transition record to Firestore `signal_transitions` for each change.
+
+    Each doc is auto-id'd and contains:
+      symbol, transitioned_at (= new scan's scanned_at), prev_sub_stage,
+      new_sub_stage, prev_close, new_close, prev_scanned_at,
+      strength_score, parent_stage_changed (bool).
+
+    Returns the number of transitions written. Both empty/missing
+    sub_stage values are treated as "no transition" (suppresses noise
+    from old Firestore docs that pre-date the FSM iteration).
+    """
+    if db is None or not new_signals:
+        return 0
+    prev_by_sym = {s.symbol: s for s in (prev_signals or [])}
+    transitions = []
+    scanned_at = new_signals[0].scanned_at if new_signals else ""
+    for s in new_signals:
+        prev = prev_by_sym.get(s.symbol)
+        if prev is None:
+            continue  # new symbol — not a transition, just an entry
+        prev_sub = (getattr(prev, "sub_stage", "") or "").strip()
+        new_sub  = (getattr(s, "sub_stage", "") or "").strip()
+        if not prev_sub or not new_sub:
+            continue  # one side is empty — skip (Firestore doc lag)
+        if prev_sub == new_sub:
+            continue  # no change
+        transitions.append({
+            "symbol":            s.symbol,
+            "transitioned_at":   scanned_at,
+            "prev_scanned_at":   getattr(prev, "scanned_at", ""),
+            "prev_sub_stage":    prev_sub,
+            "new_sub_stage":     new_sub,
+            "prev_close":        getattr(prev, "close", 0.0),
+            "new_close":         s.close,
+            "prev_stage":        getattr(prev, "stage", 0),
+            "new_stage":         s.stage,
+            "parent_stage_changed": getattr(prev, "stage", 0) != s.stage,
+            "strength_score":    s.strength_score,
+            "pivot_price":       getattr(s, "pivot_price", 0.0),
+        })
+    if not transitions:
+        logger.info("save_signal_transitions: no sub_stage changes detected")
+        return 0
+    try:
+        BATCH_LIMIT = 499
+        saved = 0
+        for i in range(0, len(transitions), BATCH_LIMIT):
+            batch = db.batch()
+            for tr in transitions[i:i + BATCH_LIMIT]:
+                # Auto-id doc — append-only log
+                doc_ref = db.collection("signal_transitions").document()
+                batch.set(doc_ref, tr)
+            batch.commit()
+            saved += len(transitions[i:i + BATCH_LIMIT])
+        logger.info("Saved %d signal_transitions to Firestore", saved)
+        return saved
+    except Exception as exc:
+        logger.error("save_signal_transitions failed: %s", exc)
+        return 0
+
+
+def save_breadth_snapshot(breadth, signals: list, scan_type: str = "full",
+                          mode: str = "full") -> None:
+    """Persist a per-scan breadth + sub-stage count snapshot to BQ
+    `breadth_snapshots` table. Enables time-series queries like
+    'PIVOT_READY count over the last 30 days' that can't be answered
+    from `signals/{symbol}` (Firestore overwrites latest only).
+    """
+    if _bq_client is None or breadth is None:
+        return
+    from collections import Counter
+    sub_counts = Counter(getattr(s, "sub_stage", "") or "" for s in (signals or []))
+    row = {
+        "scanned_at":     getattr(breadth, "scanned_at", ""),
+        "scan_type":      scan_type,
+        "mode":           mode,
+        "total_stocks":   getattr(breadth, "total_stocks", 0),
+        "stage1_count":   getattr(breadth, "stage1_count", 0),
+        "stage2_count":   getattr(breadth, "stage2_count", 0),
+        "stage3_count":   getattr(breadth, "stage3_count", 0),
+        "stage4_count":   getattr(breadth, "stage4_count", 0),
+        # Per-sub-stage counts (matches breadth_snapshots schema columns)
+        "stage_1_base":         sub_counts.get("STAGE_1_BASE", 0),
+        "stage_1_prep":         sub_counts.get("STAGE_1_PREP", 0),
+        "stage_2_ignition":     sub_counts.get("STAGE_2_IGNITION", 0),
+        "stage_2_overextended": sub_counts.get("STAGE_2_OVEREXTENDED", 0),
+        "stage_2_contraction":  sub_counts.get("STAGE_2_CONTRACTION", 0),
+        "stage_2_pivot_ready":  sub_counts.get("STAGE_2_PIVOT_READY", 0),
+        "stage_2_markup":       sub_counts.get("STAGE_2_MARKUP", 0),
+        "stage_3_volatile":     sub_counts.get("STAGE_3_VOLATILE", 0),
+        "stage_3_dist_dist":    sub_counts.get("STAGE_3_DIST_DIST", 0),
+        "stage_4_breakdown":    sub_counts.get("STAGE_4_BREAKDOWN", 0),
+        "stage_4_downtrend":    sub_counts.get("STAGE_4_DOWNTREND", 0),
+        "advancing":      getattr(breadth, "advancing", 0),
+        "declining":      getattr(breadth, "declining", 0),
+        "unchanged":      getattr(breadth, "unchanged", 0),
+        "new_highs_52w":  getattr(breadth, "new_highs_52w", 0),
+        "new_lows_52w":   getattr(breadth, "new_lows_52w", 0),
+        "breakout_count": getattr(breadth, "breakout_count", 0),
+        "vcp_count":      getattr(breadth, "vcp_count", 0),
+        "above_ma200":    getattr(breadth, "above_ma200", 0),
+        "below_ma200":    getattr(breadth, "below_ma200", 0),
+        "set_index_close":      getattr(breadth, "set_index_close", 0.0),
+        "set_index_change_pct": getattr(breadth, "set_index_change_pct", 0.0),
+    }
+    table_id = f"{_bq_project}.{_bq_dataset}.breadth_snapshots"
+    try:
+        errors = _bq_client.insert_rows_json(table_id, [row])
+        if errors:
+            logger.error("save_breadth_snapshot insert errors: %s", errors[:2])
+        else:
+            logger.info("Saved breadth_snapshot to BQ at %s", row["scanned_at"])
+    except Exception as exc:
+        logger.error("save_breadth_snapshot failed: %s", exc)
+
+
+def load_recent_signal_transitions(db, limit: int = 50, symbol: str = "") -> list:
+    """Read most-recent transitions for diagnostic endpoints. Optional
+    symbol filter narrows to a single stock's history."""
+    if db is None:
+        return []
+    try:
+        from google.cloud import firestore as _fs
+        q = db.collection("signal_transitions")
+        if symbol:
+            q = q.where("symbol", "==", symbol)
+        q = q.order_by("transitioned_at", direction=_fs.Query.DESCENDING).limit(limit)
+        return [doc.to_dict() for doc in q.stream()]
+    except Exception as exc:
+        logger.error("load_recent_signal_transitions failed: %s", exc)
+        return []
+
+
+def load_recent_breadth_snapshots(limit: int = 30) -> list:
+    """Read recent breadth snapshots from BQ for the time-series
+    diagnostic endpoint. Returns most-recent first."""
+    if _bq_client is None:
+        return []
+    table_id = f"{_bq_project}.{_bq_dataset}.breadth_snapshots"
+    query = f"""
+        SELECT *
+        FROM `{table_id}`
+        ORDER BY scanned_at DESC
+        LIMIT {int(limit)}
+    """
+    try:
+        return [dict(row) for row in _bq_client.query(query).result()]
+    except Exception as exc:
+        logger.error("load_recent_breadth_snapshots failed: %s", exc)
+        return []
 
 
 def load_signals_from_firestore(db, max_staleness_days: int = 10) -> list:
