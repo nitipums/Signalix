@@ -892,15 +892,12 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
 
     # ── Sub-stage filters (2-layer state machine — 11 sub-stages) ────
     # Each entry maps user command aliases → tuple of (target sub_stage
-    # constants, display label). Multi-constant tuples express UNION
-    # filters (e.g. legacy `pullback` matches both CONTRACTION and
-    # PIVOT_READY since the old PULLBACK definition split into those).
-    # Aliases support both short ('pullback') and long ('stage2 pullback')
-    # forms; long form is what tappable rows from the breadth card emit.
+    # constants, display label). Aliases support both short ('markup')
+    # and long ('stage2 markup') forms; long form is what tappable
+    # rows from the breadth card emit.
     SUB_STAGE_FILTERS = {
         ("base", "stage1 base"):                 (("STAGE_1_BASE",),       "Stage 1 · Base"),
         ("prep", "stage1 prep"):                 (("STAGE_1_PREP",),       "Stage 1 · Prep"),
-        # NEW Stage 2 sub-stages (preferred vocabulary)
         ("ignition", "stage2 ignition"):         (("STAGE_2_IGNITION",),    "Stage 2 · Ignition"),
         ("overextended", "extended",
          "stage2 overextended"):                 (("STAGE_2_OVEREXTENDED",), "Stage 2 · Overextended"),
@@ -908,17 +905,6 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
         ("ready", "pivot_ready", "pivot ready",
          "stage2 ready"):                        (("STAGE_2_PIVOT_READY",), "Stage 2 · Pivot Ready"),
         ("markup", "stage2 markup"):             (("STAGE_2_MARKUP",),      "Stage 2 · Markup"),
-        # LEGACY aliases — map to nearest new constant(s) for backward
-        # muscle-memory compat. Will keep working as long as legacy
-        # constants remain in ALL_SUB_STAGES.
-        ("early", "stage2 early"):               (("STAGE_2_IGNITION",
-                                                   "STAGE_2_EARLY"),       "Stage 2 · Early (→ Ignition)"),
-        ("running", "stage2 running"):           (("STAGE_2_MARKUP",
-                                                   "STAGE_2_RUNNING"),     "Stage 2 · Running (→ Markup)"),
-        ("pullback", "stage2 pullback"):         (("STAGE_2_CONTRACTION",
-                                                   "STAGE_2_PIVOT_READY",
-                                                   "STAGE_2_PULLBACK"),    "Stage 2 · Pullback (→ Contraction ∪ Ready)"),
-        # Stage 3 / 4 — unchanged
         ("volatile", "stage3 volatile"):         (("STAGE_3_VOLATILE",),    "Stage 3 · Volatile"),
         ("dist", "distribution", "stage3 dist",
          "stage3 distribution"):                 (("STAGE_3_DIST_DIST",),   "Stage 3 · Distribution"),
@@ -934,10 +920,10 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
             return summary(sigs, label)
 
     # ── Pivot-point candidates ─────────────────────────────────────────
-    # All stocks with a computed pivot (= one of the 4 actionable
-    # sub-stages: PREP / EARLY / RUNNING / PULLBACK). Sorted by closeness
-    # to pivot — stocks already AT or ABOVE pivot rank highest, then those
-    # approaching it from below by % distance.
+    # All stocks with a computed pivot (the actionable sub-stages —
+    # PREP / IGNITION / CONTRACTION / PIVOT_READY / MARKUP). Sorted by
+    # closeness to pivot — stocks already AT or ABOVE pivot rank
+    # highest, then those approaching it from below by % distance.
     if c in ("pivot", "pivots", "pivot point", "pivot points"):
         sigs = [s for s in _last_signals
                 if getattr(s, "pivot_price", 0.0) > 0]
@@ -1009,13 +995,8 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
     # Sub-stage tokens that the per-index drill-down also recognises.
     # Same vocab as the global SUB_STAGE_FILTERS above; allows e.g.
     # 'set50 pivot_ready' to filter SET50 constituents.
-    # Single-target tokens map to ONE constant; legacy aliases (early/
-    # running/pullback) map to the NEW constant since per-index UNION
-    # filters aren't worth the parse complexity here — the legacy
-    # tokens just route to the nearest equivalent.
     SUB_STAGE_TOKEN_MAP = {
         "base": "STAGE_1_BASE", "prep": "STAGE_1_PREP",
-        # New Stage 2 vocabulary (preferred)
         "ignition": "STAGE_2_IGNITION",
         "overextended": "STAGE_2_OVEREXTENDED",
         "extended": "STAGE_2_OVEREXTENDED",
@@ -1023,10 +1004,6 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
         "ready": "STAGE_2_PIVOT_READY",
         "pivot_ready": "STAGE_2_PIVOT_READY",
         "markup": "STAGE_2_MARKUP",
-        # Legacy aliases — route to nearest new constant
-        "early": "STAGE_2_IGNITION",
-        "running": "STAGE_2_MARKUP",
-        "pullback": "STAGE_2_CONTRACTION",  # legacy → CONTRACTION (closer to old "consolidating" semantics)
         "volatile": "STAGE_3_VOLATILE",
         "dist": "STAGE_3_DIST_DIST", "distribution": "STAGE_3_DIST_DIST",
         "breakdown": "STAGE_4_BREAKDOWN", "downtrend": "STAGE_4_DOWNTREND",
@@ -2463,7 +2440,7 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
         #   <universe> stages / dashboard  → 11-row dashboard (one screen)
         #   <universe> pivot               → pivot candidates within constituents
         #   <universe> stage2 / s2         → filter by parent stage
-        #   <universe> ready / pullback    → filter by sub-stage
+        #   <universe> ready / ignition / markup / ...  → filter by sub-stage
         #   <universe> margin50 / im50     → filter by margin tier (within scope)
         #   <universe> members / list / all → full member list
         # `marginable` (321 stocks from Krungsri's monthly list) is
@@ -2812,21 +2789,16 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
                    if getattr(s, "stage_weakening", False)]
         _reply_stock_list(reply_token, signals, "⚠️ Stage 2 — Weakening")
 
-    # ── Sub-stage filters (9-state finite state machine) ──
-    # Same vocabulary as classify_sub_stage(); both short ('pullback')
-    # and long ('stage2 pullback') forms accepted. Long form is what
+    # ── Sub-stage filters (11-state finite state machine) ──
+    # Same vocabulary as classify_sub_stage(); both short ('markup')
+    # and long ('stage2 markup') forms accepted. Long form is what
     # tappable rows from the breadth card emit.
     elif cmd in ("base", "stage1 base", "prep", "stage1 prep",
-                  # New Stage 2 vocabulary
                   "ignition", "stage2 ignition",
                   "overextended", "extended", "stage2 overextended",
                   "contraction", "stage2 contraction",
                   "ready", "pivot_ready", "pivot ready", "stage2 ready",
                   "markup", "stage2 markup",
-                  # Legacy Stage 2 aliases (still recognised; route to new constants)
-                  "early", "stage2 early", "running", "stage2 running",
-                  "pullback", "stage2 pullback",
-                  # Stage 3 / 4
                   "volatile", "stage3 volatile",
                   "dist", "distribution", "stage3 dist", "stage3 distribution",
                   "breakdown", "stage4 breakdown",
@@ -2844,9 +2816,6 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             "STAGE_4_BREAKDOWN":    "🔴 Stage 4 · Breakdown",
             "STAGE_4_DOWNTREND":    "🔴 Stage 4 · Downtrend",
         }
-        # Legacy Stage 2 commands route to the nearest NEW constant for
-        # the lookup, but render with the legacy-flavoured label noting
-        # the route ("Early → Ignition") so users learn the new vocab.
         TOKEN_TO_SUB = {
             "base": "STAGE_1_BASE", "stage1 base": "STAGE_1_BASE",
             "prep": "STAGE_1_PREP", "stage1 prep": "STAGE_1_PREP",
@@ -2858,10 +2827,6 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             "ready": "STAGE_2_PIVOT_READY", "pivot_ready": "STAGE_2_PIVOT_READY",
             "pivot ready": "STAGE_2_PIVOT_READY", "stage2 ready": "STAGE_2_PIVOT_READY",
             "markup": "STAGE_2_MARKUP", "stage2 markup": "STAGE_2_MARKUP",
-            # Legacy aliases — route to nearest new constant
-            "early": "STAGE_2_IGNITION", "stage2 early": "STAGE_2_IGNITION",
-            "running": "STAGE_2_MARKUP", "stage2 running": "STAGE_2_MARKUP",
-            "pullback": "STAGE_2_CONTRACTION", "stage2 pullback": "STAGE_2_CONTRACTION",
             "volatile": "STAGE_3_VOLATILE", "stage3 volatile": "STAGE_3_VOLATILE",
             "dist": "STAGE_3_DIST_DIST", "distribution": "STAGE_3_DIST_DIST",
             "stage3 dist": "STAGE_3_DIST_DIST", "stage3 distribution": "STAGE_3_DIST_DIST",
@@ -2869,24 +2834,16 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             "downtrend": "STAGE_4_DOWNTREND", "stage4 downtrend": "STAGE_4_DOWNTREND",
         }
         sub_stage_const = TOKEN_TO_SUB[cmd]
-        # Legacy-pullback union: also include CONTRACTION + PIVOT_READY
-        # so users typing 'pullback' get the FULL pullback cohort, not
-        # just CONTRACTION. Other legacy aliases route to single
-        # constants since the old 1-to-1 mapping is preserved.
-        if cmd in ("pullback", "stage2 pullback"):
-            target_set = {"STAGE_2_CONTRACTION", "STAGE_2_PIVOT_READY",
-                          "STAGE_2_PULLBACK"}
-        else:
-            target_set = {sub_stage_const}
         signals = [s for s in _last_signals
-                   if getattr(s, "sub_stage", "") in target_set]
+                   if getattr(s, "sub_stage", "") == sub_stage_const]
         signals.sort(key=lambda s: s.strength_score, reverse=True)
         _reply_stock_list(reply_token, signals, SUB_STAGE_LABELS[sub_stage_const])
 
     elif cmd in ("pivot", "pivots", "pivot point", "pivot points"):
-        # Stocks with a computed pivot price (PREP / EARLY / RUNNING /
-        # PULLBACK sub-stages). Sorted by closeness to pivot — stocks
-        # already at/above pivot rank first, then approaching from below.
+        # Stocks with a computed pivot price (PREP / IGNITION /
+        # CONTRACTION / PIVOT_READY / MARKUP sub-stages). Sorted by
+        # closeness to pivot — stocks already at/above pivot rank
+        # first, then approaching from below.
         signals = [s for s in _last_signals
                    if getattr(s, "pivot_price", 0.0) > 0]
 
@@ -3095,14 +3052,13 @@ async def _reply_index_filter(reply_token: str, index_name: str, rest: str) -> N
             break
     members_only = rest_norm in ("members", "list", "all", "")
 
-    # Sub-stage tokens ('pullback', 'early', 'breakdown', etc.) → constituent
+    # Sub-stage tokens ('ignition', 'breakdown', etc.) → constituent
     # filter. MUST stay in sync with /test/query's SUB_STAGE_TOKEN_MAP and
     # the LINE-side text dispatch — all three need the same vocabulary or
     # users get "invalid command" errors for valid sub-stage tokens (the
     # `set100 ignition` regression that surfaced this gap).
     SUB_STAGE_TOKEN_MAP = {
         "base": "STAGE_1_BASE", "prep": "STAGE_1_PREP",
-        # New Stage 2 vocabulary (preferred)
         "ignition": "STAGE_2_IGNITION",
         "overextended": "STAGE_2_OVEREXTENDED",
         "extended": "STAGE_2_OVEREXTENDED",
@@ -3110,11 +3066,6 @@ async def _reply_index_filter(reply_token: str, index_name: str, rest: str) -> N
         "ready": "STAGE_2_PIVOT_READY",
         "pivot_ready": "STAGE_2_PIVOT_READY",
         "markup": "STAGE_2_MARKUP",
-        # Legacy Stage 2 aliases — route to nearest new constant
-        "early": "STAGE_2_IGNITION",
-        "running": "STAGE_2_MARKUP",
-        "pullback": "STAGE_2_CONTRACTION",   # see also union match below
-        # Stage 3 / 4 (unchanged across the FSM refactor)
         "volatile": "STAGE_3_VOLATILE",
         "dist": "STAGE_3_DIST_DIST", "distribution": "STAGE_3_DIST_DIST",
         "breakdown": "STAGE_4_BREAKDOWN", "downtrend": "STAGE_4_DOWNTREND",
@@ -3125,25 +3076,16 @@ async def _reply_index_filter(reply_token: str, index_name: str, rest: str) -> N
         signals = [s for s in constituents if s.stage == stage_filter]
         title = f"📊 {index_name} · Stage {stage_filter} ({len(signals)})"
     elif sub_stage_const is not None:
-        # Legacy `pullback` token → UNION match (CONTRACTION ∪ PIVOT_READY ∪
-        # legacy STAGE_2_PULLBACK) so users typing the old vocab get the
-        # FULL pullback cohort, not just CONTRACTION. Matches the global
-        # filter's behaviour for `pullback`.
-        if rest_norm == "pullback":
-            target_set = {"STAGE_2_CONTRACTION", "STAGE_2_PIVOT_READY",
-                          "STAGE_2_PULLBACK"}
-            signals = [s for s in constituents
-                       if getattr(s, "sub_stage", "") in target_set]
-            title = f"📊 {index_name} · Pullback ({len(signals)})"
+        signals = [s for s in constituents
+                   if getattr(s, "sub_stage", "") == sub_stage_const]
+        # Friendly label: STAGE_2_PIVOT_READY → "Stage 2 · Pivot Ready",
+        # STAGE_3_DIST_DIST → "Stage 3 · Distribution".
+        parts = sub_stage_const.split("_")
+        if len(parts) > 3:
+            nice = f"Stage {parts[1]} · Distribution"
         else:
-            signals = [s for s in constituents
-                       if getattr(s, "sub_stage", "") == sub_stage_const]
-            # Friendly label: convert STAGE_2_PIVOT_READY → "Stage 2 · Pivot Ready"
-            parts = sub_stage_const.split("_")
             nice = f"Stage {parts[1]} · {parts[2].title() if len(parts) > 2 else ''}"
-            if len(parts) > 3:  # e.g. STAGE_3_DIST_DIST → "Stage 3 · Distribution"
-                nice = f"Stage {parts[1]} · Distribution"
-            title = f"📊 {index_name} · {nice} ({len(signals)})"
+        title = f"📊 {index_name} · {nice} ({len(signals)})"
     elif rest_norm in ("margin50", "im50", "margin60", "im60",
                         "margin70", "im70", "margin80", "im80"):
         # Margin tier filter scoped to index (e.g. `set100 margin50`).

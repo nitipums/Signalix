@@ -813,43 +813,29 @@ def _small_kv(label: str, value: str) -> dict:
 
 
 def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> dict:
-    """Detailed Flex Bubble for a single stock — minimalist redesign:
+    """Detailed Flex Bubble for a single stock.
 
-    Header (dark, ultra-compact):
-      SET:SYMBOL ........................ Score 67/100
+    Layout:
+      Header (dark, ultra-compact):
+        SET:SYMBOL ........................ Score 67
 
-    Body Section 1 (price hero + context):
-      ฿1.78  +1.14%
-      Stage 2 · Markup                            (no parenthetical)
-      Vol ฿0M · 52W ฿1.49–฿2.10              −15.2%
+      Body Section 1 (price hero + context):
+        ฿1.78  +1.14%
+        Stage 2 · Markup                            (no parenthetical)
+        Vol ฿0M · 52W ฿1.49–฿2.10              −15.2%
 
-    Body Section 2 (Trade Levels — when actionable):
-      🎯 Pivot      ฿1.82       −2.2%
-      ⛔ Stop       ฿1.74       −2.2%
+      Body Section 2 (Trend Reference — restored per user request):
+        SMA50    ฿1.65    +7.9%
+        SMA200   ฿1.42    +25.4%
 
-    Body Section 3 (Margin):
-      💰 Margin    IM50%   2.00× lev   /   Non-marginable
+      Body Section 3 (Trade Levels — only when actionable):
+        🎯 Pivot      ฿1.82       −2.2%
+        ⛔ Stop       ฿1.74       −2.2%
 
-    Body Section 4: Captain Signal advice
+      Body Section 4 (Margin):
+        💰 Margin    IM50%   2.00× lev   /   Non-marginable
 
-    Trimmed from previous redesign (per user feedback):
-      ✗ Sub-stage parenthetical — "(running)" / "(kickoff)" / "(loading)" /
-        "(warning)" / etc. removed from displayed label. Just "Stage 2 ·
-        Markup" instead of "Stage 2 · Markup (running)".
-      ✗ Recommendation row "💡 ✅ HOLD — let profits run" — gone.
-        Sub-stage label alone communicates classification; verbose action
-        text was redundant noise.
-      ✗ Moving Averages section + 3 SMA rows — gone. Pivot/Stop carry
-        the trade-level info; full SMA values are available in the
-        scanner output / TradingView for users who need them.
-
-    Trimmed from prior redesigns (kept removed):
-      ✗ Pattern badge ("Consolidating" tag) in header
-      ✗ "Risk Management (ATR-based)" Stop Loss + Target section
-      ✗ "Breakout (1 ปี)" row
-      ✗ Body rows: ราคา / Volume Ratio / 52W High/Low / Strength Score
-        / มูลค่าซื้อขาย / ต่ำกว่า 52W High (all moved into header or
-        body section 1 hero block).
+      Body Section 5: Captain Signal advice
     """
     stage_label_full, stage_color = _resolve_stage_label(signal)
     # Strip the parenthetical "(running)" / "(loading)" / etc. so the
@@ -925,7 +911,51 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
         ]},
     ]
 
-    # ── Body Section 2: Pivot + Stop (only when actionable) ──
+    # ── Body Section 2: SMA50 + SMA200 reference ──
+    # User-requested restoration after the minimalist redesign. Echoes
+    # the Pivot/Stop layout for visual consistency: SMA value + signed %
+    # distance from close so users see how far above / below the trend
+    # MAs price is sitting.
+    sma_rows: list = []
+    if signal.sma50 > 0:
+        gap50 = (signal.close - signal.sma50) / signal.sma50 * 100
+        gap50_color = "#27AE60" if gap50 >= 0 else "#E67E22"
+        sma_rows.append({
+            "type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": "SMA50", "size": "sm",
+                 "color": "#7F8C8D", "flex": 3},
+                {"type": "text", "text": f"฿{signal.sma50:,.2f}",
+                 "size": "sm", "weight": "bold", "color": "#2C3E50",
+                 "flex": 3, "align": "end"},
+                {"type": "text", "text": f"{gap50:+.1f}%",
+                 "size": "xs", "color": gap50_color, "weight": "bold",
+                 "flex": 2, "align": "end"},
+            ],
+        })
+    if signal.sma200 > 0:
+        gap200 = (signal.close - signal.sma200) / signal.sma200 * 100
+        gap200_color = "#27AE60" if gap200 >= 0 else "#E67E22"
+        sma_rows.append({
+            "type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": "SMA200", "size": "sm",
+                 "color": "#7F8C8D", "flex": 3},
+                {"type": "text", "text": f"฿{signal.sma200:,.2f}",
+                 "size": "sm", "weight": "bold", "color": "#2C3E50",
+                 "flex": 3, "align": "end"},
+                {"type": "text", "text": f"{gap200:+.1f}%",
+                 "size": "xs", "color": gap200_color, "weight": "bold",
+                 "flex": 2, "align": "end"},
+            ],
+        })
+    if sma_rows:
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({
+            "type": "text", "text": "Trend Reference",
+            "size": "xxs", "color": "#3498DB", "weight": "bold",
+        })
+        body_contents.extend(sma_rows)
+
+    # ── Body Section 3: Pivot + Stop (only when actionable) ──
     pivot = getattr(signal, "pivot_price", 0.0) or 0.0
     pstop = getattr(signal, "pivot_stop", 0.0) or 0.0
     trade_rows: list = []
@@ -967,7 +997,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
         })
         body_contents.extend(trade_rows)
 
-    # ── Body Section 3: Margin tier ──
+    # ── Body Section 4: Margin tier ──
     _mim = getattr(signal, "margin_im_pct", 0) or 0
     body_contents.append({"type": "separator", "margin": "md"})
     if _mim:
@@ -996,7 +1026,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
             ],
         })
 
-    # ── Body Section 4: Captain Signal advice ──
+    # ── Body Section 5: Captain Signal advice ──
     advice = _captain_stock_advice(signal)
     if advice:
         body_contents.append(_captain_advice_box(advice))

@@ -929,26 +929,41 @@ def fetch_sector_index_prices() -> dict[str, dict]:
     bulk yf.download(..., group_by='ticker') silently dropped 5/6 Thai
     indexes in prod, leaving sector cards with no price data at all
     (live_sector_indexes was {}). yf.Ticker().history() per ticker is
-    slower (8 calls) but reliable.
+    reliable; parallelised via ThreadPoolExecutor (4 workers) so 8 calls
+    complete in ~2-3s instead of ~8-10s sequential.
     """
     import yfinance as yf
-    result: dict[str, dict] = {}
+    from concurrent.futures import ThreadPoolExecutor
+
     now = datetime.now(BANGKOK_TZ).isoformat()
-    for sector, ticker in SECTOR_INDEX_SYMBOLS.items():
+
+    def _fetch_one(sector: str, ticker: str):
         try:
             df = yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=False)
             if df is None or df.empty:
                 logger.warning("fetch_sector_index_prices: %s (%s) returned empty", sector, ticker)
-                continue
+                return None
             df = df.dropna(subset=["Close"])
             if df.empty:
-                continue
+                return None
             close = float(df["Close"].iloc[-1])
             prev = float(df["Close"].iloc[-2]) if len(df) >= 2 else close
             chg_pct = round((close - prev) / prev * 100, 2) if prev else 0.0
-            result[sector] = {"close": close, "change_pct": chg_pct, "scanned_at": now}
+            return {"close": close, "change_pct": chg_pct, "scanned_at": now}
         except Exception as exc:
             logger.warning("fetch_sector_index_prices(%s / %s) failed: %s", sector, ticker, exc)
+            return None
+
+    result: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {
+            ex.submit(_fetch_one, sector, ticker): sector
+            for sector, ticker in SECTOR_INDEX_SYMBOLS.items()
+        }
+        for fut in futures:
+            data = fut.result()
+            if data is not None:
+                result[futures[fut]] = data
     logger.info("fetch_sector_index_prices: %d/%d indexes fetched (%s)",
                 len(result), len(SECTOR_INDEX_SYMBOLS), list(result.keys()))
     return result
@@ -1979,32 +1994,44 @@ def fetch_indexes_with_history(period: str = "1y") -> dict[str, pd.DataFrame]:
     Fetch full OHLCV history DataFrames for all SET indexes.
     Used by analyze_index() for MACD/RSI calculations.
 
-    Fetch per-ticker with yf.Ticker().history() rather than batched
-    yf.download(..., group_by="ticker") because the batch path returned
-    data for only ^SET.BK and silently dropped SET50/SET100/MAI/sSET/SETESG
-    in prod — the MultiIndex top-level only contained the one ticker
-    that yfinance successfully served, and every other ticker fell
-    through to an empty DataFrame. Per-ticker calls are slightly slower
-    (6 HTTP calls instead of 1) but reliable and self-documenting.
+    Per-ticker yf.Ticker().history() rather than batched yf.download(
+    ..., group_by="ticker") because the batch path silently dropped
+    5/6 Thai indexes in prod — the MultiIndex only contained ^SET.BK.
+    Per-ticker is reliable but sequential = slow (6 HTTP calls,
+    ~6-10s wall). Parallelised here via ThreadPoolExecutor (4 workers)
+    matching the fetch_global_snapshot pattern, cuts wall time to
+    ~2-3s with no observable yfinance sqlite contention at this size.
     """
-    result: dict[str, pd.DataFrame] = {}
-    for name, ticker in INDEX_SYMBOLS.items():
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fetch_one(name: str, ticker: str):
         try:
-            t = yf.Ticker(ticker)
-            df = t.history(period=period, auto_adjust=False)
+            df = yf.Ticker(ticker).history(period=period, auto_adjust=False)
             if df is None or df.empty:
                 logger.warning("fetch_indexes_with_history: %s (%s) returned empty", name, ticker)
-                continue
+                return None
             df = df.dropna(subset=["Close"])
             if len(df) < 30:
                 logger.warning("fetch_indexes_with_history: %s (%s) only %d rows", name, ticker, len(df))
-                continue
+                return None
             df.index = pd.to_datetime(df.index).tz_localize(None)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
-            result[name] = df
+            return df
         except Exception as exc:
             logger.error("fetch_indexes_with_history(%s / %s) failed: %s", name, ticker, exc)
+            return None
+
+    result: dict[str, pd.DataFrame] = {}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {
+            ex.submit(_fetch_one, name, ticker): name
+            for name, ticker in INDEX_SYMBOLS.items()
+        }
+        for fut in futures:
+            df = fut.result()
+            if df is not None:
+                result[futures[fut]] = df
     logger.info("fetch_indexes_with_history: %d/%d indexes fetched",
                 len(result), len(INDEX_SYMBOLS))
     return result
