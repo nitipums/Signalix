@@ -341,8 +341,12 @@ def classify_sub_stage(df: pd.DataFrame, parent_stage: int) -> str:
     #      any Stage 2 stock that doesn't match the others.
     if parent_stage == 2:
         # PIVOT_READY + CONTRACTION share the same MA structure
-        # (price below short-term MA but above mid-term).
-        in_contraction_zone = (c < m10 or c < m20) and c > m50
+        # (price below short-term MA but at-or-above mid-term).
+        # Tolerance c >= m50 × 0.97 mirrors the parent Stage 2
+        # entrenched path — stocks dipping briefly below SMA50 (within
+        # 3%) still classify as 'in pullback within Stage 2' rather
+        # than the MARKUP fallback which implies running uptrend.
+        in_contraction_zone = (c < m10 or c < m20) and c >= m50 * 0.97
 
         # Priority 1 — PIVOT_READY: contraction + tightness + dry-up.
         if (in_contraction_zone
@@ -624,12 +628,26 @@ def classify_stage(df: pd.DataFrame) -> int:
     within_52w_high_x75 = c >= high_52w * 0.75
 
     # ── Path 1: Stage 2 strict — canonical Minervini template ──
-    if (s50 > s200 and c > s200 and roc200 > 0
+    # Minervini's Template of Excellence requires price ABOVE SMA50 in
+    # addition to SMA50 > SMA200. Without `c > s50`, weakening Stage 2
+    # stocks (close drifted below SMA50) get held in Stage 2 with the
+    # MARKUP sub-stage default — but they're really pullbacks or
+    # entering Stage 3.
+    if (s50 > s200 and c > s50 and c > s200 and roc200 > 0
             and above_52w_low_x125 and within_52w_high_x75):
         return 2
 
-    # ── Path 2: Stage 4 — explicit downtrend ──
-    if c < s200 and roc200 < 0:
+    # ── Path 2: Stage 4 — confirmed downtrend ──
+    # Five-gate alignment for genuine downtrend:
+    #   1. c < s50    — price below mid-term MA
+    #   2. c < s200   — price below long-term MA
+    #   3. s50 < s200 — alignment broken (death-cross zone)
+    #   4. ROC < 0    — long-term slope down
+    # Without `c < s50`, stocks recovering past the mid-term MA (JMT,
+    # TIDLOR — both with +20d return > +18%) get held in Stage 4
+    # even though their structure is mid-recovery. With it, those
+    # stocks correctly fall through to Stage 1 (basing).
+    if c < s50 and c < s200 and s50 < s200 and roc200 < 0:
         return 4
 
     # ── Path 3: Stage 2 ignition override — fresh breakout from flat
@@ -660,16 +678,24 @@ def classify_stage(df: pd.DataFrame) -> int:
         return 2
 
     # ── Path 4: Stage 2 entrenched — structurally-intact mid-pullback.
-    # SMA stack still bullish, price still above SMA50, 52W gates still
-    # pass — only ROC has slipped. Catches KCG-class stocks where a
-    # shallow pullback briefly flattens SMA200's slope but the stock
-    # is clearly still in Stage 2 territory.
-    if (s50 > s200 and c > s50 and c > s200
+    # SMA stack still bullish, 52W gates still pass — only ROC has
+    # slipped. Catches KCG-class stocks where a shallow pullback briefly
+    # flattens SMA200's slope but the stock is clearly still in Stage 2
+    # territory.
+    #
+    # Includes a 3% tolerance below SMA50 (c >= s50 × 0.97) so stocks
+    # in mild Stage-2 weakening (close briefly dipped below SMA50 but
+    # still very close to it) stay in Stage 2 — the `stage_weakening`
+    # flag captures this nuance. STECON-class stocks (c=11.50,
+    # s50=11.66 = 0.986 ratio) keep their Stage 2 + weakening label
+    # rather than falling to Stage 1 BASE which would lose the
+    # uptrend-context.
+    if (s50 > s200 and c >= s50 * 0.97 and c > s200
             and above_52w_low_x125 and within_52w_high_x75):
         return 2
 
     # ── Path 5: Stage 3 strict — explicit topping ──
-    # Four conditions, all required (each one closes a misfire surface
+    # Five conditions, all required (each one closes a misfire surface
     # that surfaced in production via real-stock spot-checks):
     #   1. SMA20 dead-crossed SMA50 within last 20 bars (rolling over).
     #   2. Close MEANINGFULLY below SMA50 — at least 2% below. Float-
@@ -683,6 +709,9 @@ def classify_stage(df: pd.DataFrame) -> int:
     #      noise, this is BASING, not TOPPING. Without this gate,
     #      KTC (high 239 bars ago), SINGER (150), COM7 (129) get
     #      mis-flagged as Stage 3 because of late-cycle chop.
+    #   5. Recent 20-day return < +5%. Topping = currently rolling
+    #      over. Stocks rallying back >5% in 20 days are recovering,
+    #      not topping (BH +8.3%, PTG +8.6% bug).
     high_idx_recent = False
     try:
         # bars_since_high = position from end of the 52W-high bar
@@ -695,10 +724,18 @@ def classify_stage(df: pd.DataFrame) -> int:
     except Exception:
         high_idx_recent = False
 
+    # 20-day return — guards against bouncing-back stocks getting
+    # tagged Stage 3 when they're actually recovering.
+    ret_20 = 0.0
+    if len(close) > 21:
+        c20 = float(close.iloc[-21])
+        ret_20 = (c - c20) / c20 * 100.0 if c20 > 0 else 0.0
+
     if (_cross_within(sma20, sma50, n=20, direction="down")
             and c < s50 * 0.98
             and c >= high_52w * 0.75
-            and high_idx_recent):
+            and high_idx_recent
+            and ret_20 < 5.0):
         return 3
 
     # ── Path 6: Stage 1 default fallback ──
