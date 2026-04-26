@@ -2913,11 +2913,25 @@ async def _reply_index_filter(reply_token: str, index_name: str, rest: str) -> N
     members_only = rest_norm in ("members", "list", "all", "")
 
     # Sub-stage tokens ('pullback', 'early', 'breakdown', etc.) → constituent
-    # filter. Same vocabulary as the global sub-stage filter commands.
+    # filter. MUST stay in sync with /test/query's SUB_STAGE_TOKEN_MAP and
+    # the LINE-side text dispatch — all three need the same vocabulary or
+    # users get "invalid command" errors for valid sub-stage tokens (the
+    # `set100 ignition` regression that surfaced this gap).
     SUB_STAGE_TOKEN_MAP = {
         "base": "STAGE_1_BASE", "prep": "STAGE_1_PREP",
-        "early": "STAGE_2_EARLY", "running": "STAGE_2_RUNNING",
-        "pullback": "STAGE_2_PULLBACK",
+        # New Stage 2 vocabulary (preferred)
+        "ignition": "STAGE_2_IGNITION",
+        "overextended": "STAGE_2_OVEREXTENDED",
+        "extended": "STAGE_2_OVEREXTENDED",
+        "contraction": "STAGE_2_CONTRACTION",
+        "ready": "STAGE_2_PIVOT_READY",
+        "pivot_ready": "STAGE_2_PIVOT_READY",
+        "markup": "STAGE_2_MARKUP",
+        # Legacy Stage 2 aliases — route to nearest new constant
+        "early": "STAGE_2_IGNITION",
+        "running": "STAGE_2_MARKUP",
+        "pullback": "STAGE_2_CONTRACTION",   # see also union match below
+        # Stage 3 / 4 (unchanged across the FSM refactor)
         "volatile": "STAGE_3_VOLATILE",
         "dist": "STAGE_3_DIST_DIST", "distribution": "STAGE_3_DIST_DIST",
         "breakdown": "STAGE_4_BREAKDOWN", "downtrend": "STAGE_4_DOWNTREND",
@@ -2928,23 +2942,37 @@ async def _reply_index_filter(reply_token: str, index_name: str, rest: str) -> N
         signals = [s for s in constituents if s.stage == stage_filter]
         title = f"📊 {index_name} · Stage {stage_filter} ({len(signals)})"
     elif sub_stage_const is not None:
-        signals = [s for s in constituents
-                   if getattr(s, "sub_stage", "") == sub_stage_const]
-        # Friendly label: convert STAGE_2_PULLBACK → "Stage 2 · Pullback"
-        parts = sub_stage_const.split("_")
-        nice = f"Stage {parts[1]} · {parts[2].title() if len(parts) > 2 else ''}"
-        if len(parts) > 3:  # e.g. STAGE_3_DIST_DIST
-            nice = f"Stage {parts[1]} · Distribution"
-        title = f"📊 {index_name} · {nice} ({len(signals)})"
+        # Legacy `pullback` token → UNION match (CONTRACTION ∪ PIVOT_READY ∪
+        # legacy STAGE_2_PULLBACK) so users typing the old vocab get the
+        # FULL pullback cohort, not just CONTRACTION. Matches the global
+        # filter's behaviour for `pullback`.
+        if rest_norm == "pullback":
+            target_set = {"STAGE_2_CONTRACTION", "STAGE_2_PIVOT_READY",
+                          "STAGE_2_PULLBACK"}
+            signals = [s for s in constituents
+                       if getattr(s, "sub_stage", "") in target_set]
+            title = f"📊 {index_name} · Pullback ({len(signals)})"
+        else:
+            signals = [s for s in constituents
+                       if getattr(s, "sub_stage", "") == sub_stage_const]
+            # Friendly label: convert STAGE_2_PIVOT_READY → "Stage 2 · Pivot Ready"
+            parts = sub_stage_const.split("_")
+            nice = f"Stage {parts[1]} · {parts[2].title() if len(parts) > 2 else ''}"
+            if len(parts) > 3:  # e.g. STAGE_3_DIST_DIST → "Stage 3 · Distribution"
+                nice = f"Stage {parts[1]} · Distribution"
+            title = f"📊 {index_name} · {nice} ({len(signals)})"
     elif members_only:
         signals = constituents
         title = f"📊 {index_name} · Members ({len(signals)})"
     else:
+        idx = index_name.lower()
         reply_text(reply_token,
-                   f"คำสั่งไม่ถูกต้อง: '{index_name.lower()} {rest}'\n"
-                   f"ลอง: '{index_name.lower()} members' / "
-                   f"'{index_name.lower()} stage2' / "
-                   f"'{index_name.lower()} pullback'")
+                   f"คำสั่งไม่ถูกต้อง: '{idx} {rest}'\n"
+                   f"ลอง:\n"
+                   f"  '{idx} stage' / '{idx} stages' / '{idx} pivot'\n"
+                   f"  '{idx} ready' / '{idx} ignition' / '{idx} markup'\n"
+                   f"  '{idx} contraction' / '{idx} overextended'\n"
+                   f"  '{idx} stage2' / '{idx} pullback' / '{idx} members'")
         return
 
     if not signals:

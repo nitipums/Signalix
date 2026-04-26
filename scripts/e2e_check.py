@@ -448,6 +448,34 @@ def suite_index_scope(base, secret):
         except Exception as e:
             fails += check(f"{index_lower}_pivot", False, f"err: {e}")
 
+        # Per-sub-stage tokens scoped to the index — regression guard for
+        # the "set100 ignition" mis-route that fell through to the
+        # invalid-command branch because _reply_index_filter's local
+        # SUB_STAGE_TOKEN_MAP was missing the new FSM vocabulary.
+        SUB_STAGE_PROBES = [
+            ("ignition",     "STAGE_2_IGNITION",     2),
+            ("ready",        "STAGE_2_PIVOT_READY",  2),
+            ("markup",       "STAGE_2_MARKUP",       2),
+            ("contraction",  "STAGE_2_CONTRACTION",  2),
+            ("overextended", "STAGE_2_OVEREXTENDED", 2),
+            ("breakdown",    "STAGE_4_BREAKDOWN",    4),
+        ]
+        for token, expected_const, expected_parent in SUB_STAGE_PROBES:
+            try:
+                q, _ = query(base, secret, f"{index_lower} {token}")
+                fails += check(f"{index_lower}_{token}/dispatched",
+                               q.get("kind") == "list",
+                               f"kind={q.get('kind')} count={q.get('count')}")
+                for r in (q.get("first_5") or []):
+                    fails += check(f"{index_lower}_{token}/{r.get('symbol')}/sub_stage",
+                                   r.get("sub_stage") == expected_const,
+                                   f"sub_stage={r.get('sub_stage')!r} expected={expected_const!r}")
+                    fails += check(f"{index_lower}_{token}/{r.get('symbol')}/parent",
+                                   r.get("stage") == expected_parent,
+                                   f"stage={r.get('stage')} expected={expected_parent}")
+            except Exception as e:
+                fails += check(f"{index_lower}_{token}", False, f"err: {e}")
+
     return fails
 
 
