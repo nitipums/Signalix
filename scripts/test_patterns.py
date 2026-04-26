@@ -456,10 +456,31 @@ expect("pullback scan: pivot_stop field set",
 expect("pullback scan: pivot_stop < pivot_price",
        sig_pb.pivot_stop < sig_pb.pivot_price, True)
 
+# Fibonacci 3-point extension targets — projected from stop using
+# (52W_low → pivot) range.
+expect("pullback scan: target_1 > pivot_price (above breakout)",
+       sig_pb.target_1 > sig_pb.pivot_price, True,
+       f"target_1={sig_pb.target_1} pivot_price={sig_pb.pivot_price}")
+expect("pullback scan: target_1618 > target_1 (further extension)",
+       sig_pb.target_1618 > sig_pb.target_1, True,
+       f"target_1618={sig_pb.target_1618} target_1={sig_pb.target_1}")
+# Math: T1.0 = stop + (pivot - low_52w); T1.618 = stop + 1.618*(pivot-low_52w).
+_rng = sig_pb.pivot_price - sig_pb.low_52w
+expect("pullback scan: target_1 = stop + (pivot - low_52w)",
+       round(sig_pb.target_1, 2),
+       round(sig_pb.pivot_stop + _rng, 2))
+expect("pullback scan: target_1618 = stop + 1.618 × (pivot - low_52w)",
+       round(sig_pb.target_1618, 2),
+       round(sig_pb.pivot_stop + 1.618 * _rng, 2))
+
 # Downtrend signal: pivot fields stay zero (out of scope).
 sig_bear_pivot = scan_stock("BEARPIVOT", df_bear)
 expect("downtrend scan: pivot_price=0 (out of scope)",
        sig_bear_pivot.pivot_price, 0.0)
+expect("downtrend scan: target_1=0 (out of scope)",
+       sig_bear_pivot.target_1, 0.0)
+expect("downtrend scan: target_1618=0 (out of scope)",
+       sig_bear_pivot.target_1618, 0.0)
 
 # ── 2_OVEREXTENDED: price stretched > 25% above SMA50 ───────────────
 def _build_overextended():

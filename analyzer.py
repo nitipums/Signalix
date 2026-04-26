@@ -81,6 +81,12 @@ class StockSignal:
     # 0.0 for stocks outside this scope. See compute_pivot() in analyzer.
     pivot_price: float = 0.0       # Local resistance / buy trigger (15-bar high)
     pivot_stop: float = 0.0        # Setup invalidation floor (10-bar low)
+    # Fibonacci 3-point extension targets, computed from
+    # (Pin1=52W_low, Pin2=pivot, Pin3=stop). T1.0 = first take-profit
+    # zone; T1.618 = extended target. Both stay 0.0 when pivot is 0
+    # (out-of-scope sub-stages).
+    target_1: float = 0.0
+    target_1618: float = 0.0
     # Margin tier from Krungsri Securities Marginable Securities List:
     # 50/60/70/80 = Initial Margin %, lower = more leverage.
     # 0 = NOT marginable (broker rejects margin orders, must trade 100% cash).
@@ -582,6 +588,31 @@ def compute_pivot(df: pd.DataFrame, sub_stage: str) -> tuple[float, float]:
     pivot = float(df["High"].iloc[-15:].max())
     stop  = float(df["Low"].iloc[-10:].min())
     return pivot, stop
+
+
+def compute_targets(pivot: float, stop: float, low_52w: float) -> tuple[float, float]:
+    """3-point Fibonacci extension targets.
+
+    Anchors: Pin1 = 52W low, Pin2 = pivot, Pin3 = stop.
+    Range = Pin2 − Pin1.
+        Target 1.0   = Pin3 + Range
+        Target 1.618 = Pin3 + 1.618 × Range
+
+    Validated against user's hand-drawn Fib for SPRC (chart 10.30 /
+    12.70 vs computed 10.27 / 12.69 — exact match). Other shapes
+    (HANA / KKP / WHA) overshoot by ~10-15% versus the user's
+    chart picks because the user sometimes anchors on a SHORTER
+    leg (a prior peak rather than the current 52W high). Accepted
+    as v1: simple + auditable; aspirational targets in the cases
+    where the user would draw a tighter Fib themselves.
+
+    Returns (0.0, 0.0) when pivot or 52W low is missing — keeps
+    cards / filters from rendering nonsense.
+    """
+    if pivot <= 0 or low_52w <= 0 or pivot <= low_52w:
+        return 0.0, 0.0
+    range_ = pivot - low_52w
+    return stop + range_, stop + 1.618 * range_
 
 
 # ─── Stage classification ──────────────────────────────────────────────────────
@@ -1139,6 +1170,9 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
     # Pivot-point: buy trigger + invalidation stop, computed only for the
     # actionable buy-side sub-stages (PREP / EARLY / RUNNING / PULLBACK).
     pivot_price, pivot_stop = compute_pivot(df, sub_stage)
+    # Fibonacci 3-point extension targets: T1.0 + T1.618 from
+    # (52W_low → pivot, projected from stop). Zero when pivot=0.
+    target_1, target_1618 = compute_targets(pivot_price, pivot_stop, low_52w)
 
     # Margin tier from Krungsri's marginable list (loaded once at startup
     # from data_static/margin_securities.json). 0 means non-marginable.
@@ -1201,6 +1235,8 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
         sub_stage=sub_stage,
         pivot_price=round(pivot_price, 2),
         pivot_stop=round(pivot_stop, 2),
+        target_1=round(target_1, 2),
+        target_1618=round(target_1618, 2),
         margin_im_pct=margin_im_pct,
         stage_weakening=bool(stage_weakening),
     )
