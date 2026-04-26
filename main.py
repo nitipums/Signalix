@@ -1808,21 +1808,27 @@ async def scan(
     _last_indexes = indexes
 
     # Persist scan results: BQ on every scan (primary); Firestore always (cache)
-    if BQ_AVAILABLE:
+    # Use module attribute to avoid the from-import snapshot trap: at import
+    # time data.BQ_AVAILABLE is False (init_bq hasn't run yet), and
+    # `from data import BQ_AVAILABLE` would freeze the local name as False.
+    import data as _data
+    logger.info("scan persist gate: BQ_AVAILABLE=%s (module=%s) FIRESTORE_AVAILABLE=%s",
+                _data.BQ_AVAILABLE, BQ_AVAILABLE, FIRESTORE_AVAILABLE)
+    if _data.BQ_AVAILABLE:
         loop.run_in_executor(None, save_signals_to_bq, signals)
         # Per-scan breadth snapshot for time-series queries (sub-stage
-        # counts over time). Run SYNCHRONOUSLY (await) instead of via
-        # fire-and-forget executor — the heavy save_signals_to_bq insert
-        # above can hog the default ThreadPoolExecutor and starve this
-        # smaller task when Cloud Run scales the instance down post-
-        # response. Single-row insert (~50ms); negligible /scan latency.
+        # counts over time). Run SYNCHRONOUSLY (await) so it can't be
+        # dropped by the executor when Cloud Run scales the instance
+        # down post-response. Single-row insert (~50ms).
         try:
+            logger.info("save_breadth_snapshot: about to await")
             await loop.run_in_executor(
                 None, functools.partial(
                     save_breadth_snapshot, breadth, signals,
                     body.scan_type, body.mode,
                 ),
             )
+            logger.info("save_breadth_snapshot: await returned")
         except Exception as exc:
             logger.exception("save_breadth_snapshot await failed: %s", exc)
     if FIRESTORE_AVAILABLE and _db:
