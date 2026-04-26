@@ -1810,14 +1810,21 @@ async def scan(
     # Persist scan results: BQ on every scan (primary); Firestore always (cache)
     if BQ_AVAILABLE:
         loop.run_in_executor(None, save_signals_to_bq, signals)
-        # NEW: per-scan breadth snapshot for time-series queries (sub-stage
-        # counts over time). Cheap — one row insert per scan.
-        loop.run_in_executor(
-            None, functools.partial(
-                save_breadth_snapshot, breadth, signals,
-                body.scan_type, body.mode,
-            ),
-        )
+        # Per-scan breadth snapshot for time-series queries (sub-stage
+        # counts over time). Run SYNCHRONOUSLY (await) instead of via
+        # fire-and-forget executor — the heavy save_signals_to_bq insert
+        # above can hog the default ThreadPoolExecutor and starve this
+        # smaller task when Cloud Run scales the instance down post-
+        # response. Single-row insert (~50ms); negligible /scan latency.
+        try:
+            await loop.run_in_executor(
+                None, functools.partial(
+                    save_breadth_snapshot, breadth, signals,
+                    body.scan_type, body.mode,
+                ),
+            )
+        except Exception as exc:
+            logger.exception("save_breadth_snapshot await failed: %s", exc)
     if FIRESTORE_AVAILABLE and _db:
         loop.run_in_executor(
             None, functools.partial(
