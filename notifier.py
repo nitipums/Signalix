@@ -829,9 +829,10 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
         SMA200   ฿1.42    +25.4%
 
       Body Section 3 (Trade Levels — only when actionable):
-        🎯 Pivot         ฿1.82       −2.2%
-        ⛔ Stop          ฿1.74       −2.2%
-        🎯 Target 1.618  ฿3.10      +74.2%   (Fib 1.618 extension)
+        📍 Start         ฿0.40      52W low     (Pin1 — Fib anchor)
+        🎯 Pivot         ฿1.82       −2.2%      (Pin2 — buy trigger)
+        ⛔ Stop          ฿1.74       −2.2%      (Pin3 — pullback floor)
+        🎯 Target 1.618  ฿3.10      +74.2%      (Fib 1.618 extension)
 
       Body Section 4 (Margin):
         💰 Margin    IM50%   2.00× lev   /   Non-marginable
@@ -956,11 +957,29 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
         })
         body_contents.extend(sma_rows)
 
-    # ── Body Section 3: Pivot + Stop (only when actionable) ──
+    # ── Body Section 3: Trade Levels (only when actionable) ──
+    # Layout: 4 anchors of the Fib 3-point extension visible to the
+    # user — Start (Pin1=52W low) → Pivot (Pin2=swing high) → Low
+    # (Pin3=pullback floor / stop) → Target (T1.618 extension).
     pivot = getattr(signal, "pivot_price", 0.0) or 0.0
     pstop = getattr(signal, "pivot_stop", 0.0) or 0.0
     trade_rows: list = []
     if pivot > 0:
+        # Start anchor (Pin1) — the cycle low used in the Fib calc.
+        # Helps the user verify the 1st-uptrend-leg reference point.
+        if signal.low_52w > 0:
+            trade_rows.append({
+                "type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text", "text": "📍 Start", "size": "sm",
+                     "color": "#7F8C8D", "flex": 3},
+                    {"type": "text", "text": f"฿{signal.low_52w:,.2f}",
+                     "size": "sm", "weight": "bold", "color": "#2C3E50",
+                     "flex": 3, "align": "end"},
+                    {"type": "text", "text": "52W low",
+                     "size": "xs", "color": "#7F8C8D",
+                     "flex": 2, "align": "end"},
+                ],
+            })
         gap_pivot = (signal.close - pivot) / pivot * 100
         gap_color = "#27AE60" if gap_pivot >= 0 else \
                     "#F39C12" if gap_pivot > -5 else "#7F8C8D"

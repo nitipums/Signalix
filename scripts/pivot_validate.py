@@ -143,6 +143,7 @@ def main():
         rows.append({
             "sym": sym, "sub": sub.replace("STAGE_", "S"),
             "close": close_now, "hi52": high_52w,
+            "start": low_52w,  # Pin1 = cycle low (52W low)
             "old": old_pivot, "new": new_pivot,
             "bars_back": bars_back,
             "gap_close": gap_close, "gap_hi": gap_high,
@@ -160,19 +161,23 @@ def main():
 
     rows.sort(key=lambda r: (r["sub"], -r["new"]))
 
-    # ── Table ────────────────────────────────────────────────────────────
+    # ── Table — Anchors + Target ─────────────────────────────────────────
+    # Shows the 4 reference points used in the Fibonacci 3-point
+    # extension: Start (cycle low / Pin1) → Pivot (Pin2) → Low (Pin3)
+    # → Target (T1.618). Lets the user spot-check whether the auto
+    # anchors match their chart-drawn Fib for each stock.
     print("\n" + "=" * 115)
-    print(f"{'SYM':<7}{'SubStage':<18}{'Close':>8}{'52WHi':>8}"
-          f"{'Pivot':>8}{'Δ%vsC':>8}{'Bars':>6}{'Stop':>8}{'Risk%':>7}"
-          f"{'T1.618':>10}{'Upside':>9}")
+    print(f"{'SYM':<7}{'SubStage':<18}{'Close':>8}"
+          f"{'Start':>8}{'Pivot':>8}{'Low':>8}{'Range':>8}"
+          f"{'Target':>9}{'Upside':>9}")
     print("=" * 115)
     for r in rows:
+        rng = r['new'] - r['start']
         print(f"{r['sym']:<7}{r['sub']:<18}"
-              f"{r['close']:>8.2f}{r['hi52']:>8.2f}"
-              f"{r['new']:>8.2f}{r['gap_close']:>+7.1f}%"
-              f"{r['bars_back']:>6d}{r['stop']:>8.2f}"
-              f"{r['risk_pct']:>+6.1f}%"
-              f"{r['t1618']:>10.2f}{r['upside']:>+8.1f}%")
+              f"{r['close']:>8.2f}"
+              f"{r['start']:>8.2f}{r['new']:>8.2f}{r['stop']:>8.2f}"
+              f"{rng:>8.2f}"
+              f"{r['t1618']:>9.2f}{r['upside']:>+8.1f}%")
 
     # ── Sanity gates ────────────────────────────────────────────────────
     print("\n" + "=" * 110)
