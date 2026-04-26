@@ -965,17 +965,20 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
     pstop = getattr(signal, "pivot_stop", 0.0) or 0.0
     trade_rows: list = []
     if pivot > 0:
-        # Start anchor (Pin1) — the cycle low used in the Fib calc.
-        # Helps the user verify the 1st-uptrend-leg reference point.
-        if signal.low_52w > 0:
+        # Start anchor (Pin1) — ZigZag-detected cycle low (start of
+        # current uptrend leg). Falls back to 52W low if ZigZag found
+        # no structure. Helps the user verify the 1st-leg reference.
+        fib_start = getattr(signal, "fib_start", 0.0) or signal.low_52w
+        if fib_start > 0:
+            label = "cycle low" if fib_start != signal.low_52w else "52W low"
             trade_rows.append({
                 "type": "box", "layout": "horizontal", "contents": [
                     {"type": "text", "text": "📍 Start", "size": "sm",
                      "color": "#7F8C8D", "flex": 3},
-                    {"type": "text", "text": f"฿{signal.low_52w:,.2f}",
+                    {"type": "text", "text": f"฿{fib_start:,.2f}",
                      "size": "sm", "weight": "bold", "color": "#2C3E50",
                      "flex": 3, "align": "end"},
-                    {"type": "text", "text": "52W low",
+                    {"type": "text", "text": label,
                      "size": "xs", "color": "#7F8C8D",
                      "flex": 2, "align": "end"},
                 ],

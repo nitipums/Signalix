@@ -132,7 +132,7 @@ def main():
         low_52w    = float(df["Low"].iloc[-min(252, len(df)):].min())
         old_pivot  = _old_pivot(df, sub)
         new_pivot, new_stop = compute_pivot(df, sub)
-        t1, t1618  = compute_targets(new_pivot, new_stop, low_52w)
+        t1, t1618, fib_start = compute_targets(df, new_pivot, new_stop, low_52w)
         bars_back  = _bars_since(df, new_pivot)
 
         gap_high   = (new_pivot / high_52w - 1) * 100 if high_52w else 0.0
@@ -143,7 +143,7 @@ def main():
         rows.append({
             "sym": sym, "sub": sub.replace("STAGE_", "S"),
             "close": close_now, "hi52": high_52w,
-            "start": low_52w,  # Pin1 = cycle low (52W low)
+            "start": fib_start,  # Pin1 = ZigZag-detected cycle low
             "old": old_pivot, "new": new_pivot,
             "bars_back": bars_back,
             "gap_close": gap_close, "gap_hi": gap_high,

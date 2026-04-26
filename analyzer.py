@@ -87,6 +87,7 @@ class StockSignal:
     # (out-of-scope sub-stages).
     target_1: float = 0.0
     target_1618: float = 0.0
+    fib_start: float = 0.0         # ZigZag-detected cycle low (Pin1 anchor)
     # Margin tier from Krungsri Securities Marginable Securities List:
     # 50/60/70/80 = Initial Margin %, lower = more leverage.
     # 0 = NOT marginable (broker rejects margin orders, must trade 100% cash).
@@ -240,6 +241,87 @@ def _vol_dry_up_strict(df: pd.DataFrame, window: int = 50, threshold: float = 0.
     if avg_vol <= 0:
         return False
     return today_vol < avg_vol * threshold
+
+
+def _zigzag_cycle_low(df: pd.DataFrame, threshold: float = 0.20,
+                      lookback: int = 252) -> float:
+    """Detect the start of the current uptrend cycle via ZigZag.
+
+    Walks the last `lookback` bars finding alternating swing highs and
+    swing lows where each swing >= `threshold`. Returns the swing-LOW
+    that started the most recent uptrend (the bar just BEFORE the
+    current Pin2 swing-high, OR — if the latest pivot is itself an L
+    — the L before THAT).
+
+    Used as the Pin1 anchor for the Fibonacci 3-point extension. Falls
+    back to the absolute lookback-window low when fewer than 2 swings
+    are detected (stock too quiet for ZigZag at this threshold).
+
+    Validated against user's chart-drawn Fib anchors:
+      - SPRC ฿4.28 ✓ matches user's pin
+      - WHA  ฿3.08 ✓ matches user's pin
+      - SCC  ฿163.0 ✓ matches user's pin
+      - STECON ฿10.70 ✓ matches user's pin
+      - HANA ฿15.10 vs user ~฿15.50 (close, +3%)
+      - KKP  ฿43.50 vs user ฿62.75 (user picks LATER cycle restart)
+      - GULF ฿51.07 area
+    """
+    n = len(df)
+    if n < 2:
+        return 0.0
+    win = min(lookback, n)
+    high = df["High"].iloc[-win:].values
+    low  = df["Low"].iloc[-win:].values
+    base = n - win
+    pivots: list[tuple[int, float, str]] = []
+    cur_h = high[0]; cur_h_bar = 0
+    cur_l = low[0];  cur_l_bar = 0
+    direction = 0  # 0=undetermined, 1=up, -1=down
+    for i in range(1, win):
+        if direction >= 0:
+            if high[i] > cur_h: cur_h = high[i]; cur_h_bar = i
+            if low[i] < cur_l and direction == 0: cur_l = low[i]; cur_l_bar = i
+        if direction <= 0:
+            if low[i] < cur_l: cur_l = low[i]; cur_l_bar = i
+            if high[i] > cur_h and direction == 0: cur_h = high[i]; cur_h_bar = i
+        if direction == 0:
+            if cur_l > 0 and (cur_h - cur_l) / cur_l >= threshold:
+                if cur_h_bar < cur_l_bar:
+                    pivots.append((base + cur_h_bar, float(cur_h), "H"))
+                    direction = -1; cur_l = low[i]; cur_l_bar = i
+                else:
+                    pivots.append((base + cur_l_bar, float(cur_l), "L"))
+                    direction = 1; cur_h = high[i]; cur_h_bar = i
+        elif direction == 1:
+            if cur_h > 0 and (cur_h - low[i]) / cur_h >= threshold:
+                pivots.append((base + cur_h_bar, float(cur_h), "H"))
+                direction = -1; cur_l = low[i]; cur_l_bar = i
+        else:
+            if cur_l > 0 and (high[i] - cur_l) / cur_l >= threshold:
+                pivots.append((base + cur_l_bar, float(cur_l), "L"))
+                direction = 1; cur_h = high[i]; cur_h_bar = i
+    # Append the most recent running pivot
+    if direction == 1:
+        pivots.append((base + cur_h_bar, float(cur_h), "H"))
+    elif direction == -1:
+        pivots.append((base + cur_l_bar, float(cur_l), "L"))
+    if not pivots:
+        return float(low.min())
+    # Find Pin1: the swing-LOW that started the current uptrend.
+    last = pivots[-1]
+    if last[2] == "H":
+        # Sequence ends with a swing-high (pivot/recent peak).
+        # Pin1 = the L immediately before this H.
+        ls_before = [v for b, v, t in pivots if t == "L" and b < last[0]]
+        return ls_before[-1] if ls_before else float(low.min())
+    # Sequence ends with a swing-low (recent pullback bottom = current Pin3).
+    # The current cycle's Pin2 is the H before this L; Pin1 is the L before THAT H.
+    hs_before = [b for b, v, t in pivots if t == "H" and b < last[0]]
+    if not hs_before:
+        return float(low.min())
+    pin2_bar = hs_before[-1]
+    ls_before = [v for b, v, t in pivots if t == "L" and b < pin2_bar]
+    return ls_before[-1] if ls_before else float(low.min())
 
 
 def _last_run_high(df: pd.DataFrame, lookback: int = 60) -> float:
@@ -599,29 +681,44 @@ def compute_pivot(df: pd.DataFrame, sub_stage: str) -> tuple[float, float]:
     return pivot, stop
 
 
-def compute_targets(pivot: float, stop: float, low_52w: float) -> tuple[float, float]:
+def compute_targets(df: pd.DataFrame, pivot: float, stop: float,
+                    low_52w: float) -> tuple[float, float, float]:
     """3-point Fibonacci extension targets.
 
-    Anchors: Pin1 = 52W low, Pin2 = pivot, Pin3 = stop.
-    Range = Pin2 − Pin1.
-        Target 1.0   = Pin3 + Range
-        Target 1.618 = Pin3 + 1.618 × Range
+    Anchors:
+      Pin1 = ZigZag-detected cycle low (start of current uptrend leg)
+      Pin2 = pivot (= our _last_run_high, the swing-high)
+      Pin3 = stop  (= 10-bar low, the recent pullback floor)
 
-    Validated against user's hand-drawn Fib for SPRC (chart 10.30 /
-    12.70 vs computed 10.27 / 12.69 — exact match). Other shapes
-    (HANA / KKP / WHA) overshoot by ~10-15% versus the user's
-    chart picks because the user sometimes anchors on a SHORTER
-    leg (a prior peak rather than the current 52W high). Accepted
-    as v1: simple + auditable; aspirational targets in the cases
-    where the user would draw a tighter Fib themselves.
+    Math:
+      Range = Pin2 − Pin1
+      Target 1.0   = Pin3 + Range            (not surfaced on card)
+      Target 1.618 = Pin3 + 1.618 × Range
 
-    Returns (0.0, 0.0) when pivot or 52W low is missing — keeps
-    cards / filters from rendering nonsense.
+    Validated against user's chart-drawn Fib anchors:
+      SPRC: Pin1 ฿4.28 ✓; T1.618 ฿12.69 vs chart ฿12.70 ✓
+      WHA:  Pin1 ฿3.08 ✓; T1.618 ฿6.05 area
+      SCC:  Pin1 ฿163  ✓
+      STECON: Pin1 ฿10.70 ✓
+      HANA: Pin1 ฿15.10 vs user's ~฿15.50 (close)
+      KKP:  Pin1 ฿43.50 vs user's ฿62.75 (user uses LATER cycle restart)
+      GULF: Pin1 ~฿51 (user picks projected Pin2 above current high)
+
+    Returns (target_1, target_1618, fib_start) where fib_start is the
+    detected Pin1 — surfaced on the card for user verification of the
+    1st-uptrend-leg anchor. Falls back to 52W low when ZigZag finds no
+    structure (rare; happens for very quiet stocks).
     """
-    if pivot <= 0 or low_52w <= 0 or pivot <= low_52w:
-        return 0.0, 0.0
-    range_ = pivot - low_52w
-    return stop + range_, stop + 1.618 * range_
+    if pivot <= 0:
+        return 0.0, 0.0, 0.0
+    fib_start = _zigzag_cycle_low(df, threshold=0.20)
+    if fib_start <= 0 or fib_start >= pivot:
+        # ZigZag found nothing useful; fall back to 52W low.
+        fib_start = low_52w
+    if fib_start <= 0 or fib_start >= pivot:
+        return 0.0, 0.0, 0.0
+    range_ = pivot - fib_start
+    return stop + range_, stop + 1.618 * range_, fib_start
 
 
 # ─── Stage classification ──────────────────────────────────────────────────────
@@ -1180,8 +1277,10 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
     # actionable buy-side sub-stages (PREP / EARLY / RUNNING / PULLBACK).
     pivot_price, pivot_stop = compute_pivot(df, sub_stage)
     # Fibonacci 3-point extension targets: T1.0 + T1.618 from
-    # (52W_low → pivot, projected from stop). Zero when pivot=0.
-    target_1, target_1618 = compute_targets(pivot_price, pivot_stop, low_52w)
+    # (cycle_low → pivot, projected from stop). Pin1 = ZigZag-
+    # detected cycle low (start of current uptrend). Zero when pivot=0.
+    target_1, target_1618, fib_start = compute_targets(
+        df, pivot_price, pivot_stop, low_52w)
 
     # Margin tier from Krungsri's marginable list (loaded once at startup
     # from data_static/margin_securities.json). 0 means non-marginable.
@@ -1246,6 +1345,7 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
         pivot_stop=round(pivot_stop, 2),
         target_1=round(target_1, 2),
         target_1618=round(target_1618, 2),
+        fib_start=round(fib_start, 2),
         margin_im_pct=margin_im_pct,
         stage_weakening=bool(stage_weakening),
     )
