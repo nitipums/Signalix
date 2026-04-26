@@ -233,8 +233,21 @@ _index_members: dict[str, set[str]] = {
 
 
 def get_index_members(index_name: str) -> set[str]:
-    """Return the member set for a sub-index. Empty set if unknown."""
-    return _index_members.get(index_name.upper(), set())
+    """Return the member set for a sub-index. Empty set if unknown.
+
+    Special case: 'MARGINABLE' returns the symbol set from the Krungsri
+    Marginable Securities List (data_static/margin_securities.json plus
+    Firestore overlay). Treats the broker's IM50/60/70/80 universe as a
+    first-class index so every scoped helper (`<index> stage`, `<index>
+    stages`, `<index> pivot`, `<index> ready`, etc.) automatically
+    works for the trader's actual universe without bespoke wiring.
+    """
+    name = index_name.upper()
+    if name == "MARGINABLE":
+        if not _margin_securities:
+            _load_margin_securities()
+        return set(_margin_securities.keys())
+    return _index_members.get(name, set())
 
 
 def set_index_members(index_name: str, members: set[str]) -> None:

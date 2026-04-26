@@ -1031,11 +1031,17 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
         "dist": "STAGE_3_DIST_DIST", "distribution": "STAGE_3_DIST_DIST",
         "breakdown": "STAGE_4_BREAKDOWN", "downtrend": "STAGE_4_DOWNTREND",
     }
-    for prefix in ("set50 ", "set100 ", "mai "):
+    for prefix in ("set50 ", "set100 ", "mai ", "marginable ", "mgn "):
         if c.startswith(prefix):
             from data import get_index_members
-            index_name = "SET50" if prefix.startswith("set50") else (
-                         "SET100" if prefix.startswith("set100") else "MAI")
+            if prefix.startswith("set50"):
+                index_name = "SET50"
+            elif prefix.startswith("set100"):
+                index_name = "SET100"
+            elif prefix.startswith("mai"):
+                index_name = "MAI"
+            else:  # "marginable " or "mgn "
+                index_name = "MARGINABLE"
             members = get_index_members(index_name)
             rest = c[len(prefix):].strip().replace(" ", "")
             constituents = [s for s in _last_signals if s.symbol in members]
@@ -1101,11 +1107,19 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
             return summary(sigs, label)
 
     # Per-sub-index breadth (SET50 / SET100 / MAI)
-    if c in ("set50", "set 50", "set100", "set 100", "mai"):
+    if c in ("set50", "set 50", "set100", "set 100", "mai",
+              "marginable", "mgn"):
         from data import get_index_members
         from analyzer import compute_index_breadth
-        index_name = "SET50" if c.replace(" ", "") == "set50" else (
-                     "SET100" if c.replace(" ", "") == "set100" else "MAI")
+        c_compact = c.replace(" ", "")
+        if c_compact == "set50":
+            index_name = "SET50"
+        elif c_compact == "set100":
+            index_name = "SET100"
+        elif c_compact == "mai":
+            index_name = "MAI"
+        else:  # marginable / mgn
+            index_name = "MARGINABLE"
         members = get_index_members(index_name)
         idx_data = (_last_indexes or {}).get(index_name, {})
         idx_close = float(idx_data.get("close", 0) or 0)
@@ -2440,16 +2454,25 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     # ── Per-index breadth: SET50 / SET100 / MAI ──
     # Catch the more-specific filter forms first so they don't fall into
     # the generic 'set50' breadth command.
-    elif cmd.startswith("set50 ") or cmd.startswith("set100 ") or cmd.startswith("mai "):
-        # Support several drill-down shapes:
-        #   set100 stage               → 4-bubble picker (sub-stages per parent)
-        #   set100 stages / dashboard  → 11-row dashboard (one screen)
-        #   set100 pivot               → pivot candidates within constituents
-        #   set100 stage2 / s2         → filter by parent stage
-        #   set100 ready / pullback    → filter by sub-stage
-        #   set100 members / list / all → full member list
+    elif (cmd.startswith("set50 ") or cmd.startswith("set100 ")
+          or cmd.startswith("mai ") or cmd.startswith("marginable ")
+          or cmd.startswith("mgn ")):
+        # Support several drill-down shapes (universe = set50 / set100 /
+        # mai / marginable):
+        #   <universe> stage               → 4-bubble picker (sub-stages per parent)
+        #   <universe> stages / dashboard  → 11-row dashboard (one screen)
+        #   <universe> pivot               → pivot candidates within constituents
+        #   <universe> stage2 / s2         → filter by parent stage
+        #   <universe> ready / pullback    → filter by sub-stage
+        #   <universe> margin50 / im50     → filter by margin tier (within scope)
+        #   <universe> members / list / all → full member list
+        # `marginable` (321 stocks from Krungsri's monthly list) is
+        # treated as a virtual index — get_index_members("MARGINABLE")
+        # returns the marginable symbol set so every scoped helper works.
+        # `mgn` is a short alias for `marginable`.
         parts = cmd.split(maxsplit=1)
-        index_name = parts[0].upper()
+        first = parts[0].upper()
+        index_name = "MARGINABLE" if first == "MGN" else first
         rest = parts[1].strip() if len(parts) > 1 else ""
         rest_norm = rest.lower().replace(" ", "")
         if rest_norm == "stage":
@@ -2472,6 +2495,12 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
 
     elif cmd in ("mai", "ไหม"):
         await _reply_index_breadth(reply_token, "MAI")
+
+    elif cmd in ("marginable", "mgn"):
+        # Marginable universe breadth — 321 stocks from Krungsri's
+        # monthly Marginable Securities List, treated as a virtual
+        # index. Mirrors `set100` / `set50` ergonomics.
+        await _reply_index_breadth(reply_token, "MARGINABLE")
 
     elif cmd in ("ตลาด", "market", "breadth"):
         card = _last_breadth_card

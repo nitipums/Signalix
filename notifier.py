@@ -2591,6 +2591,18 @@ def build_guide_carousel() -> dict:
             "layout": "vertical",
             "spacing": "none",
             "contents": [
+                # Marginable is the actionable trading universe — promoted
+                # to the top so traders see it first. Krungsri's list of
+                # 321 SET stocks the broker accepts margin orders on.
+                _section("💰 TRADING UNIVERSE (Marginable)", "#F1C40F"),
+                _cmd_row("marginable", "Marginable breadth (all 321) 💰"),
+                _cmd_row("marginable stage", "Marginable picker (4 stages)"),
+                _cmd_row("marginable stages", "Marginable dashboard (11 rows)"),
+                _cmd_row("marginable pivot", "Marginable pivot candidates 🎯"),
+                _cmd_row("marginable ready", "Marginable Pivot Ready ✨"),
+                _cmd_row("marginable ignition", "Marginable Ignition 🚀"),
+                _cmd_row("margin50", "All IM50 stocks (2.0× leverage)"),
+
                 _section("MARKET OVERVIEW"),
                 _cmd_row("market", "SET Market Breadth"),
                 _cmd_row("index", "All Indexes Snapshot"),
@@ -2599,11 +2611,12 @@ def build_guide_carousel() -> dict:
                 _cmd_row("sector", "Sector Trends"),
 
                 _section("ACTIONABLE BUY", "#27AE60"),
-                _cmd_row("pullback", "Stage 2 Pullback (entry setup) 🎯"),
-                _cmd_row("early", "Stage 2 Early (fresh breakout) 🎯"),
-                _cmd_row("running", "Stage 2 Running (hold/trail)"),
+                _cmd_row("ready", "Stage 2 Pivot Ready 🎯"),
+                _cmd_row("ignition", "Stage 2 Ignition (breakout) 🚀"),
+                _cmd_row("contraction", "Stage 2 Contraction (pullback)"),
+                _cmd_row("markup", "Stage 2 Markup (running)"),
                 _cmd_row("prep", "Stage 1 Prep (watchlist)"),
-                _cmd_row("pivot", "At Pivot Trigger 🎯 NEW"),
+                _cmd_row("pivot", "At Pivot Trigger 🎯"),
 
                 _section("DEFENSE / EXIT", "#E67E22"),
                 _cmd_row("volatile", "Stage 3 Volatile (take profit)"),
@@ -2712,6 +2725,14 @@ def build_guide_carousel() -> dict:
                  "text": "Stage 1 PREP + ทุก Stage 2 sub-stage จะมี pivot price (buy trigger) คำนวณจาก high สูงสุด 15 แท่งล่าสุด + stop จาก low ต่ำสุด 10 แท่ง",
                  "size": "xxs", "color": "#555555", "wrap": True},
                 _guide_row("🎯 At Pivot", "หุ้นที่ใกล้/ถึง trigger ทุกรัฐ", "#F39C12", cmd="pivot"),
+                {"type": "separator", "margin": "md"},
+                {"type": "text", "text": "💰 Margin tiers (Krungsri)", "weight": "bold", "size": "xs", "color": "#F1C40F"},
+                {"type": "text",
+                 "text": "IM% = Initial Margin needed. ยิ่งต่ำ ยิ่ง leverage มาก:\nIM50 → 2.00× | IM60 → 1.67× | IM70 → 1.43× | IM80 → 1.25×",
+                 "size": "xxs", "color": "#555555", "wrap": True},
+                _guide_row("💰 Marginable", "Universe ที่กู้ได้ (321 ตัว)",  "#F1C40F", cmd="marginable"),
+                _guide_row("🎯 Marginable Pivot", "Setup เฉพาะที่กู้ได้",     "#F1C40F", cmd="marginable pivot"),
+                _guide_row("✨ Marginable Ready", "Pivot Ready เฉพาะที่กู้ได้", "#F1C40F", cmd="marginable ready"),
                 {"type": "text", "text": "💡 sub_stage = primary classification. ⚠ stage_weakening = legacy modifier (close < SMA50 ใน Stage 2 — type 'weakening')",
                  "size": "xxs", "color": "#7F8C8D", "wrap": True, "margin": "sm"},
             ],
