@@ -481,6 +481,216 @@ SECTOR_INDEX_SYMBOLS: dict[str, str] = {
 _dynamic_sector_map: dict[str, str] = {}  # symbol → subsector
 
 
+# ─── Marginable Securities List ────────────────────────────────────────────────
+# Sourced from Krungsri Securities' periodic Marginable Securities List PDF.
+# Stored as a static JSON in data_static/margin_securities.json (committed to
+# the repo). To refresh: `python3 scripts/refresh_margin_list.py --pdf <path>`
+# then commit + deploy.
+#
+# Schema: {symbol: {im_pct: int, short_sell: bool}}
+#   im_pct  = Initial Margin requirement % (50 / 60 / 70 / 80).
+#             Lower = more leverage. IM50 = 2.0× max, IM80 = 1.25× max.
+#   short_sell = True if symbol allows short-sell (was '**' in source PDF).
+# Symbols ABSENT from this dict are NOT marginable (broker rejects margin
+# orders) — so consumers should treat .get(sym) is None as "no margin".
+_margin_securities: dict[str, dict] = {}
+_margin_metadata: dict = {}
+
+
+def _load_margin_securities() -> None:
+    """Load data_static/margin_securities.json into module-level dict.
+    Called once from init_firestore()/init_bq() startup. Silent no-op if
+    the file is missing (service still runs without margin data).
+    """
+    global _margin_securities, _margin_metadata
+    try:
+        import json as _json
+        from pathlib import Path
+        path = Path(__file__).parent / "data_static" / "margin_securities.json"
+        if not path.exists():
+            logger.warning("margin_securities.json not found at %s", path)
+            return
+        with path.open("r", encoding="utf-8") as f:
+            payload = _json.load(f)
+        _margin_securities = payload.get("securities", {}) or {}
+        _margin_metadata = {k: v for k, v in payload.items() if k != "securities"}
+        logger.info("Loaded %d marginable securities (as of %s)",
+                    len(_margin_securities), _margin_metadata.get("as_of", "?"))
+    except Exception as exc:
+        logger.warning("_load_margin_securities failed: %s", exc)
+
+
+def get_margin_im_pct(symbol: str) -> int:
+    """Return IM% for a symbol (50/60/70/80) or 0 if not marginable.
+    0 is the explicit 'non-marginable' marker — broker rejects margin
+    orders on these symbols, so trades must be 100% cash."""
+    if not _margin_securities:
+        return 0
+    entry = _margin_securities.get(symbol.upper())
+    return int(entry.get("im_pct", 0)) if entry else 0
+
+
+def get_margin_info(symbol: str) -> dict:
+    """Full margin entry for a symbol — empty dict when non-marginable.
+    Includes both im_pct and short_sell flag."""
+    if not _margin_securities:
+        return {}
+    return dict(_margin_securities.get(symbol.upper(), {}) or {})
+
+
+def margin_metadata() -> dict:
+    """Return the dataset metadata (as_of date, source URL, notes).
+    Used by /test endpoints for transparency."""
+    return dict(_margin_metadata)
+
+
+def load_margin_overlay_from_firestore(db) -> bool:
+    """Check Firestore for a more-recent margin overlay (written by the
+    /admin/refresh_margin_list endpoint or the monthly Cloud Scheduler
+    job) and replace the in-memory dict if it's newer than the static
+    JSON. Returns True when an overlay was loaded.
+
+    Doc path: `app_state/margin_securities_live`. Same shape as the
+    JSON in data_static/.
+    """
+    global _margin_securities, _margin_metadata
+    if db is None:
+        return False
+    try:
+        doc = db.collection("app_state").document("margin_securities_live").get()
+        if not doc.exists:
+            return False
+        payload = doc.to_dict() or {}
+        live = payload.get("securities") or {}
+        if not live:
+            return False
+        # Prefer overlay when it's newer than the static JSON's as_of OR
+        # when the static JSON is empty (first-time bootstrap).
+        live_as_of = payload.get("as_of", "")
+        static_as_of = _margin_metadata.get("as_of", "")
+        if live_as_of and static_as_of and live_as_of < static_as_of:
+            logger.info("Margin overlay older than static (%s < %s) — keeping static",
+                        live_as_of, static_as_of)
+            return False
+        _margin_securities = live
+        _margin_metadata = {k: v for k, v in payload.items() if k != "securities"}
+        logger.info("Loaded %d margin securities from Firestore overlay (as_of %s)",
+                    len(live), live_as_of or "?")
+        return True
+    except Exception as exc:
+        logger.warning("load_margin_overlay_from_firestore failed: %s", exc)
+        return False
+
+
+def refresh_margin_from_url(url: str, db=None, as_of: str = "") -> dict:
+    """Fetch the Krungsri Marginable Securities PDF from `url`, parse,
+    persist to Firestore overlay (when db provided), and update the
+    in-memory dict atomically.
+
+    Returns a stats dict with before/after counts + symbol-level diff
+    so callers can log meaningful change reports.
+    """
+    global _margin_securities, _margin_metadata
+    import re as _re
+    import urllib.request as _ur
+    from datetime import date as _date
+
+    # Parse PDF — same logic as scripts/refresh_margin_list.py kept
+    # local here to avoid import shenanigans inside Cloud Run.
+    try:
+        import pdfplumber as _pdf
+    except ImportError:
+        return {"error": "pdfplumber not installed in runtime"}
+
+    try:
+        # 30s timeout — Krungsri's site is fast but Cloud Run egress
+        # can be slow if the connection cold-starts.
+        req = _ur.Request(url, headers={"User-Agent": "signalix-margin-refresh/1.0"})
+        with _ur.urlopen(req, timeout=30) as resp:
+            pdf_bytes = resp.read()
+    except Exception as exc:
+        return {"error": f"download failed: {exc}"}
+
+    import io
+    try:
+        with _pdf.open(io.BytesIO(pdf_bytes)) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    except Exception as exc:
+        return {"error": f"pdf parse failed: {exc}"}
+
+    tier_pat = _re.compile(r"^IM(\d+)%")
+    sym_pat  = _re.compile(r"(?:^|\s)\d+\s+([A-Z][A-Z0-9\-]*)(\*{0,2})")
+    KEEP_TIERS = {50, 60, 70, 80}
+    current_tier = None
+    new_data: dict = {}
+    for line in text.split("\n"):
+        m = tier_pat.match(line.strip())
+        if m:
+            current_tier = int(m.group(1))
+            continue
+        if current_tier is None:
+            continue
+        for sm in sym_pat.finditer(line):
+            sym = sm.group(1)
+            ast = len(sm.group(2))
+            if sym == "IM" or current_tier not in KEEP_TIERS:
+                continue
+            new_data[sym] = {"im_pct": current_tier, "short_sell": ast >= 2}
+
+    if not new_data:
+        return {"error": "no securities parsed — PDF format may have changed"}
+
+    # Diff vs current in-memory dict for the response
+    before_set = set(_margin_securities.keys())
+    after_set  = set(new_data.keys())
+    added   = sorted(after_set - before_set)
+    removed = sorted(before_set - after_set)
+    tier_changes = []
+    for sym in sorted(after_set & before_set):
+        old_tier = _margin_securities[sym].get("im_pct")
+        new_tier = new_data[sym].get("im_pct")
+        if old_tier != new_tier:
+            tier_changes.append({"symbol": sym, "from": old_tier, "to": new_tier})
+
+    # Build the persisted payload
+    payload = {
+        "as_of": as_of or str(_date.today()),
+        "source": f"Krungsri Securities — {url}",
+        "source_url": url,
+        "notes": (
+            "Refreshed via /admin/refresh_margin_list. "
+            "im_pct = Initial Margin %. Lower = more leverage."
+        ),
+        "securities": new_data,
+    }
+
+    # Persist overlay to Firestore (when available) so other Cloud Run
+    # instances pick it up on next cold-start without redeploy.
+    if db is not None:
+        try:
+            db.collection("app_state").document("margin_securities_live").set(payload)
+        except Exception as exc:
+            logger.warning("Could not persist margin overlay to Firestore: %s", exc)
+
+    # Update in-memory atomically
+    _margin_securities = new_data
+    _margin_metadata = {k: v for k, v in payload.items() if k != "securities"}
+
+    return {
+        "as_of": payload["as_of"],
+        "source_url": url,
+        "before_count": len(before_set),
+        "after_count": len(after_set),
+        "added": added,
+        "removed": removed,
+        "tier_changes": tier_changes,
+        "tier_breakdown": {
+            t: sum(1 for v in new_data.values() if v["im_pct"] == t)
+            for t in (50, 60, 70, 80)
+        },
+    }
+
+
 # Hand-curated overrides for symbols that yfinance .info doesn't classify
 # (Thai REITs / infrastructure funds / property-fund tickers mostly) or
 # where the industry string falls outside our _YF_INDUSTRY_TO_SUBSECTOR map.
@@ -1124,6 +1334,10 @@ _SCAN_RESULTS_SCHEMA = [
 def init_bq(project_id: str, dataset: str = "signalix") -> None:
     """Initialize BigQuery client and ensure ohlcv + scan_results tables exist."""
     global _bq_client, _bq_project, _bq_dataset, BQ_AVAILABLE
+    # Load static margin securities map (cheap, no IO beyond file read)
+    # — happens once per cold start, before BQ work so even if BQ init
+    # fails the margin lookup still works.
+    _load_margin_securities()
     try:
         from google.cloud import bigquery
         _bq_client = bigquery.Client(project=project_id)

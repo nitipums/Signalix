@@ -1,0 +1,1292 @@
+{
+  "as_of": "2025-04-09",
+  "source": "Krungsri Securities \u2014 Marginable_Securities_List_09042025_1744186707.pdf",
+  "source_url": "https://www.krungsrisecurities.com/upload/Marginable_Securities_List_09042025_1744186707.pdf",
+  "notes": "im_pct = Initial Margin requirement %. Lower = more leverage. IM50 \u2192 up to 2.0\u00d7 leverage. IM60 \u2192 1.67\u00d7. IM70 \u2192 1.43\u00d7. IM80 \u2192 1.25\u00d7. Symbols not in this dict are NOT marginable (broker rejects margin orders). short_sell=True (was '**' in source PDF) indicates short-sell eligibility.",
+  "securities": {
+    "BEC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "DMT": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "ITEL": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "NYT": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "SCB": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TISCO": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "ADVANC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "BEM": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "DOHOME": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "IVL": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "OR": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SCC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TKN": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "AEONTS": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "BGRIM": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "DRT": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "KAMART": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "OSP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SCCC": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "TLI": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "AIMIRT": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "BH": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "EGATIF": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "KBANK": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "PIN": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "SCGP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TMAN": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "AIT": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "BJC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "EGCO": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "KCE": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "PLANB": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SIRI": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TOA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "AMATA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "BLA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "EKH": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "KGI": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "PR9": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SIS": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "TOP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "AOT": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "BPP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "EPG": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "KKP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "PRM": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SISB": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TRUE": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "AP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "CBG": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "ERW": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "KLINIQ": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "PSH": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SJWD": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TTA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "ASIAN": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "CCET": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "FM": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "KTB": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "PSL": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SNNP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TTB": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "ASP": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "CENTEL": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "FSMART": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "KTC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "PTG": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SPA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TTW": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "AU": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "CHG": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "FTREIT": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "LANNA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "PTT": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SPALI": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TU": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "AUCT": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "CK": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "GFPT": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "LH": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "PTTEP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SPCG": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TVO": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "AWC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "CKP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "GLOBAL": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "LHFG": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "PTTGC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SPRC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "UVAN": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "AXTRART": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "COCOCO": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "GPSC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "M": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "QH": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SSP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "VIBHA": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "BA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "COM7": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "GULF": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "MAJOR": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "RATCH": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "STA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "WHA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "BAM": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "CPALL": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "GUNKUL": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "MASTER": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "RBF": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "STANLY": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "WHAIR": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "BANPU": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "CPAXT": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "HANA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "MBK": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "RCL": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "STGT": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "WHAUP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "BAY": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "CPF": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "HMPRO": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "MC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "RJH": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "SUN": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "XO": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "BBIK": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "CPN": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "HTC": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "MEGA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "ROJNA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SVI": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "BBL": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "CPNREIT": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "HUMAN": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "MINT": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SABINA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SYNEX": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "BCH": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "CRC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "ICHI": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "MOSHI": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "SAK": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TACC": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "BCP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "CREDIT": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "III": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "MTC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SAPPE": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TASCO": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "BCPG": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "DCC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "ILM": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "NEO": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "SAT": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TCAP": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "BDMS": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "DELTA": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "INSET": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "NER": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SAWAD": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "THANI": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "BE8": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "DIF": {
+      "im_pct": 50,
+      "short_sell": false
+    },
+    "ITC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "NSL": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "SC": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "TIPH": {
+      "im_pct": 50,
+      "short_sell": true
+    },
+    "AAI": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "BSRC": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "IRPC": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "ORI": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "SFLEX": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "TPIPL": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "ACE": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "BTG": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "JMT": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "PSP": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "SICT": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "TPIPP": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "AH": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "BTS": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "KCG": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "PTL": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "SNC": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "TQM": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "AMA": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "BTSGIF": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "KISS": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "Q-CON": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "STECON": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "UTP": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "ASK": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "CHAYO": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "LHSC": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "RPH": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "SUC": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "WHART": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "AURA": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "DITTO": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "LPN": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "S": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "TEAMG": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "WPH": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "BAFS": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "FORTH": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "MALEE": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "SAFE": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "TFFIF": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "BAREIT": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "GVREIT": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "MEB": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "SAV": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "TFG": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "BOL": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "IMPACT": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "NCAP": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "SCAP": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "THG": {
+      "im_pct": 60,
+      "short_sell": true
+    },
+    "BRI": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "INET": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "ONEE": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "SCGD": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "TOG": {
+      "im_pct": 60,
+      "short_sell": false
+    },
+    "AAV": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "BWG": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "HTECH": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "NOBLE": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "QHBREIT": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "SKY": {
+      "im_pct": 70,
+      "short_sell": true
+    },
+    "TIPCO": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "WARRIX": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "ADVICE": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "CFRESH": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "IP": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "OKJ": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "ROCTEC": {
+      "im_pct": 70,
+      "short_sell": true
+    },
+    "SMPC": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "TKC": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "WICE": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "AS": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "CHAO": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "JMART": {
+      "im_pct": 70,
+      "short_sell": true
+    },
+    "ORN": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "SAMTEL": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "SUSCO": {
+      "im_pct": 70,
+      "short_sell": true
+    },
+    "TKS": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "WORK": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "BBGI": {
+      "im_pct": 70,
+      "short_sell": true
+    },
+    "CPNCG": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "KSL": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "PLAT": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "SAUCE": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "SYMC": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "TPAC": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "BEYOND": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "CPW": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "MAGURO": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "PLUS": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "SECURE": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "TAN": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "TPCH": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "BGC": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "FUTURERT": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "MEDEZE": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "PM": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "SENA": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "TC": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "TPS": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "BKIH": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "GABLE": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "MENA": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "POPF": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "SGP": {
+      "im_pct": 70,
+      "short_sell": true
+    },
+    "TEAM": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "TRP": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "BLC": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "GFC": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "MFEC": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "PRI": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "SHR": {
+      "im_pct": 70,
+      "short_sell": true
+    },
+    "TEGH": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "TSTH": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "BRR": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "HENG": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "NETBAY": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "PSG": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "SINGER": {
+      "im_pct": 70,
+      "short_sell": true
+    },
+    "THCOM": {
+      "im_pct": 70,
+      "short_sell": true
+    },
+    "VGI": {
+      "im_pct": 70,
+      "short_sell": true
+    },
+    "BTC": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "HFT": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "NKT": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "PT": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "SITHAI": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "THREL": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "VIH": {
+      "im_pct": 70,
+      "short_sell": false
+    },
+    "AIE": {
+      "im_pct": 80,
+      "short_sell": true
+    },
+    "EASTW": {
+      "im_pct": 80,
+      "short_sell": true
+    },
+    "NAT": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "RAM": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "TNP": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "BKGI": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "HL": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "PCC": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "SEAFCO": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "TRT": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "BLAND": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "ILINK": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "PJW": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "SONIC": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "TWPC": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "BVG": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "M-CHAI": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "PREB": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "SUPER": {
+      "im_pct": 80,
+      "short_sell": true
+    },
+    "UBE": {
+      "im_pct": 80,
+      "short_sell": true
+    },
+    "CGH": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "MCS": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "PRINC": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "SVT": {
+      "im_pct": 80,
+      "short_sell": false
+    },
+    "UV": {
+      "im_pct": 80,
+      "short_sell": false
+    }
+  }
+}

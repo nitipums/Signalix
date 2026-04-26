@@ -397,6 +397,80 @@ def suite_sub_stage(base, secret):
     return fails
 
 
+def suite_margin(base, secret):
+    """Margin tier filter coverage (Krungsri's Marginable Securities List).
+
+    Confirms (a) `margin50/60/70/80` filters dispatch + return non-empty
+    cohorts, (b) every returned signal has the matching margin_im_pct,
+    (c) the umbrella `margin` filter returns the union of all four
+    tiers, (d) /test/signal/{sym} surfaces margin_im_pct, (e) at least
+    one well-known IM50 stock (KKP / ADVANC / PTT) is correctly
+    classified as IM50.
+    """
+    section("Margin tier filters")
+    fails = 0
+
+    # (a)+(b) Per-tier filters
+    for tier in (50, 60, 70, 80):
+        cmd = f"margin{tier}"
+        try:
+            q, _ = query(base, secret, cmd)
+            fails += check(f"{cmd}/dispatched", q.get("kind") == "list",
+                           f"kind={q.get('kind')}")
+            fails += check(f"{cmd}/non_empty", (q.get("count") or 0) > 0,
+                           f"count={q.get('count')} — margin list may not be loaded")
+            for r in (q.get("first_5") or []):
+                fails += check(f"{cmd}/{r.get('symbol')}/im_pct",
+                               r.get("margin_im_pct") == tier,
+                               f"got={r.get('margin_im_pct')} expected={tier}")
+        except Exception as e:
+            fails += check(cmd, False, f"err: {e}")
+
+    # (c) Umbrella `margin` filter
+    try:
+        q, _ = query(base, secret, "margin")
+        fails += check("margin/dispatched", q.get("kind") == "list",
+                       f"kind={q.get('kind')}")
+        fails += check("margin/non_empty", (q.get("count") or 0) > 0,
+                       f"count={q.get('count')}")
+        for r in (q.get("first_5") or []):
+            fails += check(f"margin/{r.get('symbol')}/has_tier",
+                           (r.get("margin_im_pct") or 0) in (50, 60, 70, 80),
+                           f"margin_im_pct={r.get('margin_im_pct')}")
+    except Exception as e:
+        fails += check("margin", False, f"err: {e}")
+
+    # (d) /test/signal exposes margin_im_pct
+    try:
+        url = f"{base}/test/signal/KKP"
+        sig, _ = fetch(url, headers={"x-scan-secret": secret})
+        cache = sig.get("cache") or sig.get("in_memory") or {}
+        fails += check("signal/has_margin_im_pct",
+                       "margin_im_pct" in cache,
+                       f"cache keys={list(cache.keys())}")
+        # KKP is in IM50 per Krungsri's list (large-cap bank)
+        fails += check("signal/KKP_im_pct=50",
+                       cache.get("margin_im_pct") == 50,
+                       f"got={cache.get('margin_im_pct')}")
+    except Exception as e:
+        fails += check("signal/margin_field", False, f"err: {e}")
+
+    # (e) Scoped: set100 margin50 should also work
+    try:
+        q, _ = query(base, secret, "set100 margin50")
+        fails += check("set100_margin50/dispatched",
+                       q.get("kind") == "list",
+                       f"kind={q.get('kind')}")
+        for r in (q.get("first_5") or []):
+            fails += check(f"set100_margin50/{r.get('symbol')}/im_pct",
+                           r.get("margin_im_pct") == 50,
+                           f"got={r.get('margin_im_pct')}")
+    except Exception as e:
+        fails += check("set100_margin50", False, f"err: {e}")
+
+    return fails
+
+
 def suite_index_scope(base, secret):
     """Per-index scoped commands shipped with the SET100/SET50 replication
     iteration: `set100 stage` / `set100 stages` / `set100 pivot` (and
@@ -1050,6 +1124,7 @@ def main():
     total_fails += suite_pivot(base, secret)
     total_fails += suite_persistence(base, secret)
     total_fails += suite_index_scope(base, secret)
+    total_fails += suite_margin(base, secret)
     total_fails += suite_index_breadth(base, secret)
     total_fails += suite_sector_drill(base, secret)
     total_fails += suite_sector_coverage(base, secret)
