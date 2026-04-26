@@ -2046,14 +2046,13 @@ def save_breadth_snapshot(breadth, signals: list, scan_type: str = "full",
     `breadth_snapshots` table. Enables time-series queries like
     'PIVOT_READY count over the last 30 days' that can't be answered
     from `signals/{symbol}` (Firestore overwrites latest only).
+
+    Called via `await loop.run_in_executor(...)` from /scan so it runs
+    synchronously (single-row insert, ~50ms) — fire-and-forget executor
+    queueing was unreliable on Cloud Run since the default ThreadPool
+    can starve newly-queued tasks when the instance scales down.
     """
-    logger.info("save_breadth_snapshot called: breadth=%s bq_client=%s signals_count=%d",
-                "obj" if breadth else "None",
-                "set" if _bq_client else "None",
-                len(signals or []))
     if _bq_client is None or breadth is None:
-        logger.warning("save_breadth_snapshot early-return: client=%s breadth=%s",
-                       bool(_bq_client), bool(breadth))
         return
     from collections import Counter
     sub_counts = Counter(getattr(s, "sub_stage", "") or "" for s in (signals or []))
