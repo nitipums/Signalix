@@ -813,108 +813,205 @@ def _small_kv(label: str, value: str) -> dict:
 
 
 def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> dict:
-    """Build a detailed Flex Bubble for a single stock query."""
-    pcolor = PATTERN_COLOR.get(signal.pattern, "#7F8C8D")
-    pattern_label = PATTERN_LABEL.get(signal.pattern, signal.pattern)
-    # Sub-stage is the primary classification (new finite state machine);
-    # falls back to STAGE_LABEL + weakening suffix for old Firestore docs
-    # without sub_stage. Recommendation text drives the user-facing
-    # "what to do" line below the price hero.
-    stage_label, _stage_color = _resolve_stage_label(signal)
+    """Detailed Flex Bubble for a single stock — redesigned to user spec:
+
+    Header (dark):
+      Row 1: SET:SYMBOL ............ ฿1.78  +1.14%   (price + chg together)
+      Row 2: 🌱 Stage 1 · Prep ............ Score 47/100
+      Row 3: 💡 Watchlist — pre-Stage-2 watch     (recommendation, wraps)
+      Row 4: ฿0.0M · 52W ฿1.49–฿2.10  (−15.2%)     (volume + 52W context)
+
+    Body:
+      • SMA rows — ticker only, no % delta column
+      • Pivot + Stop (when applicable) — replaces the duplicate
+        ATR-based 'Risk Management' section that used to render
+        Stop Loss + Target on top of these
+      • Margin tier (Krungsri)
+      • Captain Signal advice
+
+    Trimmed from previous design:
+      ✗ pattern badge in header (Consolidating tag — redundant with sub-stage)
+      ✗ "ราคา" body row (price now in header)
+      ✗ "Strength Score" body row (now in header)
+      ✗ "มูลค่าซื้อขาย" body row (volume now in header)
+      ✗ "ต่ำกว่า 52W High" body row (now in header)
+      ✗ "Risk Management (ATR-based)" section (Pivot + Stop above
+        already serve this purpose; ATR Stop/Target was redundant)
+      ✗ "Breakout (1 ปี)" row — noise, not actionable
+
+    All header text uses wrap=True so long sub-stage labels
+    ("Stage 1 · Prep (loading)") never truncate to "Stage 1 · Prep
+    (loadin..." like the user reported.
+    """
+    stage_label, stage_color = _resolve_stage_label(signal)
     sub_stage = getattr(signal, "sub_stage", "") or ""
     sub_stage_action = SUB_STAGE_ACTION.get(sub_stage, "") if sub_stage else ""
     chg_color = _pct_color(signal.change_pct)
     chg_sign = "+" if signal.change_pct > 0 else ""
 
-    ma_rows = []
-    if signal.sma50:
-        gap50 = (signal.close - signal.sma50) / signal.sma50 * 100
-        ma_rows.append(_detail_row("SMA50", f"฿{signal.sma50:,.2f}", f"{gap50:+.1f}%", _pct_color(gap50)))
-    if signal.sma150:
-        gap150 = (signal.close - signal.sma150) / signal.sma150 * 100
-        ma_rows.append(_detail_row("SMA150", f"฿{signal.sma150:,.2f}", f"{gap150:+.1f}%", _pct_color(gap150)))
-    if signal.sma200:
-        gap200 = (signal.close - signal.sma200) / signal.sma200 * 100
-        ma_rows.append(_detail_row("SMA200", f"฿{signal.sma200:,.2f}", f"{gap200:+.1f}%", _pct_color(gap200)))
-    # Pivot row — only renders for actionable sub-stages (PREP / EARLY /
-    # RUNNING / PULLBACK). Distance % shown next to pivot tells the user
-    # how far above/below the buy trigger they are right now.
-    pivot = getattr(signal, "pivot_price", 0.0) or 0.0
-    pstop = getattr(signal, "pivot_stop", 0.0) or 0.0
-    if pivot > 0:
-        gap_pivot = (signal.close - pivot) / pivot * 100
-        ma_rows.append(_detail_row("🎯 Pivot", f"฿{pivot:,.2f}",
-                                    f"{gap_pivot:+.1f}%", _pct_color(gap_pivot)))
-        if pstop > 0:
-            risk_pct = (pstop - signal.close) / signal.close * 100
-            ma_rows.append(_detail_row("⛔ Stop", f"฿{pstop:,.2f}",
-                                        f"{risk_pct:+.1f}%", "#E74C3C"))
+    # Score color tier
+    score = int(signal.strength_score or 0)
+    score_color = "#27AE60" if score >= 60 else "#F39C12" if score >= 40 else "#7F8C8D"
 
-    body_contents = [
+    # Pct from 52W high — already on signal
+    pct_high = getattr(signal, "pct_from_52w_high", 0.0) or 0.0
+    pct_high_color = "#27AE60" if pct_high >= -5 else "#E67E22" if pct_high >= -15 else "#7F8C8D"
+
+    # Trade value (฿M) compact
+    tvm = getattr(signal, "trade_value_m", 0.0) or 0.0
+    if tvm >= 1000:
+        tvm_text = f"฿{tvm/1000:.1f}B"
+    elif tvm >= 1:
+        tvm_text = f"฿{tvm:.1f}M"
+    else:
+        tvm_text = f"฿{tvm*1000:.0f}K"
+
+    # ── Header rows — price + chg together, score in header, no pattern ──
+    header_contents = [
+        # Row 1: ticker (left, big) + price+chg (right, big)
         {"type": "box", "layout": "horizontal", "contents": [
-            {"type": "text", "text": "ราคา", "size": "sm", "color": "#7F8C8D", "flex": 1},
-            {"type": "text", "text": f"฿{signal.close:,.2f}", "size": "sm", "weight": "bold", "align": "end"},
+            {"type": "text", "text": f"SET:{signal.symbol}",
+             "weight": "bold", "size": "xl", "color": "#FFFFFF",
+             "flex": 5, "wrap": True},
+            {"type": "text", "text": f"฿{signal.close:,.2f}",
+             "size": "md", "color": "#FFFFFF", "weight": "bold",
+             "flex": 4, "align": "end"},
         ]},
+        # Row 1b: change% on its own line beneath price (color-coded big)
         {"type": "box", "layout": "horizontal", "contents": [
-            {"type": "text", "text": "Volume Ratio", "size": "sm", "color": "#7F8C8D", "flex": 1},
-            {"type": "text", "text": f"{signal.volume_ratio:.2f}x", "size": "sm", "weight": "bold", "align": "end",
-             "color": "#F39C12" if signal.volume_ratio >= 1.5 else "#FFFFFF"},
+            {"type": "filler"},
+            {"type": "text",
+             "text": f"{chg_sign}{signal.change_pct:.2f}%",
+             "size": "md", "color": chg_color, "weight": "bold",
+             "align": "end"},
         ]},
-        {"type": "box", "layout": "horizontal", "contents": [
-            {"type": "text", "text": "52W High/Low", "size": "sm", "color": "#7F8C8D", "flex": 1},
-            {"type": "text", "text": f"฿{signal.high_52w:,.2f} / ฿{signal.low_52w:,.2f}", "size": "sm", "align": "end"},
-        ]},
-        {"type": "separator"},
-        *ma_rows,
-        {"type": "separator"},
-        {"type": "box", "layout": "horizontal", "contents": [
-            {"type": "text", "text": "Strength Score", "size": "sm", "color": "#7F8C8D", "flex": 1},
-            {"type": "text", "text": f"{int(signal.strength_score)}/100", "size": "sm", "weight": "bold", "color": "#F39C12", "align": "end"},
+        # Row 2: sub-stage label (left, wraps) + score (right)
+        {"type": "box", "layout": "horizontal",
+         "spacing": "sm", "margin": "sm",
+         "contents": [
+            {"type": "text", "text": stage_label,
+             "size": "xs", "color": stage_color, "weight": "bold",
+             "flex": 5, "wrap": True},
+            {"type": "text", "text": f"Score {score}/100",
+             "size": "xs", "color": score_color, "weight": "bold",
+             "flex": 3, "align": "end"},
         ]},
     ]
+    # Row 3: recommendation (full width, wraps so long actions don't truncate)
+    if sub_stage_action:
+        header_contents.append({
+            "type": "text", "text": f"💡 {sub_stage_action}",
+            "size": "xxs", "color": "#FFD54F", "wrap": True, "margin": "xs",
+        })
+    # Row 4: trade value + 52W range + pct-from-high — context line
+    header_contents.append({
+        "type": "box", "layout": "horizontal", "margin": "sm",
+        "contents": [
+            {"type": "text",
+             "text": f"Vol {tvm_text} · 52W ฿{signal.low_52w:,.2f}–฿{signal.high_52w:,.2f}",
+             "size": "xxs", "color": "#9E9E9E", "flex": 7, "wrap": True},
+            {"type": "text", "text": f"{pct_high:+.1f}%",
+             "size": "xxs", "color": pct_high_color, "weight": "bold",
+             "flex": 2, "align": "end"},
+        ],
+    })
 
-    if getattr(signal, "trade_value_m", 0) > 0:
-        body_contents.append({"type": "box", "layout": "horizontal", "contents": [
-            {"type": "text", "text": "มูลค่าซื้อขาย", "size": "sm", "color": "#7F8C8D", "flex": 1},
-            {"type": "text", "text": f"฿{signal.trade_value_m:.1f}M", "size": "sm", "weight": "bold", "align": "end"},
-        ]})
+    # ── Body — SMA list (no % delta) + Pivot/Stop + Margin ──
+    body_contents: list = []
 
-    if getattr(signal, "pct_from_52w_high", 0) != 0:
-        body_contents.append({"type": "box", "layout": "horizontal", "contents": [
-            {"type": "text", "text": "ต่ำกว่า 52W High", "size": "sm", "color": "#7F8C8D", "flex": 1},
-            {"type": "text", "text": f"{signal.pct_from_52w_high:.1f}%", "size": "sm", "weight": "bold", "align": "end",
-             "color": "#27AE60" if signal.pct_from_52w_high >= -5 else "#E67E22"},
-        ]})
+    # SMAs — ticker-only, two-column rows so labels can't truncate
+    sma_rows: list = []
+    for label, val in [("SMA50", signal.sma50), ("SMA150", signal.sma150),
+                       ("SMA200", signal.sma200)]:
+        if val:
+            sma_rows.append({
+                "type": "box", "layout": "horizontal",
+                "contents": [
+                    {"type": "text", "text": label, "size": "sm",
+                     "color": "#7F8C8D", "flex": 3},
+                    {"type": "text", "text": f"฿{val:,.2f}",
+                     "size": "sm", "weight": "bold", "align": "end",
+                     "color": "#FFFFFF", "flex": 4},
+                ],
+            })
+    if sma_rows:
+        body_contents.append({
+            "type": "text", "text": "Moving Averages",
+            "size": "xxs", "color": "#7F8C8D", "weight": "bold",
+        })
+        body_contents.extend(sma_rows)
 
-    if getattr(signal, "stop_loss", 0) > 0:
-        body_contents += [
-            {"type": "separator"},
-            {"type": "text", "text": "⚖️ Risk Management (ATR-based)", "size": "xxs", "color": "#F39C12", "weight": "bold"},
-            _detail_row("Stop Loss", f"฿{signal.stop_loss:,.2f}",
-                        f"-{(signal.close - signal.stop_loss) / signal.close * 100:.1f}%", "#E74C3C"),
-            _detail_row("Target (2:1)", f"฿{signal.target_price:,.2f}",
-                        f"+{(signal.target_price - signal.close) / signal.close * 100:.1f}%", "#27AE60"),
-        ]
-        # Margin tier — Krungsri's Marginable Securities List. Lower IM%
-        # = more leverage; absent symbols are non-marginable (100% cash).
-        _mim = getattr(signal, "margin_im_pct", 0) or 0
-        if _mim:
-            _lev = 100.0 / _mim if _mim > 0 else 1.0
-            body_contents.append(
-                _detail_row("Margin", f"IM{_mim}%",
-                            f"{_lev:.2f}× leverage",
-                            "#1ABC9C" if _mim <= 60 else "#F39C12")
-            )
-        else:
-            body_contents.append(
-                _detail_row("Margin", "Non-marginable", "100% cash", "#7F8C8D")
-            )
+    # Pivot + Stop — only when actionable. Replaces the redundant
+    # ATR Risk-Management section (same data, single source of truth).
+    pivot = getattr(signal, "pivot_price", 0.0) or 0.0
+    pstop = getattr(signal, "pivot_stop", 0.0) or 0.0
+    trade_rows: list = []
+    if pivot > 0:
+        gap_pivot = (signal.close - pivot) / pivot * 100
+        gap_color = "#27AE60" if gap_pivot >= 0 else \
+                    "#F39C12" if gap_pivot > -5 else "#7F8C8D"
+        trade_rows.append({
+            "type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": "🎯 Pivot", "size": "sm",
+                 "color": "#7F8C8D", "flex": 3},
+                {"type": "text", "text": f"฿{pivot:,.2f}",
+                 "size": "sm", "weight": "bold", "color": "#FFFFFF",
+                 "flex": 3, "align": "end"},
+                {"type": "text", "text": f"{gap_pivot:+.1f}%",
+                 "size": "xs", "color": gap_color, "weight": "bold",
+                 "flex": 2, "align": "end"},
+            ],
+        })
+        if pstop > 0:
+            risk_pct = (pstop - signal.close) / signal.close * 100
+            trade_rows.append({
+                "type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text", "text": "⛔ Stop", "size": "sm",
+                     "color": "#7F8C8D", "flex": 3},
+                    {"type": "text", "text": f"฿{pstop:,.2f}",
+                     "size": "sm", "weight": "bold", "color": "#FFFFFF",
+                     "flex": 3, "align": "end"},
+                    {"type": "text", "text": f"{risk_pct:+.1f}%",
+                     "size": "xs", "color": "#E74C3C", "weight": "bold",
+                     "flex": 2, "align": "end"},
+                ],
+            })
+    if trade_rows:
+        body_contents.append({"type": "separator", "margin": "sm"})
+        body_contents.append({
+            "type": "text", "text": "Trade Levels",
+            "size": "xxs", "color": "#F39C12", "weight": "bold",
+        })
+        body_contents.extend(trade_rows)
 
-    if getattr(signal, "breakout_count_1y", 0) > 0:
-        body_contents.append({"type": "box", "layout": "horizontal", "contents": [
-            {"type": "text", "text": "Breakout (1 ปี)", "size": "sm", "color": "#7F8C8D", "flex": 1},
-            {"type": "text", "text": f"{signal.breakout_count_1y} ครั้ง", "size": "sm", "weight": "bold", "color": "#2980B9", "align": "end"},
-        ]})
+    # Margin tier — single row, full label so user sees leverage at a glance
+    _mim = getattr(signal, "margin_im_pct", 0) or 0
+    body_contents.append({"type": "separator", "margin": "sm"})
+    if _mim:
+        _lev = 100.0 / _mim
+        m_color = "#1ABC9C" if _mim <= 60 else "#F39C12"
+        body_contents.append({
+            "type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": "💰 Margin", "size": "sm",
+                 "color": "#7F8C8D", "flex": 3},
+                {"type": "text", "text": f"IM{_mim}%",
+                 "size": "sm", "weight": "bold", "color": m_color,
+                 "flex": 2, "align": "end"},
+                {"type": "text", "text": f"{_lev:.2f}× lev",
+                 "size": "xs", "color": m_color, "weight": "bold",
+                 "flex": 3, "align": "end"},
+            ],
+        })
+    else:
+        body_contents.append({
+            "type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": "💰 Margin", "size": "sm",
+                 "color": "#7F8C8D", "flex": 3},
+                {"type": "text", "text": "Non-marginable",
+                 "size": "sm", "weight": "bold", "color": "#7F8C8D",
+                 "flex": 5, "align": "end", "wrap": True},
+            ],
+        })
 
     # Captain Signal advice
     advice = _captain_stock_advice(signal)
@@ -955,31 +1052,14 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
             "type": "box",
             "layout": "vertical",
             "action": {"type": "uri", "uri": signal.tradingview_url} if signal.tradingview_url else None,
-            "contents": [
-                {"type": "box", "layout": "horizontal", "contents": [
-                    {"type": "text", "text": f"SET:{signal.symbol}", "weight": "bold", "size": "xl", "color": "#FFFFFF", "flex": 1},
-                    {"type": "text", "text": f"{chg_sign}{signal.change_pct:.2f}%", "size": "md", "color": chg_color, "align": "end", "weight": "bold"},
-                ]},
-                {"type": "box", "layout": "horizontal", "contents": [
-                    {"type": "text", "text": stage_label, "size": "xs", "color": _stage_color, "flex": 1, "weight": "bold"},
-                    {"type": "text", "text": pattern_label, "size": "xs", "color": pcolor, "weight": "bold", "align": "end"},
-                ]},
-                # Sub-stage recommendation row — prescriptive "what to do".
-                # Only renders when sub_stage is set (skip for legacy docs).
-                *(
-                    [{"type": "text", "text": f"💡 {sub_stage_action}",
-                      "size": "xxs", "color": "#FFD54F", "wrap": True,
-                      "margin": "xs"}]
-                    if sub_stage_action else []
-                ),
-            ],
+            "contents": header_contents,
             "backgroundColor": "#0D0D1A",
             "paddingAll": "16px",
         },
         "body": {
             "type": "box",
             "layout": "vertical",
-            "spacing": "md",
+            "spacing": "sm",
             "contents": body_contents,
             "paddingAll": "16px",
         },
