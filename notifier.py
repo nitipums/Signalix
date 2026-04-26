@@ -813,39 +813,52 @@ def _small_kv(label: str, value: str) -> dict:
 
 
 def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> dict:
-    """Detailed Flex Bubble for a single stock — redesigned to user spec:
+    """Detailed Flex Bubble for a single stock — minimalist redesign:
 
-    Header (dark):
-      Row 1: SET:SYMBOL ............ ฿1.78  +1.14%   (price + chg together)
-      Row 2: 🌱 Stage 1 · Prep ............ Score 47/100
-      Row 3: 💡 Watchlist — pre-Stage-2 watch     (recommendation, wraps)
-      Row 4: ฿0.0M · 52W ฿1.49–฿2.10  (−15.2%)     (volume + 52W context)
+    Header (dark, ultra-compact):
+      SET:SYMBOL ........................ Score 67/100
 
-    Body:
-      • SMA rows — ticker only, no % delta column
-      • Pivot + Stop (when applicable) — replaces the duplicate
-        ATR-based 'Risk Management' section that used to render
-        Stop Loss + Target on top of these
-      • Margin tier (Krungsri)
-      • Captain Signal advice
+    Body Section 1 (price hero + context):
+      ฿1.78  +1.14%
+      Stage 2 · Markup                            (no parenthetical)
+      Vol ฿0M · 52W ฿1.49–฿2.10              −15.2%
 
-    Trimmed from previous design:
-      ✗ pattern badge in header (Consolidating tag — redundant with sub-stage)
-      ✗ "ราคา" body row (price now in header)
-      ✗ "Strength Score" body row (now in header)
-      ✗ "มูลค่าซื้อขาย" body row (volume now in header)
-      ✗ "ต่ำกว่า 52W High" body row (now in header)
-      ✗ "Risk Management (ATR-based)" section (Pivot + Stop above
-        already serve this purpose; ATR Stop/Target was redundant)
-      ✗ "Breakout (1 ปี)" row — noise, not actionable
+    Body Section 2 (Trade Levels — when actionable):
+      🎯 Pivot      ฿1.82       −2.2%
+      ⛔ Stop       ฿1.74       −2.2%
 
-    All header text uses wrap=True so long sub-stage labels
-    ("Stage 1 · Prep (loading)") never truncate to "Stage 1 · Prep
-    (loadin..." like the user reported.
+    Body Section 3 (Margin):
+      💰 Margin    IM50%   2.00× lev   /   Non-marginable
+
+    Body Section 4: Captain Signal advice
+
+    Trimmed from previous redesign (per user feedback):
+      ✗ Sub-stage parenthetical — "(running)" / "(kickoff)" / "(loading)" /
+        "(warning)" / etc. removed from displayed label. Just "Stage 2 ·
+        Markup" instead of "Stage 2 · Markup (running)".
+      ✗ Recommendation row "💡 ✅ HOLD — let profits run" — gone.
+        Sub-stage label alone communicates classification; verbose action
+        text was redundant noise.
+      ✗ Moving Averages section + 3 SMA rows — gone. Pivot/Stop carry
+        the trade-level info; full SMA values are available in the
+        scanner output / TradingView for users who need them.
+
+    Trimmed from prior redesigns (kept removed):
+      ✗ Pattern badge ("Consolidating" tag) in header
+      ✗ "Risk Management (ATR-based)" Stop Loss + Target section
+      ✗ "Breakout (1 ปี)" row
+      ✗ Body rows: ราคา / Volume Ratio / 52W High/Low / Strength Score
+        / มูลค่าซื้อขาย / ต่ำกว่า 52W High (all moved into header or
+        body section 1 hero block).
     """
-    stage_label, stage_color = _resolve_stage_label(signal)
-    sub_stage = getattr(signal, "sub_stage", "") or ""
-    sub_stage_action = SUB_STAGE_ACTION.get(sub_stage, "") if sub_stage else ""
+    stage_label_full, stage_color = _resolve_stage_label(signal)
+    # Strip the parenthetical "(running)" / "(loading)" / etc. so the
+    # displayed label is just "Stage 2 · Markup". Keeps the gold star
+    # variants like "Stage 2 · Pivot Ready ✨" intact (no parenthetical
+    # to strip).
+    paren_idx = stage_label_full.find(" (")
+    stage_label = stage_label_full[:paren_idx] if paren_idx > 0 else stage_label_full
+
     chg_color = _pct_color(signal.change_pct)
     chg_sign = "+" if signal.change_pct > 0 else ""
 
@@ -857,7 +870,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
     pct_high = getattr(signal, "pct_from_52w_high", 0.0) or 0.0
     pct_high_color = "#27AE60" if pct_high >= -5 else "#E67E22" if pct_high >= -15 else "#7F8C8D"
 
-    # Trade value (฿M) compact
+    # Trade value (฿M) compact format
     tvm = getattr(signal, "trade_value_m", 0.0) or 0.0
     if tvm >= 1000:
         tvm_text = f"฿{tvm/1000:.1f}B"
@@ -866,83 +879,46 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
     else:
         tvm_text = f"฿{tvm*1000:.0f}K"
 
-    # ── Header rows — price + chg together, score in header, no pattern ──
+    # ── Header — JUST ticker + score (per user spec) ──
     header_contents = [
-        # Row 1: ticker (left, big) + price+chg (right, big)
         {"type": "box", "layout": "horizontal", "contents": [
             {"type": "text", "text": f"SET:{signal.symbol}",
              "weight": "bold", "size": "xl", "color": "#FFFFFF",
              "flex": 5, "wrap": True},
-            {"type": "text", "text": f"฿{signal.close:,.2f}",
-             "size": "md", "color": "#FFFFFF", "weight": "bold",
+            {"type": "text", "text": f"Score {score}/100",
+             "size": "sm", "color": score_color, "weight": "bold",
              "flex": 4, "align": "end"},
         ]},
-        # Row 1b: change% on its own line beneath price (color-coded big)
-        {"type": "box", "layout": "horizontal", "contents": [
-            {"type": "filler"},
-            {"type": "text",
-             "text": f"{chg_sign}{signal.change_pct:.2f}%",
-             "size": "md", "color": chg_color, "weight": "bold",
-             "align": "end"},
-        ]},
-        # Row 2: sub-stage label (left, wraps) + score (right)
-        {"type": "box", "layout": "horizontal",
-         "spacing": "sm", "margin": "sm",
-         "contents": [
-            {"type": "text", "text": stage_label,
-             "size": "xs", "color": stage_color, "weight": "bold",
-             "flex": 5, "wrap": True},
-            {"type": "text", "text": f"Score {score}/100",
-             "size": "xs", "color": score_color, "weight": "bold",
-             "flex": 3, "align": "end"},
-        ]},
     ]
-    # Row 3: recommendation (full width, wraps so long actions don't truncate)
-    if sub_stage_action:
-        header_contents.append({
-            "type": "text", "text": f"💡 {sub_stage_action}",
-            "size": "xxs", "color": "#FFD54F", "wrap": True, "margin": "xs",
-        })
-    # Row 4: trade value + 52W range + pct-from-high — context line
-    header_contents.append({
-        "type": "box", "layout": "horizontal", "margin": "sm",
-        "contents": [
+
+    # ── Body Section 1: Price hero + sub-stage + context ──
+    body_contents: list = [
+        # Big price + change% on one row
+        {"type": "box", "layout": "baseline", "contents": [
+            {"type": "text", "text": f"฿{signal.close:,.2f}",
+             "weight": "bold", "size": "xxl", "color": "#FFFFFF",
+             "flex": 5},
+            {"type": "text", "text": f"{chg_sign}{signal.change_pct:.2f}%",
+             "weight": "bold", "size": "lg", "color": chg_color,
+             "flex": 4, "align": "end"},
+        ]},
+        # Sub-stage (no parenthetical)
+        {"type": "text", "text": stage_label,
+         "size": "sm", "color": stage_color, "weight": "bold",
+         "wrap": True, "margin": "xs"},
+        # Volume + 52W range + pct-from-high context line
+        {"type": "box", "layout": "horizontal", "margin": "sm",
+         "contents": [
             {"type": "text",
              "text": f"Vol {tvm_text} · 52W ฿{signal.low_52w:,.2f}–฿{signal.high_52w:,.2f}",
              "size": "xxs", "color": "#9E9E9E", "flex": 7, "wrap": True},
             {"type": "text", "text": f"{pct_high:+.1f}%",
              "size": "xxs", "color": pct_high_color, "weight": "bold",
              "flex": 2, "align": "end"},
-        ],
-    })
+        ]},
+    ]
 
-    # ── Body — SMA list (no % delta) + Pivot/Stop + Margin ──
-    body_contents: list = []
-
-    # SMAs — ticker-only, two-column rows so labels can't truncate
-    sma_rows: list = []
-    for label, val in [("SMA50", signal.sma50), ("SMA150", signal.sma150),
-                       ("SMA200", signal.sma200)]:
-        if val:
-            sma_rows.append({
-                "type": "box", "layout": "horizontal",
-                "contents": [
-                    {"type": "text", "text": label, "size": "sm",
-                     "color": "#7F8C8D", "flex": 3},
-                    {"type": "text", "text": f"฿{val:,.2f}",
-                     "size": "sm", "weight": "bold", "align": "end",
-                     "color": "#FFFFFF", "flex": 4},
-                ],
-            })
-    if sma_rows:
-        body_contents.append({
-            "type": "text", "text": "Moving Averages",
-            "size": "xxs", "color": "#7F8C8D", "weight": "bold",
-        })
-        body_contents.extend(sma_rows)
-
-    # Pivot + Stop — only when actionable. Replaces the redundant
-    # ATR Risk-Management section (same data, single source of truth).
+    # ── Body Section 2: Pivot + Stop (only when actionable) ──
     pivot = getattr(signal, "pivot_price", 0.0) or 0.0
     pstop = getattr(signal, "pivot_stop", 0.0) or 0.0
     trade_rows: list = []
@@ -977,16 +953,16 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                 ],
             })
     if trade_rows:
-        body_contents.append({"type": "separator", "margin": "sm"})
+        body_contents.append({"type": "separator", "margin": "md"})
         body_contents.append({
             "type": "text", "text": "Trade Levels",
             "size": "xxs", "color": "#F39C12", "weight": "bold",
         })
         body_contents.extend(trade_rows)
 
-    # Margin tier — single row, full label so user sees leverage at a glance
+    # ── Body Section 3: Margin tier ──
     _mim = getattr(signal, "margin_im_pct", 0) or 0
-    body_contents.append({"type": "separator", "margin": "sm"})
+    body_contents.append({"type": "separator", "margin": "md"})
     if _mim:
         _lev = 100.0 / _mim
         m_color = "#1ABC9C" if _mim <= 60 else "#F39C12"
@@ -1013,7 +989,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
             ],
         })
 
-    # Captain Signal advice
+    # ── Body Section 4: Captain Signal advice ──
     advice = _captain_stock_advice(signal)
     if advice:
         body_contents.append(_captain_advice_box(advice))
