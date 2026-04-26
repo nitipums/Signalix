@@ -421,16 +421,18 @@ expect("pullback fixture: stop > 0", stop_pb > 0, True,
        f"stop={stop_pb:.2f}")
 expect("pullback fixture: stop < pivot", stop_pb < pivot_pb, True,
        f"stop={stop_pb:.2f} pivot={pivot_pb:.2f}")
-# PIVOT_READY uses TIGHT 5-bar window (matches the tightness range
-# that classify_sub_stage uses to admit the stock). Other actionable
-# sub-stages (PREP/IGNITION/CONTRACTION/MARKUP) keep the wider 15/10.
-expect("pullback fixture: pivot is recent 5-bar high (PIVOT_READY tight pivot)",
-       pivot_pb, float(df_pb["High"].iloc[-5:].max()))
-expect("pullback fixture: stop is recent 5-bar low (PIVOT_READY tight stop)",
-       stop_pb, float(df_pb["Low"].iloc[-5:].min()))
+# PIVOT_READY / IGNITION / PREP all use the LAST-RUN-HIGH 30-bar pivot
+# (catches pre-pullback swing peaks 25-40 bars back) + 10-bar pullback
+# floor stop. RBF/ONEE-class shapes — fixed to surface the visual
+# breakout level rather than the inside-consolidation top.
+# CONTRACTION / MARKUP keep the prior 15-bar pivot for now.
+expect("pullback fixture: pivot is 60-bar last-run high (PIVOT_READY)",
+       pivot_pb, float(df_pb["High"].iloc[-min(60, len(df_pb)):].max()))
+expect("pullback fixture: stop is 10-bar pullback floor (PIVOT_READY)",
+       stop_pb, float(df_pb["Low"].iloc[-10:].min()))
 
-# Sanity: a non-PIVOT_READY actionable state should still get the
-# wider 15-bar pivot. Use the strong-uptrend fixture (STAGE_2_MARKUP).
+# Sanity: a non-priority actionable state (MARKUP) keeps the prior
+# 15-bar high / 10-bar low math.
 from analyzer import compute_pivot as _cp
 pivot_run, stop_run = _cp(df_run, SUB_STAGE_2_MARKUP)
 expect("strong-uptrend fixture: pivot is 15-bar high (MARKUP wider pivot)",

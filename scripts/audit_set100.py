@@ -134,6 +134,17 @@ def audit_one(sym: str, df: pd.DataFrame) -> tuple[int, str, list[Flag]]:
         if tight >= 0.07:
             F("pivot_ready_but_not_tight", "warn",
               f"5bar_tightness={tight:.3f} >= 0.07")
+        # Pivot must sit ABOVE current close (it's the breakout
+        # trigger). If pivot ≤ close, the stock has already broken
+        # out and shouldn't be PIVOT_READY anymore. Catches the
+        # regression class where the prior 5-bar pivot pinned the
+        # trigger inside the current consolidation, often AT or
+        # below the latest close.
+        from analyzer import compute_pivot
+        pp, _ = compute_pivot(df, s)
+        if pp > 0 and pp < c * 1.001:
+            F("pivot_ready_but_pivot_at_or_below_close", "block",
+              f"pivot={pp:.2f} c={c:.2f} — already broken out")
 
     # IGNITION definition: recent kick (cross within 20 bars OR new
     # 52W high OR price leads all 3 MAs). Sanity: should have positive

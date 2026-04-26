@@ -236,6 +236,28 @@ def _vol_dry_up_strict(df: pd.DataFrame, window: int = 50, threshold: float = 0.
     return today_vol < avg_vol * threshold
 
 
+def _last_run_high(df: pd.DataFrame, lookback: int = 60) -> float:
+    """Highest high over the last `lookback` bars.
+
+    For stocks in PIVOT_READY / IGNITION / PREP sub-stages this is by
+    construction the swing peak of the most recent advance: those
+    stages imply a recent leg up followed by either a base or a
+    pullback, so the max-high in a wide-enough lookback window
+    catches the pre-pullback peak — the level a trader actually
+    watches as the breakout trigger.
+
+    A 5-bar window (the previous PIVOT_READY pivot) sat at the top of
+    the latest tight zone, missing swing highs 25-40 bars back. The
+    initial fix (30-bar) caught RBF (peak 14 bars back) but missed
+    ONEE whose peak ฿3.06 landed ~35 bars back. 60 bars (~3 months)
+    covers the typical multi-month post-breakout consolidation.
+    """
+    n = min(lookback, len(df))
+    if n <= 0:
+        return 0.0
+    return float(df["High"].iloc[-n:].max())
+
+
 def _oscillates_around(close: pd.Series, sma: pd.Series, n: int = 20) -> bool:
     """True if Close has crossed `sma` BOTH directions in the last n bars
     (i.e. is sloshing around the line, not trending). Drives STAGE_1_BASE."""
@@ -525,37 +547,38 @@ _PIVOT_SUB_STAGES: frozenset = frozenset({
 def compute_pivot(df: pd.DataFrame, sub_stage: str) -> tuple[float, float]:
     """Return (pivot_price, pivot_stop) for actionable sub-stages.
 
-    PIVOT_READY uses a TIGHT 5-bar window aligned with the same
-    tightness range that classify_sub_stage uses to admit the stock
-    (`_price_tightness_5bar` < 7%). The result is a precise breakout
-    trigger that sits at the very top of the contraction — exactly
-    where a Minervini/VCP entry would fire. Stop = 5-bar low (the
-    bottom of the same contraction; a break below invalidates the
-    setup immediately).
+    PIVOT_READY / IGNITION / PREP (and their legacy aliases) anchor
+    the pivot on the last-run swing high: highest high over the last
+    30 bars. Catches the pre-pullback peak that a trader actually
+    watches as the breakout trigger — the level above which the next
+    leg of the advance is confirmed. Stop is the 10-bar pullback
+    floor (lowest low in last 10 bars); gives the consolidation room
+    to wiggle without invalidating the setup.
 
-    Other actionable sub-stages (PREP / IGNITION / CONTRACTION /
-    MARKUP) get the wider 15-bar high / 10-bar low pivot — generic
-    local resistance, since these states aren't in a tight
-    contraction yet. Pivot is still the breakout trigger; stop is
-    where short-term momentum invalidation lives.
+    Earlier iteration used a 5-bar window for PIVOT_READY (top of the
+    latest tight zone). It was too tight: stocks like RBF / ONEE had
+    swing highs 25-40 bars back, so the 5-bar pivot sat ~฿0.30 below
+    the actual breakout level. The 30-bar window aligns with the user's
+    stated intent ("highest from the last run, 30 days should cover").
+
+    CONTRACTION / MARKUP / legacy RUNNING keep the prior 15-bar / 10-bar
+    formula for now — they'll fold into the same math once the priority
+    three states are validated visually.
 
     Returns (0.0, 0.0) for sub-stages outside the actionable set so
-    cards / filter command know to skip those stocks.
+    cards / filter commands know to skip those stocks.
     """
     if sub_stage not in _PIVOT_SUB_STAGES or len(df) < 15:
         return 0.0, 0.0
-    # PIVOT_READY: 5-bar tight pivot (matches classify_sub_stage's
-    # tightness window). Both new constant + legacy alias get the
-    # tighter formula so old Firestore docs from before the 2-layer
-    # refactor land in a sensible range.
-    if sub_stage in (SUB_STAGE_2_PIVOT_READY, SUB_STAGE_2_PULLBACK):
-        if len(df) < 5:
-            return 0.0, 0.0
-        pivot = float(df["High"].iloc[-5:].max())
-        stop  = float(df["Low"].iloc[-5:].min())
+    if sub_stage in (
+        SUB_STAGE_2_PIVOT_READY, SUB_STAGE_2_PULLBACK,  # new + legacy
+        SUB_STAGE_2_IGNITION,    SUB_STAGE_2_EARLY,     # new + legacy
+        SUB_STAGE_1_PREP,
+    ):
+        pivot = _last_run_high(df, lookback=60)
+        stop  = float(df["Low"].iloc[-10:].min())
         return pivot, stop
-    # Other actionable states: generic 15-bar local resistance pivot
-    # with 10-bar setup-floor stop.
+    # CONTRACTION / MARKUP / legacy RUNNING — unchanged for now.
     pivot = float(df["High"].iloc[-15:].max())
     stop  = float(df["Low"].iloc[-10:].min())
     return pivot, stop
