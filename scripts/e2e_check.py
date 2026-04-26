@@ -479,7 +479,11 @@ def suite_index_scope(base, secret):
     """
     section("Per-index scoped commands (SET100 + SET50)")
     fails = 0
-    for index_lower, index_upper in (("set100", "SET100"), ("set50", "SET50")):
+    for index_lower, index_upper in (
+            ("set100", "SET100"),
+            ("set50", "SET50"),
+            ("marginable", "MARGINABLE"),  # 321 Krungsri marginable stocks
+    ):
         # `<index> stage` → picker (kind=static, handler=index_stage_picker)
         try:
             q, _ = query(base, secret, f"{index_lower} stage")
