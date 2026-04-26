@@ -31,9 +31,10 @@ import pandas as pd  # noqa: E402
 import yfinance as yf  # noqa: E402
 
 from analyzer import (  # noqa: E402
-    classify_stage, classify_sub_stage, compute_pivot,
+    classify_stage, classify_sub_stage, compute_pivot, compute_targets,
     _last_run_high,
     SUB_STAGE_2_PIVOT_READY, SUB_STAGE_2_IGNITION, SUB_STAGE_1_PREP,
+    SUB_STAGE_2_CONTRACTION, SUB_STAGE_2_MARKUP,
 )
 
 
@@ -41,6 +42,8 @@ PRIORITY_SUB_STAGES = {
     SUB_STAGE_2_PIVOT_READY,
     SUB_STAGE_2_IGNITION,
     SUB_STAGE_1_PREP,
+    SUB_STAGE_2_CONTRACTION,
+    SUB_STAGE_2_MARKUP,
 }
 
 
@@ -126,17 +129,16 @@ def main():
 
         close_now  = float(df["Close"].iloc[-1])
         high_52w   = float(df["High"].iloc[-min(252, len(df)):].max())
+        low_52w    = float(df["Low"].iloc[-min(252, len(df)):].min())
         old_pivot  = _old_pivot(df, sub)
         new_pivot, new_stop = compute_pivot(df, sub)
+        t1, t1618  = compute_targets(new_pivot, new_stop, low_52w)
         bars_back  = _bars_since(df, new_pivot)
 
         gap_high   = (new_pivot / high_52w - 1) * 100 if high_52w else 0.0
         gap_close  = (new_pivot / close_now - 1) * 100 if close_now else 0.0
         risk_pct   = (new_stop - close_now) / close_now * 100 if close_now else 0.0
-        # Reward = pivot - close, Risk = close - stop. R/R = reward / risk.
-        reward     = new_pivot - close_now
-        risk       = close_now - new_stop
-        rr         = (reward / risk) if risk > 0 else 0.0
+        upside     = (t1618 / close_now - 1) * 100 if close_now and t1618 else 0.0
 
         rows.append({
             "sym": sym, "sub": sub.replace("STAGE_", "S"),
@@ -144,7 +146,8 @@ def main():
             "old": old_pivot, "new": new_pivot,
             "bars_back": bars_back,
             "gap_close": gap_close, "gap_hi": gap_high,
-            "stop": new_stop, "risk_pct": risk_pct, "rr": rr,
+            "stop": new_stop, "risk_pct": risk_pct,
+            "t1618": t1618, "upside": upside,
         })
 
         if i % 50 == 0:
@@ -158,18 +161,18 @@ def main():
     rows.sort(key=lambda r: (r["sub"], -r["new"]))
 
     # ── Table ────────────────────────────────────────────────────────────
-    print("\n" + "=" * 110)
+    print("\n" + "=" * 115)
     print(f"{'SYM':<7}{'SubStage':<18}{'Close':>8}{'52WHi':>8}"
-          f"{'OldPiv':>9}{'NewPiv':>9}{'Δ%vsHi':>9}{'Δ%vsC':>9}"
-          f"{'Bars':>6}{'Stop':>8}{'Risk%':>8}{'R/R':>7}")
-    print("=" * 110)
+          f"{'Pivot':>8}{'Δ%vsC':>8}{'Bars':>6}{'Stop':>8}{'Risk%':>7}"
+          f"{'T1.618':>10}{'Upside':>9}")
+    print("=" * 115)
     for r in rows:
         print(f"{r['sym']:<7}{r['sub']:<18}"
               f"{r['close']:>8.2f}{r['hi52']:>8.2f}"
-              f"{r['old']:>9.2f}{r['new']:>9.2f}"
-              f"{r['gap_hi']:>+8.1f}%{r['gap_close']:>+8.1f}%"
+              f"{r['new']:>8.2f}{r['gap_close']:>+7.1f}%"
               f"{r['bars_back']:>6d}{r['stop']:>8.2f}"
-              f"{r['risk_pct']:>+7.1f}%{r['rr']:>7.2f}")
+              f"{r['risk_pct']:>+6.1f}%"
+              f"{r['t1618']:>10.2f}{r['upside']:>+8.1f}%")
 
     # ── Sanity gates ────────────────────────────────────────────────────
     print("\n" + "=" * 110)

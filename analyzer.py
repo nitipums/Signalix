@@ -582,11 +582,20 @@ def compute_pivot(df: pd.DataFrame, sub_stage: str) -> tuple[float, float]:
         SUB_STAGE_1_PREP,
     ):
         pivot = _last_run_high(df, lookback=60)
-        stop  = float(df["Low"].iloc[-10:].min())
-        return pivot, stop
-    # CONTRACTION / MARKUP / legacy RUNNING — unchanged for now.
-    pivot = float(df["High"].iloc[-15:].max())
-    stop  = float(df["Low"].iloc[-10:].min())
+    else:
+        # CONTRACTION / MARKUP / legacy RUNNING.
+        pivot = float(df["High"].iloc[-15:].max())
+    stop = float(df["Low"].iloc[-10:].min())
+    # Snap-to-52W-high: when the computed pivot is within 1% of the
+    # 52W high, the older swing high IS the relevant breakout level —
+    # the tiny gap is a single tick from earlier in the year, not a
+    # different swing structure. Fixes WHA (15-bar 4.56 → snap to 52W
+    # 4.60). When the computed pivot is meaningfully below the 52W
+    # high (RBF: 4.20 vs 4.52, 7% gap), the recent local peak IS the
+    # relevant pivot — don't snap.
+    high_52w = float(df["High"].iloc[-min(252, len(df)):].max())
+    if high_52w > pivot and pivot >= high_52w * 0.99:
+        pivot = high_52w
     return pivot, stop
 
 

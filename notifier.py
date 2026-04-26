@@ -831,7 +831,6 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
       Body Section 3 (Trade Levels — only when actionable):
         🎯 Pivot         ฿1.82       −2.2%
         ⛔ Stop          ฿1.74       −2.2%
-        🎯 Target 1      ฿2.40      +34.8%   (Fib 1.0 extension)
         🎯 Target 1.618  ฿3.10      +74.2%   (Fib 1.618 extension)
 
       Body Section 4 (Margin):
@@ -991,26 +990,13 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                      "flex": 2, "align": "end"},
                 ],
             })
-        # Fibonacci 3-point extension targets — verify against your own
+        # Fibonacci 1.618 extension target — verify against your own
         # Fib draw; auto-formula uses 52W_low → pivot leg projected from
         # stop, which can run aspirational on stocks where you'd anchor
-        # on a shorter prior leg (HANA / KKP class).
-        t1 = getattr(signal, "target_1", 0.0) or 0.0
+        # on a shorter prior leg (HANA / KKP class). T1.0 hidden per
+        # user request — only the extended target shown for actionable
+        # decisions.
         t1618 = getattr(signal, "target_1618", 0.0) or 0.0
-        if t1 > 0:
-            up1 = (t1 - signal.close) / signal.close * 100
-            trade_rows.append({
-                "type": "box", "layout": "horizontal", "contents": [
-                    {"type": "text", "text": "🎯 Target 1", "size": "sm",
-                     "color": "#7F8C8D", "flex": 3},
-                    {"type": "text", "text": f"฿{t1:,.2f}",
-                     "size": "sm", "weight": "bold", "color": "#2C3E50",
-                     "flex": 3, "align": "end"},
-                    {"type": "text", "text": f"{up1:+.1f}%",
-                     "size": "xs", "color": "#27AE60", "weight": "bold",
-                     "flex": 2, "align": "end"},
-                ],
-            })
         if t1618 > 0:
             up1618 = (t1618 - signal.close) / signal.close * 100
             trade_rows.append({
