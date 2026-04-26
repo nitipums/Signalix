@@ -668,11 +668,37 @@ def classify_stage(df: pd.DataFrame) -> int:
             and above_52w_low_x125 and within_52w_high_x75):
         return 2
 
-    # ── Path 5: Stage 3 strict — explicit topping. SMA20 dead-crossed
-    # SMA50 in the last 20 bars AND price has fallen below SMA50.
-    # Stricter than the old "ROC flat" gate (which mis-caught fresh
-    # breakouts); now requires actual rolling-over behavior.
-    if _cross_within(sma20, sma50, n=20, direction="down") and c < s50:
+    # ── Path 5: Stage 3 strict — explicit topping ──
+    # Four conditions, all required (each one closes a misfire surface
+    # that surfaced in production via real-stock spot-checks):
+    #   1. SMA20 dead-crossed SMA50 within last 20 bars (rolling over).
+    #   2. Close MEANINGFULLY below SMA50 — at least 2% below. Float-
+    #      precision guard so stocks AT the SMA50 don't trip on
+    #      arithmetic noise (SINGER: close=5.30, SMA50=5.3041).
+    #   3. Close still within 25% of 52W high (peak is RECENT). Mirrors
+    #      Stage 2's c >= high*0.75 gate inverted.
+    #   4. 52W high was set within the last 60 bars. Topping means
+    #      'just peaked and now rolling over' — if the high is from
+    #      months ago and the SMA20/50 chop is just normal in-base
+    #      noise, this is BASING, not TOPPING. Without this gate,
+    #      KTC (high 239 bars ago), SINGER (150), COM7 (129) get
+    #      mis-flagged as Stage 3 because of late-cycle chop.
+    high_idx_recent = False
+    try:
+        # bars_since_high = position from end of the 52W-high bar
+        lookback_n = min(252, len(df))
+        high_series = high.iloc[-lookback_n:]
+        # idxmax() returns the timestamp; convert to integer position
+        peak_pos = high_series.values.argmax()
+        bars_since_peak = (lookback_n - 1) - peak_pos
+        high_idx_recent = bars_since_peak <= 60
+    except Exception:
+        high_idx_recent = False
+
+    if (_cross_within(sma20, sma50, n=20, direction="down")
+            and c < s50 * 0.98
+            and c >= high_52w * 0.75
+            and high_idx_recent):
         return 3
 
     # ── Path 6: Stage 1 default fallback ──

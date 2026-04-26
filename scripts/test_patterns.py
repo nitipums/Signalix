@@ -646,6 +646,37 @@ expect("True-overextended: entrenched advance + 30% above SMA50 → OVEREXTENDED
        (p_true_oe, s_true_oe), (2, SUB_STAGE_2_OVEREXTENDED),
        extra=f"close={float(df_true_oe['Close'].iloc[-1]):.2f} sma50={sma50_true_oe:.2f}")
 
+# 5. KTC/SINGER/ERW/COM7-class regression: long base 30%+ off 52W high
+# with recent SMA20-SMA50 chop. Old logic mis-flagged as Stage 3 Topping
+# because SMA20 dead-crossed SMA50 within 20 bars + close < SMA50 — but
+# the stock isn't topping, it's basing. New Stage 3 gate requires c >=
+# 52W_high × 0.75, which fails here, so the fixture should fall to
+# Stage 1 (default).
+def _build_post_topping_base():
+    # Set the 52W peak in the FAR past (bar 30), then a long decline,
+    # then a flat base 35% below that peak with mild SMA20/50 chop.
+    peak     = list(np.linspace(15, 50, 30))      # rally to 50
+    decline  = list(np.linspace(50, 32, 100))     # decline to 32
+    base     = list(np.linspace(32, 30, 60))      # drift to 30
+    # Recent 30 bars chop around 30-32 with one SMA20-below-SMA50 cross
+    chop     = ([30.5, 30.0, 30.5, 31.0, 30.5, 30.0, 30.5, 30.5, 30.0, 30.5,
+                 30.5, 30.0, 30.5, 31.0, 30.5, 30.0, 30.0, 29.5, 30.0, 30.5,
+                 30.5, 30.0, 30.5, 30.0, 30.0, 29.5, 29.5, 30.0, 29.5, 29.5])
+    prices = peak + decline + base + chop
+    highs = [p + 0.5 for p in prices]
+    lows  = [p - 0.5 for p in prices]
+    vols  = [1_500_000] * len(prices)
+    return _mk_df(highs, lows=lows, closes=prices, volumes=vols)
+
+df_post_top = _build_post_topping_base()
+p_pt, s_pt = _classify(df_post_top)
+close_pt = float(df_post_top["Close"].iloc[-1])
+high_52w_pt = float(df_post_top["High"].iloc[-min(252, len(df_post_top)):].max())
+expect("Post-topping base 30%+ off peak → STAGE_1 (NOT Stage 3)",
+       p_pt, 1,
+       extra=f"close={close_pt:.2f} 52w_high={high_52w_pt:.2f} "
+             f"pct_from_high={(close_pt/high_52w_pt-1)*100:+.1f}% sub={s_pt!r}")
+
 # Invariant: every sub-stage emitted must be in ALL_SUB_STAGES (or "").
 for sym, df in [("DT", df_dt), ("RUN", df_run), ("PB", df_pb), ("BEAR", df_bear),
                 ("WEAK", df_weak), ("STRONG", df_strong),
@@ -682,7 +713,7 @@ sig_pb.pivot_price = 111.5
 sig_pb.close = 108.0
 row = _stock_row(1, sig_pb)
 cells = row["contents"]
-expect("_stock_row: 7 columns", len(cells), 7)
+expect("_stock_row: 8 columns (added Mgn)", len(cells), 8)
 expect("_stock_row: rank colored by sub_stage",
        cells[0]["color"], SUB_STAGE_COLOR["STAGE_2_PIVOT_READY"])
 piv_text = cells[5]["text"]
@@ -714,8 +745,8 @@ expect("_stock_row: empty sub_stage falls back to neutral grey",
 from notifier import build_ranked_stock_list_bubble
 bubble = build_ranked_stock_list_bubble([sig_pb], "Test")
 header_row = bubble["body"]["contents"][0]
-expect("col_header: 7 cells (matches row width)",
-       len(header_row["contents"]), 7)
+expect("col_header: 8 cells (matches row width incl. Mgn)",
+       len(header_row["contents"]), 8)
 expect("col_header: 6th cell text is 'Piv'",
        header_row["contents"][5]["text"], "Piv")
 
