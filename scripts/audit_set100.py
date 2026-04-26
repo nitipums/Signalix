@@ -147,10 +147,11 @@ def audit_one(sym: str, df: pd.DataFrame) -> tuple[int, str, list[Flag]]:
             F("ignition_but_falling_recent", "warn",
               f"5d_ret={ret_5:+.1f}%")
 
-    # MARKUP definition: close > SMA10, close > SMA20. Sanity check
-    # that this actually holds.
+    # MARKUP definition: close >= SMA10 and SMA20 (allow tiny tolerance
+    # for float-precision noise — `c > s10` would falsely flag stocks
+    # like MFEC c=6.00, s10=6.00 where they're functionally identical).
     if s == "STAGE_2_MARKUP":
-        if not (c > s10 and c > s20):
+        if not (c >= s10 * 0.99 and c >= s20 * 0.99):
             F("markup_but_below_short_mas", "warn",
               f"c={c:.2f} sma10={s10:.2f} sma20={s20:.2f}")
 
@@ -194,19 +195,51 @@ def audit_one(sym: str, df: pd.DataFrame) -> tuple[int, str, list[Flag]]:
     return p, s, flags
 
 
+def _members_for(universe: str) -> list[str]:
+    """Resolve --universe selector to a concrete symbol list.
+    SET50/SET100/MAI come from data.get_index_members; 'marginable'
+    from data._margin_securities (Krungsri's monthly list, the actual
+    universe a margin trader can act on).
+
+    Note: uses `data.<attr>` (module attribute access) instead of
+    `from data import <attr>` to dodge the import-snapshot trap —
+    `_margin_securities` starts empty at module import; _load
+    populates `data._margin_securities` but a from-import would
+    keep referring to the original empty binding.
+    """
+    import data
+    universe = universe.lower()
+    if universe == "marginable":
+        if not data._margin_securities:
+            data._load_margin_securities()
+        return sorted(data._margin_securities.keys())
+    if universe == "all":
+        if not data._margin_securities:
+            data._load_margin_securities()
+        u = set()
+        for idx in ("SET50", "SET100", "MAI"):
+            u |= set(data.get_index_members(idx))
+        u |= set(data._margin_securities.keys())
+        return sorted(u)
+    return sorted(data.get_index_members(universe.upper()))
+
+
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description="Run FSM classifier audit against a stock universe.")
+    ap.add_argument("--universe", default="set100",
+                    choices=["set50", "set100", "mai", "marginable", "all"],
+                    help="Which universe to audit (default: set100)")
     ap.add_argument("--limit", type=int, default=999)
     ap.add_argument("--symbol", help="Audit a single symbol only (debug)")
     args = ap.parse_args()
 
-    from data import get_index_members
-    members = sorted(get_index_members("SET100"))
+    members = _members_for(args.universe)
     if args.symbol:
         members = [args.symbol.upper()]
     members = members[:args.limit]
 
-    print(f"\nAuditing {len(members)} SET100 members (yfinance live)…\n")
+    print(f"\nAuditing {len(members)} {args.universe.upper()} members (yfinance live)…\n")
 
     classifications: list[tuple[str, int, str]] = []
     all_flags: list[Flag] = []
