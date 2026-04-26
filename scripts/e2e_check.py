@@ -397,6 +397,60 @@ def suite_sub_stage(base, secret):
     return fails
 
 
+def suite_index_scope(base, secret):
+    """Per-index scoped commands shipped with the SET100/SET50 replication
+    iteration: `set100 stage` / `set100 stages` / `set100 pivot` (and
+    same for set50). Confirms each command resolves to the expected
+    handler/route and surfaces non-zero data when the scan has run.
+    """
+    section("Per-index scoped commands (SET100 + SET50)")
+    fails = 0
+    for index_lower, index_upper in (("set100", "SET100"), ("set50", "SET50")):
+        # `<index> stage` → picker (kind=static, handler=index_stage_picker)
+        try:
+            q, _ = query(base, secret, f"{index_lower} stage")
+            fails += check(f"{index_lower}_stage/dispatched",
+                           q.get("kind") == "static"
+                           and q.get("handler") == "index_stage_picker"
+                           and q.get("index") == index_upper,
+                           f"got={q}")
+            fails += check(f"{index_lower}_stage/has_constituents",
+                           (q.get("constituents_count") or 0) > 0,
+                           f"constituents={q.get('constituents_count')}")
+        except Exception as e:
+            fails += check(f"{index_lower}_stage", False, f"err: {e}")
+
+        # `<index> stages` → dashboard (kind=static + sub_stage_counts)
+        try:
+            q, _ = query(base, secret, f"{index_lower} stages")
+            fails += check(f"{index_lower}_stages/dispatched",
+                           q.get("kind") == "static"
+                           and q.get("handler") == "index_stages_dashboard"
+                           and q.get("index") == index_upper,
+                           f"got={q}")
+            sub_counts = q.get("sub_stage_counts") or {}
+            fails += check(f"{index_lower}_stages/has_sub_stage_counts",
+                           isinstance(sub_counts, dict) and len(sub_counts) > 0,
+                           f"sub_stage_counts={sub_counts}")
+        except Exception as e:
+            fails += check(f"{index_lower}_stages", False, f"err: {e}")
+
+        # `<index> pivot` → list (kind=list with pivot candidates)
+        try:
+            q, _ = query(base, secret, f"{index_lower} pivot")
+            fails += check(f"{index_lower}_pivot/dispatched",
+                           q.get("kind") == "list",
+                           f"kind={q.get('kind')}")
+            for r in (q.get("first_5") or []):
+                fails += check(f"{index_lower}_pivot/{r.get('symbol')}/has_pivot",
+                               (r.get("pivot_price") or 0) > 0,
+                               f"pivot_price={r.get('pivot_price')}")
+        except Exception as e:
+            fails += check(f"{index_lower}_pivot", False, f"err: {e}")
+
+    return fails
+
+
 def suite_persistence(base, secret):
     """Persistence-layer coverage shipped with the FSM persistence
     iteration. Confirms (a) /test/signal exposes the cosmetic rename
@@ -967,6 +1021,7 @@ def main():
     total_fails += suite_sub_stage(base, secret)
     total_fails += suite_pivot(base, secret)
     total_fails += suite_persistence(base, secret)
+    total_fails += suite_index_scope(base, secret)
     total_fails += suite_index_breadth(base, secret)
     total_fails += suite_sector_drill(base, secret)
     total_fails += suite_sector_coverage(base, secret)

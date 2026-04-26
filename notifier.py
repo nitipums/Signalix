@@ -275,6 +275,7 @@ def build_index_breadth_card(
     movers_up: list[StockSignal] | None = None,
     movers_down: list[StockSignal] | None = None,
     member_count: int = 0,
+    constituents: list[StockSignal] | None = None,
 ) -> dict:
     """Per-sub-index breadth card (SET50 / SET100 / MAI).
 
@@ -385,6 +386,50 @@ def build_index_breadth_card(
              value_color="#1ABC9C",
              tap_cmd=f"{index_name.lower()} members"),
     ]
+
+    # ── NEW: Top-5 actionable Stage 2 sub-stage rows ──────────────────
+    # Surfaces the user's "what to act on within this index today"
+    # cohorts: PIVOT_READY (most actionable) → IGNITION → MARKUP →
+    # CONTRACTION → OVEREXTENDED. Each row tappable to drill into the
+    # scoped sub-stage list (e.g. 'set100 ready'). Hidden when
+    # constituents are not provided (caller didn't compute them — old
+    # callers untouched).
+    if constituents is not None:
+        from collections import Counter as _Ctr
+        sub_counts = _Ctr(getattr(s, "sub_stage", "") or "" for s in constituents)
+        prefix = f"{index_name.lower()} "
+        body_contents.extend([
+            {"type": "separator", "color": "#333333", "margin": "md"},
+            {"type": "text", "text": "Sub-stage · Stage 2 actionable",
+             "size": "xs", "weight": "bold", "color": "#FFD54F", "margin": "sm"},
+            _row("🎯 Pivot Ready ✨",
+                 f"{sub_counts.get('STAGE_2_PIVOT_READY', 0)}",
+                 value_color=SUB_STAGE_COLOR.get("STAGE_2_PIVOT_READY", "#F1C40F"),
+                 tap_cmd=f"{prefix}ready"),
+            _row("🚀 Ignition",
+                 f"{sub_counts.get('STAGE_2_IGNITION', 0)}",
+                 value_color=SUB_STAGE_COLOR.get("STAGE_2_IGNITION", "#27AE60"),
+                 tap_cmd=f"{prefix}ignition"),
+            _row("✅ Markup",
+                 f"{sub_counts.get('STAGE_2_MARKUP', 0)}",
+                 value_color=SUB_STAGE_COLOR.get("STAGE_2_MARKUP", "#16A085"),
+                 tap_cmd=f"{prefix}markup"),
+            _row("👀 Contraction",
+                 f"{sub_counts.get('STAGE_2_CONTRACTION', 0)}",
+                 value_color=SUB_STAGE_COLOR.get("STAGE_2_CONTRACTION", "#2980B9"),
+                 tap_cmd=f"{prefix}contraction"),
+            _row("⚠ Overextended",
+                 f"{sub_counts.get('STAGE_2_OVEREXTENDED', 0)}",
+                 value_color=SUB_STAGE_COLOR.get("STAGE_2_OVEREXTENDED", "#D35400"),
+                 tap_cmd=f"{prefix}overextended"),
+            # Quick-access drill-downs to the dashboard / picker / pivot
+            _row("📊 Stages dashboard (11 rows)", "→",
+                 value_color="#1ABC9C",
+                 tap_cmd=f"{prefix}stages"),
+            _row("🎯 Pivot candidates", "→",
+                 value_color="#F1C40F",
+                 tap_cmd=f"{prefix}pivot"),
+        ])
 
     if movers_up:
         body_contents.append({"type": "separator", "color": "#333333", "margin": "md"})
@@ -1909,6 +1954,9 @@ def build_sector_overview_card(sectors: list[SectorSummary],
 def build_stage_picker_card(
     breadth: Optional[MarketBreadth] = None,
     signals: Optional[list] = None,
+    *,
+    scope_label: str = "",
+    cmd_prefix: str = "",
 ) -> dict:
     """4-bubble carousel for stage picker (Stage 1–4).
 
@@ -1918,6 +1966,18 @@ def build_stage_picker_card(
 
     Stage 2 bubble gets a dual footer: full-list button + jump-to-
     Pivot-Ready button (the most actionable cohort).
+
+    Scope params:
+      • scope_label = "" (default, market-wide), "SET100", "SET50", "MAI".
+        Shown in the bubble header so the user knows which universe.
+      • cmd_prefix  = "" (default), "set100 ", "set50 ", "mai ". Tappable
+        sub-stage rows + footer buttons emit `<prefix><cmd>` so taps
+        keep the user inside the same scope (e.g. tapping Pivot Ready
+        from a SET100 picker emits `set100 ready`, not `ready`).
+
+    Counts in `breadth` and `signals` should already be SCOPED to the
+    same universe (caller's responsibility). For market-wide use,
+    pass the global breadth + signals.
     """
     STAGE_BG = {1: "#555555", 2: "#1B5E20", 3: "#E65100", 4: "#B71C1C"}
     STAGE_VERB = {1: "WATCH", 2: "TRADE", 3: "TRIM", 4: "AVOID"}
@@ -1930,7 +1990,7 @@ def build_stage_picker_card(
     }
 
     # Sub-stages per parent, in display order. Each tuple = (icon,
-    # short label, sub_stage constant, filter command).
+    # short label, sub_stage constant, filter command tail).
     SUBS = {
         1: [
             ("⚪", "Base",       "STAGE_1_BASE",         "base"),
@@ -1969,12 +2029,16 @@ def build_stage_picker_card(
         from collections import Counter
         sub_counts = Counter(getattr(s, "sub_stage", "") or "" for s in signals)
 
-    def _sub_row(icon: str, label: str, sub_const: str, cmd: str) -> dict:
+    def _sub_row(icon: str, label: str, sub_const: str, cmd_tail: str) -> dict:
         cnt = sub_counts.get(sub_const, 0)
         color = SUB_STAGE_COLOR.get(sub_const, "#7F8C8D")
+        # Scope-aware command — when cmd_prefix is set, taps drill into
+        # the same scope (set100/set50/mai) instead of falling back to
+        # the market-wide filter.
+        cmd = f"{cmd_prefix}{cmd_tail}"
         return {
             "type": "box", "layout": "horizontal",
-            "action": {"type": "message", "label": cmd, "text": cmd},
+            "action": {"type": "message", "label": cmd_tail, "text": cmd},
             "paddingTop": "3px", "paddingBottom": "3px",
             "contents": [
                 {"type": "text", "text": f"{icon} {label}",
@@ -1991,11 +2055,13 @@ def build_stage_picker_card(
 
         # Footer button — Stage 2 gets dual buttons (full + Pivot Ready);
         # other stages get a single full-list button.
+        full_cmd = f"{cmd_prefix}stage{s}"
+        ready_cmd = f"{cmd_prefix}ready"
         footer_btns = [
             {"type": "button",
              "action": {"type": "message",
                         "label": f"ดู Stage {s} ({count})",
-                        "text": f"stage{s}"},
+                        "text": full_cmd},
              "style": "primary", "color": STAGE_BG[s], "height": "sm"},
         ]
         if s == 2:
@@ -2004,9 +2070,14 @@ def build_stage_picker_card(
                 "type": "button",
                 "action": {"type": "message",
                            "label": f"🎯 Pivot Ready ({ready_count})",
-                           "text": "ready"},
+                           "text": ready_cmd},
                 "style": "secondary", "height": "sm", "margin": "xs",
             })
+
+        # Header text — append scope label when set, e.g. "🟢 Stage 2 · SET100"
+        header_label = f"{STAGE_ICON[s]} Stage {s}"
+        if scope_label:
+            header_label = f"{header_label} · {scope_label}"
 
         bubbles.append({
             "type": "bubble",
@@ -2016,9 +2087,9 @@ def build_stage_picker_card(
                 "layout": "vertical",
                 "contents": [
                     {"type": "box", "layout": "horizontal", "contents": [
-                        {"type": "text", "text": f"{STAGE_ICON[s]} Stage {s}",
+                        {"type": "text", "text": header_label,
                          "weight": "bold", "size": "md", "color": "#FFFFFF",
-                         "flex": 3},
+                         "flex": 3, "wrap": True},
                         {"type": "text", "text": STAGE_VERB[s],
                          "size": "xxs", "color": "#FFD54F", "weight": "bold",
                          "flex": 2, "align": "end", "gravity": "center"},
@@ -2055,13 +2126,23 @@ def build_stage_picker_card(
 def build_stages_dashboard_card(
     signals: list,
     breadth: Optional[MarketBreadth] = None,
+    *,
+    scope_label: str = "",
+    cmd_prefix: str = "",
 ) -> dict:
     """Single-bubble 11-row overview matrix — the post-2-layer-classifier
-    'one screen, all states' dashboard. Triggered by the `stages` command.
+    'one screen, all states' dashboard. Triggered by `stages`,
+    `set100 stages`, `set50 stages`, etc.
 
     Layout (per parent stage section): parent header (count + verb badge)
     followed by sub-stage rows (icon + label + count). Every row is
     tappable → its filter command. Color-coded per SUB_STAGE_COLOR.
+
+    Scope params:
+      • scope_label = "" (default, market-wide), "SET100", "SET50", "MAI".
+        Shown in the header so the user knows which universe.
+      • cmd_prefix  = "" / "set100 " / "set50 " / "mai ". Tappable rows
+        emit `<prefix><cmd>` so taps stay inside the same universe.
     """
     from collections import Counter
     sub_counts = Counter(getattr(s, "sub_stage", "") or "" for s in (signals or []))
@@ -2101,7 +2182,7 @@ def build_stages_dashboard_card(
         ]),
     ]
 
-    def _sub_row(icon: str, label: str, sub_const: str, cmd: str,
+    def _sub_row(icon: str, label: str, sub_const: str, cmd_tail: str,
                  highlight: bool) -> dict:
         cnt = sub_counts.get(sub_const, 0)
         color = SUB_STAGE_COLOR.get(sub_const, "#7F8C8D")
@@ -2109,9 +2190,10 @@ def build_stages_dashboard_card(
         # IGNITION. Surfaces the user's "what to do today" cohorts at
         # the top of each stage section.
         suffix = " ←" if highlight and cnt > 0 else ""
+        cmd = f"{cmd_prefix}{cmd_tail}"
         return {
             "type": "box", "layout": "horizontal",
-            "action": {"type": "message", "label": cmd, "text": cmd},
+            "action": {"type": "message", "label": cmd_tail, "text": cmd},
             "paddingTop": "4px", "paddingBottom": "4px", "paddingStart": "12px",
             "contents": [
                 {"type": "text", "text": f"{icon} {label}{suffix}",
@@ -2124,11 +2206,12 @@ def build_stages_dashboard_card(
         }
 
     def _section_header(stage_int: int, label: str, count: int) -> list:
+        cmd = f"{cmd_prefix}stage{stage_int}"
         return [
             {"type": "separator", "margin": "sm"},
             {"type": "box", "layout": "horizontal",
              "action": {"type": "message", "label": f"stage{stage_int}",
-                        "text": f"stage{stage_int}"},
+                        "text": cmd},
              "paddingTop": "8px", "paddingBottom": "4px",
              "contents": [
                 {"type": "text", "text": label,
@@ -2160,6 +2243,11 @@ def build_stages_dashboard_card(
          "size": "xxs", "color": "#7F8C8D", "wrap": True, "align": "center"},
     ])
 
+    # Header — append scope label when set ("📊 State Distribution · SET100")
+    title = "📊 State Distribution"
+    if scope_label:
+        title = f"{title} · {scope_label}"
+
     return {
         "type": "bubble",
         "size": "mega",
@@ -2167,8 +2255,9 @@ def build_stages_dashboard_card(
             "type": "box",
             "layout": "vertical",
             "contents": [
-                {"type": "text", "text": "📊 State Distribution",
-                 "weight": "bold", "size": "lg", "color": "#FFFFFF"},
+                {"type": "text", "text": title,
+                 "weight": "bold", "size": "lg", "color": "#FFFFFF",
+                 "wrap": True},
                 {"type": "text", "text": "11 sub-stages · one screen",
                  "size": "xxs", "color": "#BBDDFF"},
             ],

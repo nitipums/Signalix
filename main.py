@@ -1006,6 +1006,31 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
             members = get_index_members(index_name)
             rest = c[len(prefix):].strip().replace(" ", "")
             constituents = [s for s in _last_signals if s.symbol in members]
+
+            # Scoped picker / dashboard / pivot — return kind=static so
+            # the LINE handler builds the rich card. /test/query just
+            # confirms the command resolves to a known route.
+            if rest == "stage":
+                return {"kind": "static", "handler": "index_stage_picker",
+                        "index": index_name,
+                        "members_count": len(members),
+                        "constituents_count": len(constituents)}
+            if rest in ("stages", "dashboard", "overview"):
+                from collections import Counter
+                sub_counts = Counter(getattr(s, "sub_stage", "") or "" for s in constituents)
+                return {"kind": "static", "handler": "index_stages_dashboard",
+                        "index": index_name,
+                        "members_count": len(members),
+                        "constituents_count": len(constituents),
+                        "sub_stage_counts": dict(sub_counts)}
+            if rest in ("pivot", "pivots", "pivotpoint", "pivotpoints"):
+                sigs = [s for s in constituents
+                        if getattr(s, "pivot_price", 0.0) > 0]
+                sigs.sort(key=lambda s:
+                          (s.pivot_price - s.close) / s.pivot_price
+                          if s.pivot_price else 999.0)
+                return summary(sigs, f"🎯 {index_name} Pivot Candidates")
+
             stage_filter = None
             for n in (1, 2, 3, 4):
                 if rest in (f"stage{n}", f"s{n}"):
@@ -2283,16 +2308,29 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
     # ── Per-index breadth: SET50 / SET100 / MAI ──
     # Catch the more-specific filter forms first so they don't fall into
     # the generic 'set50' breadth command.
-    elif cmd.startswith("set50 ") or cmd.startswith("set100 ") or cmd in ("mai members", "mai list", "mai all"):
-        # Support both 'set50 stage2' (filter by stage) and 'set50 list' /
-        # 'set50 members' / 'set50 all' (full member list).
+    elif cmd.startswith("set50 ") or cmd.startswith("set100 ") or cmd.startswith("mai "):
+        # Support several drill-down shapes:
+        #   set100 stage               → 4-bubble picker (sub-stages per parent)
+        #   set100 stages / dashboard  → 11-row dashboard (one screen)
+        #   set100 pivot               → pivot candidates within constituents
+        #   set100 stage2 / s2         → filter by parent stage
+        #   set100 ready / pullback    → filter by sub-stage
+        #   set100 members / list / all → full member list
         parts = cmd.split(maxsplit=1)
         index_name = parts[0].upper()
         rest = parts[1].strip() if len(parts) > 1 else ""
-        if cmd.startswith("mai "):
-            index_name = "MAI"
-            rest = cmd[len("mai "):].strip()
-        await _reply_index_filter(reply_token, index_name, rest)
+        rest_norm = rest.lower().replace(" ", "")
+        if rest_norm == "stage":
+            # Singular `stage` → scoped 4-bubble picker
+            await _reply_index_stage_picker(reply_token, index_name)
+        elif rest_norm in ("stages", "dashboard", "overview"):
+            # Plural `stages` → scoped 11-row dashboard
+            await _reply_index_stages_dashboard(reply_token, index_name)
+        elif rest_norm in ("pivot", "pivots", "pivotpoint", "pivotpoints"):
+            # `pivot` → scoped pivot candidates list
+            await _reply_index_pivot(reply_token, index_name)
+        else:
+            await _reply_index_filter(reply_token, index_name, rest)
 
     elif cmd in ("set50", "set 50"):
         await _reply_index_breadth(reply_token, "SET50")
@@ -2960,8 +2998,98 @@ async def _reply_index_breadth(reply_token: str, index_name: str) -> None:
         movers_up=movers_up,
         movers_down=movers_down,
         member_count=len(members),
+        constituents=constituents,
     )
     reply_flex(reply_token, f"📊 {index_name} Breadth", card)
+
+
+async def _reply_index_stage_picker(reply_token: str, index_name: str) -> None:
+    """Per-index 4-bubble stage picker scoped to that index's constituents.
+    Mirrors the global `stage` command but each bubble's sub-stage rows
+    + footer buttons emit `<index> <cmd>` so taps stay scoped.
+    """
+    from data import get_index_members
+    from analyzer import compute_index_breadth
+    members = get_index_members(index_name)
+    if not members:
+        reply_text(reply_token,
+                   f"{index_name}: ยังไม่มีรายชื่อสมาชิก (กำลังเตรียมข้อมูล)")
+        return
+    if not _last_signals:
+        reply_text(reply_token, "ยังไม่มีข้อมูลการสแกน กรุณารอการสแกนครั้งถัดไป")
+        return
+    constituents = [s for s in _last_signals if s.symbol in members]
+    idx_data = (_last_indexes or {}).get(index_name, {})
+    breadth = compute_index_breadth(
+        _last_signals, members,
+        index_close=float(idx_data.get("close", 0) or 0),
+        index_change_pct=float(idx_data.get("change_pct", 0) or 0),
+    )
+    cmd_prefix = f"{index_name.lower()} "
+    card = build_stage_picker_card(
+        breadth=breadth, signals=constituents,
+        scope_label=index_name, cmd_prefix=cmd_prefix,
+    )
+    reply_flex(reply_token, f"เลือก Stage · {index_name}", card)
+
+
+async def _reply_index_stages_dashboard(reply_token: str, index_name: str) -> None:
+    """Per-index 11-row stages dashboard scoped to that index's constituents.
+    Mirrors the global `stages` command.
+    """
+    from data import get_index_members
+    from analyzer import compute_index_breadth
+    members = get_index_members(index_name)
+    if not members:
+        reply_text(reply_token,
+                   f"{index_name}: ยังไม่มีรายชื่อสมาชิก (กำลังเตรียมข้อมูล)")
+        return
+    if not _last_signals:
+        reply_text(reply_token, "ยังไม่มีข้อมูลการสแกน กรุณารอการสแกนครั้งถัดไป")
+        return
+    constituents = [s for s in _last_signals if s.symbol in members]
+    idx_data = (_last_indexes or {}).get(index_name, {})
+    breadth = compute_index_breadth(
+        _last_signals, members,
+        index_close=float(idx_data.get("close", 0) or 0),
+        index_change_pct=float(idx_data.get("change_pct", 0) or 0),
+    )
+    cmd_prefix = f"{index_name.lower()} "
+    card = build_stages_dashboard_card(
+        signals=constituents, breadth=breadth,
+        scope_label=index_name, cmd_prefix=cmd_prefix,
+    )
+    reply_flex(reply_token, f"📊 State Distribution · {index_name}", card)
+
+
+async def _reply_index_pivot(reply_token: str, index_name: str) -> None:
+    """Per-index pivot candidates list — every constituent with
+    pivot_price > 0, sorted by closeness to pivot trigger. Mirrors the
+    global `pivot` command but scoped to the index.
+    """
+    from data import get_index_members
+    members = get_index_members(index_name)
+    if not members:
+        reply_text(reply_token,
+                   f"{index_name}: ยังไม่มีรายชื่อสมาชิก (กำลังเตรียมข้อมูล)")
+        return
+    if not _last_signals:
+        reply_text(reply_token, "ยังไม่มีข้อมูลการสแกน กรุณารอการสแกนครั้งถัดไป")
+        return
+    signals = [s for s in _last_signals
+               if s.symbol in members
+               and getattr(s, "pivot_price", 0.0) > 0]
+
+    def _pivot_distance(s):
+        return (s.pivot_price - s.close) / s.pivot_price if s.pivot_price else 999.0
+
+    signals.sort(key=_pivot_distance)
+    if not signals:
+        reply_text(reply_token,
+                   f"{index_name}: ยังไม่มีหุ้นที่อยู่ในโซน Pivot ({len(members)} members scanned)")
+        return
+    _reply_stock_list(reply_token, signals,
+                      f"🎯 Pivot Candidates · {index_name} ({len(signals)})")
 
 
 async def _reply_global_single(reply_token: str, code: str) -> None:
