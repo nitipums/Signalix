@@ -48,7 +48,8 @@ from data import (
     load_signals_from_firestore,
     log_breakout, resolve_symbol,
     save_scan_state, save_sector_map_to_firestore, save_signals_to_bq,
-    save_signals_to_firestore,
+    save_signals_to_firestore, save_signal_transitions, save_breadth_snapshot,
+    load_recent_signal_transitions, load_recent_breadth_snapshots,
     sync_ath_to_firestore, tradingview_url, update_user_score,
 )
 from notifier import (
@@ -684,16 +685,30 @@ async def test_compare(symbol: str, x_scan_secret: Optional[str] = Header(defaul
 
 @app.get("/test/signal/{symbol}")
 async def test_signal(symbol: str):
-    """Return the cached StockSignal for a symbol — both in-memory and Firestore.
+    """Return the persisted StockSignal for a symbol with both the
+    process-local cache view and the durable Firestore view.
 
-    Useful to debug why a card shows stale data when Settrade says otherwise:
-    tells you when scan_stock last wrote this symbol and what close it recorded.
+    The data is durably persisted to BOTH Firestore (latest signal per
+    symbol) AND BigQuery scan_results (append-only history). The `cache`
+    field shows what the current Cloud Run instance has loaded into
+    memory — same data, just lazy-loaded from Firestore on cold start.
+
+    Output keys:
+      • cache       — process-local snapshot (renamed from `in_memory`)
+      • firestore   — durable Firestore snapshot
+      • persisted   — true when at least one durable source has the symbol
+      • last_persisted_at — `scanned_at` of the latest durable snapshot
+      • in_memory   — alias of `cache` for backward compat (will be
+                      removed in a future iteration)
     """
     symbol = symbol.upper().strip()
     result: dict = {"symbol": symbol}
 
     in_mem = next((s for s in _last_signals if s.symbol == symbol), None)
-    result["in_memory"] = _signal_snapshot(in_mem) if in_mem else None
+    cache_snap = _signal_snapshot(in_mem) if in_mem else None
+    result["cache"] = cache_snap
+    # Backward-compat alias — kept until external probes migrate
+    result["in_memory"] = cache_snap
 
     if FIRESTORE_AVAILABLE and _db:
         loop = asyncio.get_running_loop()
@@ -701,6 +716,16 @@ async def test_signal(symbol: str):
         result["firestore"] = _signal_snapshot(fs_sig) if fs_sig else None
     else:
         result["firestore"] = None
+
+    # Persistence metadata — clarifies that the data IS durable, the
+    # cache is just for speed.
+    fs_snap = result.get("firestore")
+    result["persisted"] = bool(fs_snap)  # Firestore is the source of truth
+    result["last_persisted_at"] = (
+        (fs_snap or {}).get("scanned_at")
+        or (cache_snap or {}).get("scanned_at")
+        or None
+    )
 
     # ATH sources — useful for diagnosing wrong ath_breakout classifications.
     ath_info: dict = {"in_memory_cache": _ath_cache.get(symbol)}
@@ -718,7 +743,14 @@ async def test_signal(symbol: str):
 def _signal_snapshot(signal) -> dict:
     """Minimal StockSignal view for diagnostic endpoints. Includes the
     sub_stage finite-state-machine label as the primary classification;
-    legacy stage/pattern fields retained for backward compat."""
+    legacy stage/pattern fields retained for backward compat.
+
+    Note: this view is consumed by /test/signal which wraps it with
+    `cache` (process-local) and `firestore` (durable) keys. The same
+    data is persisted to Firestore (signals/{symbol}, full dataclass)
+    and BQ (scan_results, append-only history) — see /test/signal's
+    persisted/last_persisted_at metadata for confirmation.
+    """
     return {
         "symbol": signal.symbol,
         "close": signal.close,
@@ -1178,6 +1210,59 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
         return {"kind": "single_stock", "signal": _signal_snapshot(signal) if signal else None}
 
     return {"kind": "unknown", "cmd": c}
+
+
+@app.get("/test/transitions")
+async def test_transitions(
+    limit: int = 50,
+    symbol: str = "",
+    x_scan_secret: Optional[str] = Header(default=None),
+):
+    """Recent sub_stage transitions logged by save_signal_transitions.
+
+    Optional `symbol` filter narrows to a single stock's history.
+    Results sorted by transitioned_at DESC. Source: Firestore
+    `signal_transitions` collection, written on every scan.
+    """
+    settings = get_settings()
+    if x_scan_secret != settings.SCAN_SECRET:
+        return JSONResponse(status_code=401, content={"detail": "secret mismatch"})
+    if not (FIRESTORE_AVAILABLE and _db):
+        return {"transitions": [], "count": 0, "error": "firestore unavailable"}
+    loop = asyncio.get_running_loop()
+    rows = await loop.run_in_executor(
+        None, functools.partial(load_recent_signal_transitions,
+                                _db, limit, symbol.upper().strip())
+    )
+    return {"transitions": rows, "count": len(rows),
+            "filter_symbol": symbol or None}
+
+
+@app.get("/test/breadth_history")
+async def test_breadth_history(
+    limit: int = 30,
+    x_scan_secret: Optional[str] = Header(default=None),
+):
+    """Recent per-scan breadth snapshots from BQ `breadth_snapshots`.
+    Most-recent first. Each row contains parent-stage counts AND the
+    11 sub-stage counts so historical 'show me PIVOT_READY count over
+    last 30 scans' queries are trivial.
+    """
+    settings = get_settings()
+    if x_scan_secret != settings.SCAN_SECRET:
+        return JSONResponse(status_code=401, content={"detail": "secret mismatch"})
+    if not BQ_AVAILABLE:
+        return {"snapshots": [], "count": 0, "error": "bq unavailable"}
+    loop = asyncio.get_running_loop()
+    rows = await loop.run_in_executor(
+        None, functools.partial(load_recent_breadth_snapshots, limit)
+    )
+    # Convert any datetime to ISO string for JSON-serialisability
+    for r in rows:
+        for k, v in list(r.items()):
+            if hasattr(v, "isoformat"):
+                r[k] = v.isoformat()
+    return {"snapshots": rows, "count": len(rows)}
 
 
 @app.get("/test/indexes")
@@ -1708,6 +1793,12 @@ async def scan(
     # Fetch SET sector index prices (AGRO, FINCIAL, TECH, etc.) — fire and forget
     sector_indexes = await loop.run_in_executor(None, fetch_sector_index_prices)
 
+    # Capture the previous-scan signals BEFORE overwriting in-memory cache;
+    # this is the baseline for sub_stage transition diffing. On cold start
+    # _last_signals may be empty (lazy-load hasn't fired yet) — that's
+    # fine, save_signal_transitions skips when prev is empty.
+    prev_signals_for_diff = list(_last_signals) if _last_signals else []
+
     _last_signals = signals
     _last_scan_time = datetime.now(BANGKOK_TZ)
     _last_breadth = breadth
@@ -1719,11 +1810,28 @@ async def scan(
     # Persist scan results: BQ on every scan (primary); Firestore always (cache)
     if BQ_AVAILABLE:
         loop.run_in_executor(None, save_signals_to_bq, signals)
+        # NEW: per-scan breadth snapshot for time-series queries (sub-stage
+        # counts over time). Cheap — one row insert per scan.
+        loop.run_in_executor(
+            None, functools.partial(
+                save_breadth_snapshot, breadth, signals,
+                body.scan_type, body.mode,
+            ),
+        )
     if FIRESTORE_AVAILABLE and _db:
         loop.run_in_executor(
             None, functools.partial(
                 save_scan_state, _db, breadth, indexes, sector_trends,
                 body.scan_type, body.mode, sector_indexes=sector_indexes,
+            ),
+        )
+        # NEW: append-only transition log — diff prev vs new sub_stage.
+        # Runs BEFORE save_signals_to_firestore so the prev_signals we
+        # passed in still reflect the pre-overwrite state if any later
+        # reader races on the collection.
+        loop.run_in_executor(
+            None, functools.partial(
+                save_signal_transitions, prev_signals_for_diff, signals, _db,
             ),
         )
         loop.run_in_executor(None, save_signals_to_firestore, signals, _db)
