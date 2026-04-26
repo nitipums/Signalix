@@ -885,18 +885,24 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
             {"type": "text", "text": f"SET:{signal.symbol}",
              "weight": "bold", "size": "xl", "color": "#FFFFFF",
              "flex": 5, "wrap": True},
-            {"type": "text", "text": f"Score {score}/100",
-             "size": "sm", "color": score_color, "weight": "bold",
+            {"type": "text", "text": f"Score {score}",
+             "size": "md", "color": score_color, "weight": "bold",
              "flex": 4, "align": "end"},
         ]},
     ]
 
     # ── Body Section 1: Price hero + sub-stage + context ──
+    # NOTE on colors: body background is WHITE in mega bubble, so any
+    # text needs DARK color to be visible. Earlier I set price/Pivot/
+    # Stop values to "#FFFFFF" thinking body was dark — they
+    # disappeared. Fixed: price hero uses #1A237E (deep blue), value
+    # cells use #2C3E50 (dark slate). Backgrounds + headers stay dark
+    # so their white text is fine.
     body_contents: list = [
         # Big price + change% on one row
         {"type": "box", "layout": "baseline", "contents": [
             {"type": "text", "text": f"฿{signal.close:,.2f}",
-             "weight": "bold", "size": "xxl", "color": "#FFFFFF",
+             "weight": "bold", "size": "xxl", "color": "#1A237E",
              "flex": 5},
             {"type": "text", "text": f"{chg_sign}{signal.change_pct:.2f}%",
              "weight": "bold", "size": "lg", "color": chg_color,
@@ -906,14 +912,15 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
         {"type": "text", "text": stage_label,
          "size": "sm", "color": stage_color, "weight": "bold",
          "wrap": True, "margin": "xs"},
-        # Volume + 52W range + pct-from-high context line
+        # Volume + 52W range + pct-from-high context line.
+        # Bumped from xxs → xs per user feedback (was too small to read).
         {"type": "box", "layout": "horizontal", "margin": "sm",
          "contents": [
             {"type": "text",
              "text": f"Vol {tvm_text} · 52W ฿{signal.low_52w:,.2f}–฿{signal.high_52w:,.2f}",
-             "size": "xxs", "color": "#9E9E9E", "flex": 7, "wrap": True},
+             "size": "xs", "color": "#7F8C8D", "flex": 7, "wrap": True},
             {"type": "text", "text": f"{pct_high:+.1f}%",
-             "size": "xxs", "color": pct_high_color, "weight": "bold",
+             "size": "xs", "color": pct_high_color, "weight": "bold",
              "flex": 2, "align": "end"},
         ]},
     ]
@@ -931,7 +938,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                 {"type": "text", "text": "🎯 Pivot", "size": "sm",
                  "color": "#7F8C8D", "flex": 3},
                 {"type": "text", "text": f"฿{pivot:,.2f}",
-                 "size": "sm", "weight": "bold", "color": "#FFFFFF",
+                 "size": "sm", "weight": "bold", "color": "#2C3E50",
                  "flex": 3, "align": "end"},
                 {"type": "text", "text": f"{gap_pivot:+.1f}%",
                  "size": "xs", "color": gap_color, "weight": "bold",
@@ -945,7 +952,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                     {"type": "text", "text": "⛔ Stop", "size": "sm",
                      "color": "#7F8C8D", "flex": 3},
                     {"type": "text", "text": f"฿{pstop:,.2f}",
-                     "size": "sm", "weight": "bold", "color": "#FFFFFF",
+                     "size": "sm", "weight": "bold", "color": "#2C3E50",
                      "flex": 3, "align": "end"},
                     {"type": "text", "text": f"{risk_pct:+.1f}%",
                      "size": "xs", "color": "#E74C3C", "weight": "bold",
