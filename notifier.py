@@ -1404,6 +1404,110 @@ def build_ranked_stock_list_bubble(
     return {"type": "carousel", "contents": bubbles}
 
 
+# Daily picks bucket configuration. Each bucket maps to a slice of
+# sub-stages + a visual theme. Order matters: BUY is the first bubble
+# the user sees in the carousel (most actionable), SELL is last.
+_DAILY_BUCKETS: list[tuple[str, str, str, str, str]] = [
+    # (key, emoji, title, subtitle, header_color)
+    ("buy",   "🎯", "BUY today",
+     "Pivot Ready + Ignition · Marginable",
+     "#27AE60"),
+    ("watch", "👀", "WATCH today",
+     "Prep + Contraction · Marginable",
+     "#2980B9"),
+    ("sell",  "⚠️", "SELL today",
+     "Overextended + Distribution + Breakdown",
+     "#C0392B"),
+]
+
+
+def build_daily_picks_carousel(
+    buckets: dict,
+    scan_time: str = "",
+) -> dict:
+    """3-bubble daily digest: BUY / WATCH / SELL.
+
+    Each bubble uses the same _stock_row layout as the ranked-list
+    carousel (8 columns: # / Stock / Price / Chg% / Vol / Piv / Pat /
+    Mgn) so users see consistent info per stock — pivot distance,
+    margin tier, color-coded rank by sub-stage.
+
+    buckets keys: 'buy', 'watch', 'sell' — each maps to a list of
+    StockSignal pre-sorted by relevance (top first). Empty buckets
+    render a 'no candidates today' message instead of rows.
+
+    scan_time: ISO timestamp string for the footer (when this scan
+    ran). Empty string suppresses the timestamp.
+    """
+    col_header = {
+        "type": "box", "layout": "horizontal", "spacing": "sm", "paddingBottom": "4px",
+        "contents": [
+            {"type": "text", "text": "#", "size": "xxs", "color": "#7F8C8D", "flex": 1},
+            {"type": "text", "text": "Stock", "size": "xxs", "color": "#7F8C8D", "flex": 4},
+            {"type": "text", "text": "Price", "size": "xxs", "color": "#7F8C8D", "flex": 3, "align": "end"},
+            {"type": "text", "text": "Chg%", "size": "xxs", "color": "#7F8C8D", "flex": 3, "align": "end"},
+            {"type": "text", "text": "Vol", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+            {"type": "text", "text": "Piv", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+            {"type": "text", "text": "Pat", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+            {"type": "text", "text": "Mgn", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+        ],
+    }
+
+    ts = _fmt_scan_time(scan_time) if scan_time else ""
+
+    bubbles: list = []
+    for key, emoji, title, subtitle, header_color in _DAILY_BUCKETS:
+        sigs = buckets.get(key, [])
+        count_text = f"{len(sigs)} stock{'s' if len(sigs) != 1 else ''}"
+        body_rows: list = [col_header, {"type": "separator"}]
+        if sigs:
+            for i, sig in enumerate(sigs, 1):
+                body_rows.append(_stock_row(i, sig))
+        else:
+            body_rows.append({
+                "type": "text",
+                "text": "No candidates in this bucket today.",
+                "size": "sm", "color": "#95A5A6",
+                "align": "center", "margin": "lg", "wrap": True,
+            })
+
+        footer_contents: list = []
+        if ts:
+            footer_contents.append({"type": "text", "text": ts,
+                                    "size": "xxs", "color": "#95A5A6", "align": "center"})
+        footer_contents.append({
+            "type": "text",
+            "text": "Tap any stock for full analysis",
+            "size": "xxs", "color": "#7F8C8D", "align": "center",
+        })
+
+        bubbles.append({
+            "type": "bubble", "size": "mega",
+            "header": {
+                "type": "box", "layout": "vertical",
+                "contents": [
+                    {"type": "text",
+                     "text": f"{emoji} {title}",
+                     "weight": "bold", "size": "md", "color": "#FFFFFF"},
+                    {"type": "text",
+                     "text": f"{subtitle} · {count_text}",
+                     "size": "xxs", "color": "#FFFFFF"},
+                ],
+                "backgroundColor": header_color, "paddingAll": "12px",
+            },
+            "body": {
+                "type": "box", "layout": "vertical", "spacing": "none",
+                "contents": body_rows, "paddingAll": "12px",
+            },
+            "footer": {
+                "type": "box", "layout": "vertical", "spacing": "xs",
+                "contents": footer_contents, "paddingAll": "8px",
+            },
+        })
+
+    return {"type": "carousel", "contents": bubbles}
+
+
 def build_compact_stock_bubble(signal: StockSignal) -> dict:
     """Compact notification bubble — minimal info, tap to get full analysis."""
     pcolor = PATTERN_COLOR.get(signal.pattern, "#7F8C8D")

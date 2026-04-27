@@ -937,6 +937,40 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
         sigs.sort(key=_pivot_distance)
         return summary(sigs, "Pivot Candidates")
 
+    # ── Daily picks digest: BUY / WATCH / SELL ────────────────────────
+    # Marginable-only universe (Krungsri 321 list). Returns a compact
+    # 3-bucket summary so e2e can probe each list non-empty after a
+    # full /scan. LINE-side renders this as a carousel via
+    # build_daily_picks_carousel; here we just return the bucket
+    # counts + first-5 in each.
+    if c in ("today", "picks", "daily"):
+        marginable = [s for s in _last_signals
+                      if getattr(s, "margin_im_pct", 0) > 0]
+        BUY_SUBS   = {"STAGE_2_PIVOT_READY", "STAGE_2_IGNITION"}
+        WATCH_SUBS = {"STAGE_1_PREP", "STAGE_2_CONTRACTION"}
+        SELL_SUBS  = {"STAGE_2_OVEREXTENDED", "STAGE_3_DIST_DIST",
+                      "STAGE_4_BREAKDOWN"}
+        def _top5(target_set):
+            return sorted(
+                [s for s in marginable
+                 if getattr(s, "sub_stage", "") in target_set],
+                key=lambda s: s.strength_score, reverse=True,
+            )[:5]
+        buy   = _top5(BUY_SUBS)
+        watch = _top5(WATCH_SUBS)
+        sell  = _top5(SELL_SUBS)
+        return {
+            "kind": "daily_picks",
+            "label": "Daily Picks: BUY / WATCH / SELL",
+            "marginable_pool": len(marginable),
+            "buy_count":   len(buy),
+            "watch_count": len(watch),
+            "sell_count":  len(sell),
+            "buy":   [_signal_snapshot(s) for s in buy],
+            "watch": [_signal_snapshot(s) for s in watch],
+            "sell":  [_signal_snapshot(s) for s in sell],
+        }
+
     # ── Margin tier filters (Krungsri Marginable Securities List) ─────
     # Lower IM% = more leverage. `margin` (no number) = all marginable.
     MARGIN_TIER_TOKENS = {
@@ -2852,6 +2886,40 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
 
         signals.sort(key=_pivot_distance)
         _reply_stock_list(reply_token, signals, "🎯 Pivot Candidates")
+
+    elif cmd in ("today", "picks", "daily", "วันนี้", "หุ้นวันนี้"):
+        # Daily picks digest — 3-bubble carousel (BUY / WATCH / SELL).
+        # Marginable-only universe so picks are actionable for users
+        # trading on Krungsri margin. Top 5 per bucket sorted by score.
+        from notifier import build_daily_picks_carousel
+        marginable = [s for s in _last_signals
+                      if getattr(s, "margin_im_pct", 0) > 0]
+        BUY_SUBS  = {"STAGE_2_PIVOT_READY", "STAGE_2_IGNITION"}
+        WATCH_SUBS = {"STAGE_1_PREP", "STAGE_2_CONTRACTION"}
+        SELL_SUBS = {"STAGE_2_OVEREXTENDED", "STAGE_3_DIST_DIST",
+                     "STAGE_4_BREAKDOWN"}
+        def _top5(target_set):
+            return sorted(
+                [s for s in marginable
+                 if getattr(s, "sub_stage", "") in target_set],
+                key=lambda s: s.strength_score, reverse=True,
+            )[:5]
+        buckets = {
+            "buy":   _top5(BUY_SUBS),
+            "watch": _top5(WATCH_SUBS),
+            "sell":  _top5(SELL_SUBS),
+        }
+        scan_ts = (_last_signals[0].scanned_at if _last_signals else "")
+        if all(not v for v in buckets.values()):
+            reply_text(reply_token,
+                       "ยังไม่มีข้อมูลการสแกน กรุณารอการสแกนครั้งถัดไป")
+            return
+        try:
+            flex = build_daily_picks_carousel(buckets, scan_ts)
+            reply_flex(reply_token, "Daily Picks: BUY / WATCH / SELL", flex)
+        except Exception as exc:
+            logger.error("build_daily_picks_carousel failed: %s", exc, exc_info=True)
+            reply_text(reply_token, "ไม่สามารถสร้างการ์ดได้ในขณะนี้")
 
     elif cmd in ("margin50", "margin 50", "im50",
                   "margin60", "margin 60", "im60",

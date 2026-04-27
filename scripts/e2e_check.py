@@ -676,6 +676,51 @@ def suite_pivot(base, secret):
     return fails
 
 
+def suite_daily_picks(base, secret):
+    """Daily picks digest: BUY / WATCH / SELL.
+
+    Confirms (a) the `today` command dispatches kind=daily_picks, (b) the
+    marginable_pool is non-empty (sanity: margin list loaded), (c) every
+    bucket's stocks fall in the expected sub-stage scope + are all
+    marginable, (d) bucket counts are bounded (≤5).
+    """
+    section("Daily picks — BUY / WATCH / SELL")
+    fails = 0
+    BUY_SUBS   = {"STAGE_2_PIVOT_READY", "STAGE_2_IGNITION"}
+    WATCH_SUBS = {"STAGE_1_PREP", "STAGE_2_CONTRACTION"}
+    SELL_SUBS  = {"STAGE_2_OVEREXTENDED", "STAGE_3_DIST_DIST",
+                  "STAGE_4_BREAKDOWN"}
+    try:
+        q, _ = query(base, secret, "today")
+        fails += check("today/dispatched", q.get("kind") == "daily_picks",
+                       f"kind={q.get('kind')}")
+        fails += check("today/marginable_pool>0",
+                       (q.get("marginable_pool") or 0) > 0,
+                       f"marginable_pool={q.get('marginable_pool')} — "
+                       "margin list may not be loaded")
+        for bucket, scope in (("buy", BUY_SUBS), ("watch", WATCH_SUBS), ("sell", SELL_SUBS)):
+            count = q.get(f"{bucket}_count", 0)
+            fails += check(f"today/{bucket}_count_bounded", 0 <= count <= 5,
+                           f"count={count}")
+            for r in q.get(bucket) or []:
+                sym = r.get("symbol", "?")
+                got_sub = r.get("sub_stage", "")
+                fails += check(f"today/{bucket}/{sym}/sub_in_scope",
+                               got_sub in scope,
+                               f"sub_stage={got_sub!r} not in {scope}")
+                # Marginable filter — all picks must have margin_im_pct > 0.
+                # /test/query first_5 doesn't include margin_im_pct directly;
+                # do a single-stock lookup to verify.
+                qs, _ = query(base, secret, sym)
+                m = (qs.get("signal") or {}).get("margin_im_pct", 0)
+                fails += check(f"today/{bucket}/{sym}/marginable",
+                               (m or 0) > 0,
+                               f"margin_im_pct={m} — should be >0")
+    except Exception as e:
+        fails += check("today", False, f"err: {e}")
+    return fails
+
+
 def suite_stage_weakening(base, secret):
     """Invariant coverage for the stage_weakening modifier shipped
     alongside breakout_attempt + unclosed-VCP. Works by probing a
@@ -1112,6 +1157,7 @@ def main():
     total_fails += suite_stage_weakening(base, secret)
     total_fails += suite_sub_stage(base, secret)
     total_fails += suite_pivot(base, secret)
+    total_fails += suite_daily_picks(base, secret)
     total_fails += suite_persistence(base, secret)
     total_fails += suite_index_scope(base, secret)
     total_fails += suite_margin(base, secret)
