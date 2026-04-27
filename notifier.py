@@ -815,7 +815,7 @@ def _small_kv(label: str, value: str) -> dict:
 def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> dict:
     """Detailed Flex Bubble for a single stock.
 
-    Layout (per user spec):
+    Layout (per redesign spec):
       Header (dark):
         SET:SYMBOL · Stage 2 · Markup           Score 67
 
@@ -823,22 +823,25 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
         ฿1.78  +1.14%
         Vol ฿0M · IM50                          (or 'Non-marginable')
 
-      Body Section 2 (Trend Reference — 52W + 4 SMAs):
+      Body Section 2 (Trend & Key Levels — 52W + 4 SMAs):
         52W ฿1.49–฿2.10                         −15.2%
         SMA20    ฿1.70    +4.7%
         SMA50    ฿1.65    +7.9%
         SMA100   ฿1.55    +14.8%
         SMA200   ฿1.42    +25.4%
 
-      Body Section 3 (Trade Levels — only when actionable):
-        📍 Start         ฿0.40      cycle low   (Pin1 — Fib anchor)
-        🎯 Pivot         ฿1.82       −2.2%      (Pin2 — buy trigger)
-        🔼 1st Peak      ฿1.65      Fib ref     (when ≠ pivot)
-        ⛔ Stop          ฿1.74       −2.2%      (Pin3 — pullback floor)
+      Body Section 3 (Trade Levels — 3 actionable rows):
+        🎯 Pivot         ฿1.82       −2.2%      (entry trigger)
+        ⛔ Stop          ฿1.74       −2.2%      (Pin3 / invalidation)
         🎯 Target 1.618  ฿3.10      +74.2%      (Fib 1.618 extension)
-        ⚖️ R:R           4.50 : 1               (reward/risk ratio)
 
-      Body Section 4: Captain Signal advice
+      Body Section 4 (Calculation Notes — math transparency):
+        1st leg: ฿0.40 → ฿1.65 (+313%)
+        Retrace: 32% of 1st leg (฿0.20)
+        Target: ฿1.74 + 1.618 × ฿1.25 = ฿3.10
+        R:R: 4.50 : 1 (reward/risk)
+
+      Body Section 5 (Analysis Insight — Captain Signal advice)
     """
     stage_label_full, stage_color = _resolve_stage_label(signal)
     # Strip the parenthetical "(running)" / "(loading)" / etc. so the
@@ -920,7 +923,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
     # 52W range now lives WITH the SMAs as one trend-context block.
     body_contents.append({"type": "separator", "margin": "md"})
     body_contents.append({
-        "type": "text", "text": "Trend Reference",
+        "type": "text", "text": "Trend & Key Levels",
         "size": "xxs", "color": "#3498DB", "weight": "bold",
     })
     # 52W range row — price scale + pct-from-high
@@ -963,53 +966,16 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
             })
 
     # ── Body Section 3: Trade Levels (only when actionable) ──
-    # Layout: 4 anchors of the Fib 3-point extension visible to the
-    # user — Start (Pin1=52W low) → Pivot (Pin2=swing high) → Low
-    # (Pin3=pullback floor / stop) → Target (T1.618 extension).
+    # Per new design: just 3 actionable levels — Pivot (entry trigger),
+    # Stop (invalidation), Target 1.618 (Fib extension). Start (Pin1)
+    # and 1st Peak (Pin2) values now live in the Calculation Notes
+    # block below where the math is shown step-by-step. R:R also
+    # moved into the calc notes so this section reads as 3 clean rows.
     pivot = getattr(signal, "pivot_price", 0.0) or 0.0
     pstop = getattr(signal, "pivot_stop", 0.0) or 0.0
+    t1618 = getattr(signal, "target_1618", 0.0) or 0.0
     trade_rows: list = []
     if pivot > 0:
-        # Start anchor (Pin1) — ZigZag-detected cycle low (start of
-        # current uptrend leg). Falls back to 52W low if ZigZag found
-        # no structure. Helps the user verify the 1st-leg reference.
-        fib_start = getattr(signal, "fib_start", 0.0) or signal.low_52w
-        if fib_start > 0:
-            label = "cycle low" if fib_start != signal.low_52w else "52W low"
-            trade_rows.append({
-                "type": "box", "layout": "horizontal", "contents": [
-                    {"type": "text", "text": "📍 Start", "size": "sm",
-                     "color": "#7F8C8D", "flex": 3},
-                    {"type": "text", "text": f"฿{fib_start:,.2f}",
-                     "size": "sm", "weight": "bold", "color": "#2C3E50",
-                     "flex": 3, "align": "end"},
-                    {"type": "text", "text": label,
-                     "size": "xs", "color": "#7F8C8D",
-                     "flex": 2, "align": "end"},
-                ],
-            })
-        # 1st-leg peak (Pin2) — ALWAYS shown when set. The user's
-        # methodology fixes Pin2 at the 1st leg's top; target is
-        # measured from this point, not from the current pivot. Even
-        # when Pin2 ≈ pivot (single-leg stock), surfacing the row
-        # makes the math transparent. Label adapts: "1st leg" when
-        # meaningfully below pivot (multi-leg structure like HANA),
-        # "Fib ref" when it equals pivot (single-leg like SPRC).
-        fib_pivot = getattr(signal, "fib_pivot", 0.0) or 0.0
-        if fib_pivot > 0:
-            label = "1st leg" if fib_pivot < pivot * 0.97 else "Fib ref"
-            trade_rows.append({
-                "type": "box", "layout": "horizontal", "contents": [
-                    {"type": "text", "text": "🔼 1st Peak", "size": "sm",
-                     "color": "#7F8C8D", "flex": 3},
-                    {"type": "text", "text": f"฿{fib_pivot:,.2f}",
-                     "size": "sm", "weight": "bold", "color": "#2C3E50",
-                     "flex": 3, "align": "end"},
-                    {"type": "text", "text": label,
-                     "size": "xs", "color": "#7F8C8D",
-                     "flex": 2, "align": "end"},
-                ],
-            })
         gap_pivot = (signal.close - pivot) / pivot * 100
         gap_color = "#27AE60" if gap_pivot >= 0 else \
                     "#F39C12" if gap_pivot > -5 else "#7F8C8D"
@@ -1039,13 +1005,6 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                      "flex": 2, "align": "end"},
                 ],
             })
-        # Fibonacci 1.618 extension target — verify against your own
-        # Fib draw; auto-formula uses 52W_low → pivot leg projected from
-        # stop, which can run aspirational on stocks where you'd anchor
-        # on a shorter prior leg (HANA / KKP class). T1.0 hidden per
-        # user request — only the extended target shown for actionable
-        # decisions.
-        t1618 = getattr(signal, "target_1618", 0.0) or 0.0
         if t1618 > 0:
             up1618 = (t1618 - signal.close) / signal.close * 100
             trade_rows.append({
@@ -1060,27 +1019,6 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                      "flex": 2, "align": "end"},
                 ],
             })
-        # Risk/Reward ratio — only when both stop and target are set
-        # AND the close sits ABOVE the stop (positive risk) AND BELOW
-        # the target (positive reward). Otherwise the trade has already
-        # broken out / been stopped out and R:R is meaningless.
-        if pstop > 0 and t1618 > 0 and signal.close > pstop and t1618 > signal.close:
-            risk = signal.close - pstop
-            reward = t1618 - signal.close
-            rr = reward / risk if risk > 0 else 0.0
-            rr_color = "#27AE60" if rr >= 3 else "#F39C12" if rr >= 1.5 else "#E74C3C"
-            trade_rows.append({
-                "type": "box", "layout": "horizontal", "contents": [
-                    {"type": "text", "text": "⚖️ R:R", "size": "sm",
-                     "color": "#7F8C8D", "flex": 3},
-                    {"type": "text", "text": f"{rr:.2f} : 1",
-                     "size": "sm", "weight": "bold", "color": rr_color,
-                     "flex": 3, "align": "end"},
-                    {"type": "text", "text": "reward/risk",
-                     "size": "xs", "color": "#7F8C8D",
-                     "flex": 2, "align": "end"},
-                ],
-            })
     if trade_rows:
         body_contents.append({"type": "separator", "margin": "md"})
         body_contents.append({
@@ -1088,13 +1026,11 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
             "size": "xxs", "color": "#F39C12", "weight": "bold",
         })
         body_contents.extend(trade_rows)
-        # ── Fib calculation breakdown ──
-        # Show the math step-by-step so the user can verify the
-        # auto-pick:   1st leg: Pin1 → Pin2 (+X%)
-        #              Retrace: A% of 1st leg
-        #              Target = stop + 1.618 × Range
-        # Fib_pivot is Pin2 (the 1st-leg peak); fall back to current
-        # pivot if Pin2 was the same (no earlier H qualified).
+        # ── Calculation Notes ──
+        # Step-by-step math showing the underlying Fib anchors so the
+        # user can verify the auto-pick. Surfaces Pin1 (cycle low) +
+        # Pin2 (1st leg peak) inside the formula text rather than as
+        # separate trade-level rows. Adds R:R as the final line.
         fib_start = getattr(signal, "fib_start", 0.0) or 0.0
         fib_pivot = getattr(signal, "fib_pivot", 0.0) or pivot
         if fib_start > 0 and fib_pivot > fib_start and t1618 > 0:
@@ -1102,6 +1038,11 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
             range_ = fib_pivot - fib_start
             retrace_amt = fib_pivot - pstop
             retrace_pct = (retrace_amt / range_ * 100) if range_ > 0 else 0
+            body_contents.append({"type": "separator", "margin": "md"})
+            body_contents.append({
+                "type": "text", "text": "Calculation Notes",
+                "size": "xxs", "color": "#3498DB", "weight": "bold",
+            })
             calc_rows = [
                 {"type": "text",
                  "text": f"1st leg: ฿{fib_start:,.2f} → ฿{fib_pivot:,.2f} (+{leg_pct:.0f}%)",
@@ -1113,11 +1054,29 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                  "text": f"Target: ฿{pstop:,.2f} + 1.618 × ฿{range_:,.2f} = ฿{t1618:,.2f}",
                  "size": "xxs", "color": "#7F8C8D", "wrap": True},
             ]
+            # R:R as the final note (when math makes sense — close
+            # between stop and target).
+            if pstop > 0 and signal.close > pstop and t1618 > signal.close:
+                risk = signal.close - pstop
+                reward = t1618 - signal.close
+                rr = reward / risk if risk > 0 else 0.0
+                rr_color = "#27AE60" if rr >= 3 else "#F39C12" if rr >= 1.5 else "#E74C3C"
+                calc_rows.append({
+                    "type": "text",
+                    "text": f"R:R: {rr:.2f} : 1 (reward/risk)",
+                    "size": "xxs", "color": rr_color, "weight": "bold",
+                    "wrap": True,
+                })
             body_contents.extend(calc_rows)
 
-    # ── Body Section 4: Captain Signal advice ──
+    # ── Body Section 4: Analysis Insight (Captain Signal advice) ──
     advice = _captain_stock_advice(signal)
     if advice:
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({
+            "type": "text", "text": "Analysis Insight",
+            "size": "xxs", "color": "#3498DB", "weight": "bold",
+        })
         body_contents.append(_captain_advice_box(advice))
 
     _pat_label = {"breakout": "Breakout", "ath_breakout": "ATH Breakout",
