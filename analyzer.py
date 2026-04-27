@@ -307,21 +307,22 @@ def _zigzag_cycle_low(df: pd.DataFrame, threshold: float = 0.20,
         pivots.append((base + cur_l_bar, float(cur_l), "L"))
     if not pivots:
         return float(low.min())
-    # Find Pin1: the swing-LOW that started the current uptrend.
-    last = pivots[-1]
-    if last[2] == "H":
-        # Sequence ends with a swing-high (pivot/recent peak).
-        # Pin1 = the L immediately before this H.
-        ls_before = [v for b, v, t in pivots if t == "L" and b < last[0]]
-        return ls_before[-1] if ls_before else float(low.min())
-    # Sequence ends with a swing-low (recent pullback bottom = current Pin3).
-    # The current cycle's Pin2 is the H before this L; Pin1 is the L before THAT H.
-    hs_before = [b for b, v, t in pivots if t == "H" and b < last[0]]
-    if not hs_before:
+    # Find Pin1: the swing-LOW that started the current uptrend cycle.
+    # The "current cycle's peak" = the HIGHEST H in the detected pivots
+    # (not necessarily the most recent H — small post-peak rebounds
+    # would otherwise mislead the picker). Pin1 = the L immediately
+    # before that highest H.
+    #
+    # STECON example (validated against user's chart):
+    #   ZigZag: L฿5.25 → H฿13.60 → L฿10.70 → H฿13.40
+    #   Most-recent-H = ฿13.40 → wrong Pin1 = ฿10.70
+    #   Highest-H    = ฿13.60 → correct Pin1 = ฿5.25 ✓
+    highs = [(b, v) for b, v, t in pivots if t == "H"]
+    if not highs:
         return float(low.min())
-    pin2_bar = hs_before[-1]
-    ls_before = [v for b, v, t in pivots if t == "L" and b < pin2_bar]
-    return ls_before[-1] if ls_before else float(low.min())
+    peak_bar, _peak_val = max(highs, key=lambda bv: bv[1])
+    ls_before_peak = [v for b, v, t in pivots if t == "L" and b < peak_bar]
+    return ls_before_peak[-1] if ls_before_peak else float(low.min())
 
 
 def _last_run_high(df: pd.DataFrame, lookback: int = 60) -> float:
