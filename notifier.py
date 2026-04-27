@@ -815,29 +815,30 @@ def _small_kv(label: str, value: str) -> dict:
 def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> dict:
     """Detailed Flex Bubble for a single stock.
 
-    Layout:
-      Header (dark, ultra-compact):
-        SET:SYMBOL ........................ Score 67
+    Layout (per user spec):
+      Header (dark):
+        SET:SYMBOL · Stage 2 · Markup           Score 67
 
-      Body Section 1 (price hero + context):
+      Body Section 1 (price hero + vol + margin):
         ฿1.78  +1.14%
-        Stage 2 · Markup                            (no parenthetical)
-        Vol ฿0M · 52W ฿1.49–฿2.10              −15.2%
+        Vol ฿0M · IM50                          (or 'Non-marginable')
 
-      Body Section 2 (Trend Reference — restored per user request):
+      Body Section 2 (Trend Reference — 52W + 4 SMAs):
+        52W ฿1.49–฿2.10                         −15.2%
+        SMA20    ฿1.70    +4.7%
         SMA50    ฿1.65    +7.9%
+        SMA100   ฿1.55    +14.8%
         SMA200   ฿1.42    +25.4%
 
       Body Section 3 (Trade Levels — only when actionable):
-        📍 Start         ฿0.40      52W low     (Pin1 — Fib anchor)
+        📍 Start         ฿0.40      cycle low   (Pin1 — Fib anchor)
         🎯 Pivot         ฿1.82       −2.2%      (Pin2 — buy trigger)
+        🔼 1st Peak      ฿1.65      Fib ref     (when ≠ pivot)
         ⛔ Stop          ฿1.74       −2.2%      (Pin3 — pullback floor)
         🎯 Target 1.618  ฿3.10      +74.2%      (Fib 1.618 extension)
+        ⚖️ R:R           4.50 : 1               (reward/risk ratio)
 
-      Body Section 4 (Margin):
-        💰 Margin    IM50%   2.00× lev   /   Non-marginable
-
-      Body Section 5: Captain Signal advice
+      Body Section 4: Captain Signal advice
     """
     stage_label_full, stage_color = _resolve_stage_label(signal)
     # Strip the parenthetical "(running)" / "(loading)" / etc. so the
@@ -867,25 +868,34 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
     else:
         tvm_text = f"฿{tvm*1000:.0f}K"
 
-    # ── Header — JUST ticker + score (per user spec) ──
+    # ── Header — ticker + sub-stage + score (per user spec) ──
+    # Sub-stage moved INTO the header so the body opens with price.
     header_contents = [
         {"type": "box", "layout": "horizontal", "contents": [
             {"type": "text", "text": f"SET:{signal.symbol}",
              "weight": "bold", "size": "xl", "color": "#FFFFFF",
-             "flex": 5, "wrap": True},
+             "flex": 4, "wrap": True},
             {"type": "text", "text": f"Score {score}",
              "size": "md", "color": score_color, "weight": "bold",
-             "flex": 4, "align": "end"},
+             "flex": 3, "align": "end"},
         ]},
+        {"type": "text", "text": stage_label,
+         "size": "xs", "color": stage_color, "weight": "bold",
+         "wrap": True, "margin": "xs"},
     ]
 
-    # ── Body Section 1: Price hero + sub-stage + context ──
-    # NOTE on colors: body background is WHITE in mega bubble, so any
-    # text needs DARK color to be visible. Earlier I set price/Pivot/
-    # Stop values to "#FFFFFF" thinking body was dark — they
-    # disappeared. Fixed: price hero uses #1A237E (deep blue), value
-    # cells use #2C3E50 (dark slate). Backgrounds + headers stay dark
-    # so their white text is fine.
+    # ── Body Section 1: Price + Vol + Margin ──
+    # NOTE on colors: body background is WHITE — every text needs DARK
+    # color to be visible. Price hero #1A237E (deep blue); secondary
+    # values #2C3E50 (dark slate). Headers/backgrounds stay dark so
+    # white text on them works.
+    _mim = getattr(signal, "margin_im_pct", 0) or 0
+    if _mim:
+        margin_text = f"IM{_mim}"
+        margin_color = "#1ABC9C" if _mim <= 60 else "#F39C12"
+    else:
+        margin_text = "Non-marginable"
+        margin_color = "#7F8C8D"
     body_contents: list = [
         # Big price + change% on one row
         {"type": "box", "layout": "baseline", "contents": [
@@ -896,66 +906,61 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
              "weight": "bold", "size": "lg", "color": chg_color,
              "flex": 4, "align": "end"},
         ]},
-        # Sub-stage (no parenthetical)
-        {"type": "text", "text": stage_label,
-         "size": "sm", "color": stage_color, "weight": "bold",
-         "wrap": True, "margin": "xs"},
-        # Volume + 52W range + pct-from-high context line.
-        # Bumped from xxs → xs per user feedback (was too small to read).
-        {"type": "box", "layout": "horizontal", "margin": "sm",
-         "contents": [
-            {"type": "text",
-             "text": f"Vol {tvm_text} · 52W ฿{signal.low_52w:,.2f}–฿{signal.high_52w:,.2f}",
-             "size": "xs", "color": "#7F8C8D", "flex": 7, "wrap": True},
-            {"type": "text", "text": f"{pct_high:+.1f}%",
-             "size": "xs", "color": pct_high_color, "weight": "bold",
-             "flex": 2, "align": "end"},
+        # Vol · Margin tier (just IM%, no leverage multiplier per user spec)
+        {"type": "box", "layout": "baseline", "margin": "sm", "contents": [
+            {"type": "text", "text": f"Vol {tvm_text}",
+             "size": "sm", "color": "#7F8C8D", "flex": 5},
+            {"type": "text", "text": f"💰 {margin_text}",
+             "size": "sm", "color": margin_color, "weight": "bold",
+             "flex": 4, "align": "end"},
         ]},
     ]
 
-    # ── Body Section 2: SMA50 + SMA200 reference ──
-    # User-requested restoration after the minimalist redesign. Echoes
-    # the Pivot/Stop layout for visual consistency: SMA value + signed %
-    # distance from close so users see how far above / below the trend
-    # MAs price is sitting.
-    sma_rows: list = []
-    if signal.sma50 > 0:
-        gap50 = (signal.close - signal.sma50) / signal.sma50 * 100
-        gap50_color = "#27AE60" if gap50 >= 0 else "#E67E22"
-        sma_rows.append({
-            "type": "box", "layout": "horizontal", "contents": [
-                {"type": "text", "text": "SMA50", "size": "sm",
-                 "color": "#7F8C8D", "flex": 3},
-                {"type": "text", "text": f"฿{signal.sma50:,.2f}",
-                 "size": "sm", "weight": "bold", "color": "#2C3E50",
-                 "flex": 3, "align": "end"},
-                {"type": "text", "text": f"{gap50:+.1f}%",
-                 "size": "xs", "color": gap50_color, "weight": "bold",
-                 "flex": 2, "align": "end"},
-            ],
-        })
-    if signal.sma200 > 0:
-        gap200 = (signal.close - signal.sma200) / signal.sma200 * 100
-        gap200_color = "#27AE60" if gap200 >= 0 else "#E67E22"
-        sma_rows.append({
-            "type": "box", "layout": "horizontal", "contents": [
-                {"type": "text", "text": "SMA200", "size": "sm",
-                 "color": "#7F8C8D", "flex": 3},
-                {"type": "text", "text": f"฿{signal.sma200:,.2f}",
-                 "size": "sm", "weight": "bold", "color": "#2C3E50",
-                 "flex": 3, "align": "end"},
-                {"type": "text", "text": f"{gap200:+.1f}%",
-                 "size": "xs", "color": gap200_color, "weight": "bold",
-                 "flex": 2, "align": "end"},
-            ],
-        })
-    if sma_rows:
-        body_contents.append({"type": "separator", "margin": "md"})
-        body_contents.append({
-            "type": "text", "text": "Trend Reference",
-            "size": "xxs", "color": "#3498DB", "weight": "bold",
-        })
-        body_contents.extend(sma_rows)
+    # ── Body Section 2: Trend Reference — 52W range + 4 SMAs ──
+    # 52W range now lives WITH the SMAs as one trend-context block.
+    body_contents.append({"type": "separator", "margin": "md"})
+    body_contents.append({
+        "type": "text", "text": "Trend Reference",
+        "size": "xxs", "color": "#3498DB", "weight": "bold",
+    })
+    # 52W range row — price scale + pct-from-high
+    body_contents.append({
+        "type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "52W", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text",
+             "text": f"฿{signal.low_52w:,.2f}–฿{signal.high_52w:,.2f}",
+             "size": "sm", "weight": "bold", "color": "#2C3E50",
+             "flex": 5, "align": "end", "wrap": True},
+            {"type": "text", "text": f"{pct_high:+.1f}%",
+             "size": "xs", "color": pct_high_color, "weight": "bold",
+             "flex": 2, "align": "end"},
+        ],
+    })
+    # SMA20 / 50 / 100 / 200 rows — each shows ฿value + % distance from close.
+    sma100 = getattr(signal, "sma100", 0.0) or 0.0
+    sma_levels = [
+        ("SMA20",  signal.sma20),
+        ("SMA50",  signal.sma50),
+        ("SMA100", sma100),
+        ("SMA200", signal.sma200),
+    ]
+    for label, val in sma_levels:
+        if val > 0:
+            gap = (signal.close - val) / val * 100
+            gap_color = "#27AE60" if gap >= 0 else "#E67E22"
+            body_contents.append({
+                "type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text", "text": label, "size": "sm",
+                     "color": "#7F8C8D", "flex": 3},
+                    {"type": "text", "text": f"฿{val:,.2f}",
+                     "size": "sm", "weight": "bold", "color": "#2C3E50",
+                     "flex": 5, "align": "end"},
+                    {"type": "text", "text": f"{gap:+.1f}%",
+                     "size": "xs", "color": gap_color, "weight": "bold",
+                     "flex": 2, "align": "end"},
+                ],
+            })
 
     # ── Body Section 3: Trade Levels (only when actionable) ──
     # Layout: 4 anchors of the Fib 3-point extension visible to the
@@ -1052,6 +1057,27 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                      "flex": 2, "align": "end"},
                 ],
             })
+        # Risk/Reward ratio — only when both stop and target are set
+        # AND the close sits ABOVE the stop (positive risk) AND BELOW
+        # the target (positive reward). Otherwise the trade has already
+        # broken out / been stopped out and R:R is meaningless.
+        if pstop > 0 and t1618 > 0 and signal.close > pstop and t1618 > signal.close:
+            risk = signal.close - pstop
+            reward = t1618 - signal.close
+            rr = reward / risk if risk > 0 else 0.0
+            rr_color = "#27AE60" if rr >= 3 else "#F39C12" if rr >= 1.5 else "#E74C3C"
+            trade_rows.append({
+                "type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text", "text": "⚖️ R:R", "size": "sm",
+                     "color": "#7F8C8D", "flex": 3},
+                    {"type": "text", "text": f"{rr:.2f} : 1",
+                     "size": "sm", "weight": "bold", "color": rr_color,
+                     "flex": 3, "align": "end"},
+                    {"type": "text", "text": "reward/risk",
+                     "size": "xs", "color": "#7F8C8D",
+                     "flex": 2, "align": "end"},
+                ],
+            })
     if trade_rows:
         body_contents.append({"type": "separator", "margin": "md"})
         body_contents.append({
@@ -1060,36 +1086,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
         })
         body_contents.extend(trade_rows)
 
-    # ── Body Section 4: Margin tier ──
-    _mim = getattr(signal, "margin_im_pct", 0) or 0
-    body_contents.append({"type": "separator", "margin": "md"})
-    if _mim:
-        _lev = 100.0 / _mim
-        m_color = "#1ABC9C" if _mim <= 60 else "#F39C12"
-        body_contents.append({
-            "type": "box", "layout": "horizontal", "contents": [
-                {"type": "text", "text": "💰 Margin", "size": "sm",
-                 "color": "#7F8C8D", "flex": 3},
-                {"type": "text", "text": f"IM{_mim}%",
-                 "size": "sm", "weight": "bold", "color": m_color,
-                 "flex": 2, "align": "end"},
-                {"type": "text", "text": f"{_lev:.2f}× lev",
-                 "size": "xs", "color": m_color, "weight": "bold",
-                 "flex": 3, "align": "end"},
-            ],
-        })
-    else:
-        body_contents.append({
-            "type": "box", "layout": "horizontal", "contents": [
-                {"type": "text", "text": "💰 Margin", "size": "sm",
-                 "color": "#7F8C8D", "flex": 3},
-                {"type": "text", "text": "Non-marginable",
-                 "size": "sm", "weight": "bold", "color": "#7F8C8D",
-                 "flex": 5, "align": "end", "wrap": True},
-            ],
-        })
-
-    # ── Body Section 5: Captain Signal advice ──
+    # ── Body Section 4: Captain Signal advice ──
     advice = _captain_stock_advice(signal)
     if advice:
         body_contents.append(_captain_advice_box(advice))

@@ -53,6 +53,7 @@ class StockSignal:
     volume: int = 0
     volume_ratio: float = 0.0       # today's vol / 20-day avg vol
     sma50: float = 0.0
+    sma100: float = 0.0
     sma150: float = 0.0
     sma200: float = 0.0
     high_52w: float = 0.0
@@ -1334,6 +1335,7 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
     sma10 = float(_sma(close, 10).iloc[-1]) if len(df) >= 10 else float("nan")
     sma20 = float(_sma(close, 20).iloc[-1]) if len(df) >= 20 else float("nan")
     sma50 = float(_sma(close, 50).iloc[-1]) if len(df) >= 50 else float("nan")
+    sma100 = float(_sma(close, 100).iloc[-1]) if len(df) >= 100 else float("nan")
     sma150 = float(_sma(close, 150).iloc[-1]) if len(df) >= 150 else float("nan")
     sma200 = float(_sma(close, 200).iloc[-1]) if len(df) >= 200 else float("nan")
     sma200_roc20 = _sma_roc(close, window=200, lookback=20)
@@ -1396,6 +1398,7 @@ def scan_stock(symbol: str, df: pd.DataFrame, ath_override: Optional[float] = No
         sma10=round(sma10, 2) if not np.isnan(sma10) else 0.0,
         sma20=round(sma20, 2) if not np.isnan(sma20) else 0.0,
         sma50=round(sma50, 2) if not np.isnan(sma50) else 0.0,
+        sma100=round(sma100, 2) if not np.isnan(sma100) else 0.0,
         sma150=round(sma150, 2) if not np.isnan(sma150) else 0.0,
         sma200=round(sma200, 2) if not np.isnan(sma200) else 0.0,
         sma200_roc20=round(sma200_roc20, 4),
