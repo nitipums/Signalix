@@ -988,13 +988,16 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                      "flex": 2, "align": "end"},
                 ],
             })
-        # 1st-leg peak (Pin2) — only shown when ZigZag found an earlier
-        # peak meaningfully BELOW current pivot (≥5% lower). Tells the
-        # user "the Fib calc uses this earlier peak as Pin2, not the
-        # current pivot — that's why the target may look conservative
-        # vs (52W low → current pivot) projection."
+        # 1st-leg peak (Pin2) — ALWAYS shown when set. The user's
+        # methodology fixes Pin2 at the 1st leg's top; target is
+        # measured from this point, not from the current pivot. Even
+        # when Pin2 ≈ pivot (single-leg stock), surfacing the row
+        # makes the math transparent. Label adapts: "1st leg" when
+        # meaningfully below pivot (multi-leg structure like HANA),
+        # "Fib ref" when it equals pivot (single-leg like SPRC).
         fib_pivot = getattr(signal, "fib_pivot", 0.0) or 0.0
-        if fib_pivot > 0 and fib_pivot < pivot * 0.95:
+        if fib_pivot > 0:
+            label = "1st leg" if fib_pivot < pivot * 0.97 else "Fib ref"
             trade_rows.append({
                 "type": "box", "layout": "horizontal", "contents": [
                     {"type": "text", "text": "🔼 1st Peak", "size": "sm",
@@ -1002,7 +1005,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                     {"type": "text", "text": f"฿{fib_pivot:,.2f}",
                      "size": "sm", "weight": "bold", "color": "#2C3E50",
                      "flex": 3, "align": "end"},
-                    {"type": "text", "text": "Fib ref",
+                    {"type": "text", "text": label,
                      "size": "xs", "color": "#7F8C8D",
                      "flex": 2, "align": "end"},
                 ],

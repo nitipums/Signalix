@@ -384,17 +384,34 @@ def _zigzag_first_leg_peak(df: pd.DataFrame, current_pivot: float,
         pivots.append((base + cur_h_bar, float(cur_h), "H"))
     elif direction == -1:
         pivots.append((base + cur_l_bar, float(cur_l), "L"))
-    highs = [(b, v) for b, v, t in pivots if t == "H"]
-    if len(highs) < 2:
+    # Pin2 = the HIGHEST PRIOR PEAK in the lookback window — the
+    # 1st leg's top, FIXED once price establishes a meaningful swing
+    # high. Even when the current 52W high is later (multi-leg trend),
+    # the user's Fib draw uses the EARLIER 1st-leg peak as Pin2.
+    #
+    # Rule: take the highest H from ZigZag pivots. If that highest H
+    # equals the current_pivot (within 1% tolerance — the recent peak
+    # IS the highest), use the SECOND-highest H instead — the prior
+    # swing high before the current new high.
+    #
+    # Validated against user's chart-drawn Fib anchors:
+    #   HANA: pivots H[22.50, 26.75, 32.50]; current_pivot=32.50
+    #         → highest=32.50≈pivot → use second=26.75 ✓ matches user
+    #   STECON: pivots H[8.45, 9.50, 13.60, 13.40]; current_pivot=13.40
+    #           → highest=13.60≠pivot → use 13.60 ✓ matches user
+    #   SPRC: pivots H[8.20]; current_pivot=8.20 → only one H, use 8.20 ✓
+    #   INSET: pivots H[1.81, 1.96, 1.93, 3.08]; current_pivot=3.08
+    #          → highest=3.08≈pivot → use second=1.96 (user wants 2.89,
+    #          but 2.89 isn't a 20%-threshold ZigZag pivot — limitation)
+    highs = sorted([v for b, v, t in pivots if t == "H"], reverse=True)
+    if not highs:
         return current_pivot
-    peak_bar, peak_val = max(highs, key=lambda bv: bv[1])
-    prior_hs = [(b, v) for b, v in highs if b < peak_bar]
-    if not prior_hs:
-        return current_pivot
-    _, prev_val = prior_hs[-1]  # most recent prior H
-    if prev_val >= similarity * peak_val:
-        return prev_val
-    return current_pivot
+    # Only one peak, OR highest peak is meaningfully different from
+    # current_pivot — use the highest peak as Pin2.
+    if len(highs) == 1 or abs(highs[0] - current_pivot) > current_pivot * 0.01:
+        return highs[0]
+    # Highest peak ≈ current pivot; Pin2 = second-highest peak.
+    return highs[1] if len(highs) > 1 else current_pivot
 
 
 def _last_run_high(df: pd.DataFrame, lookback: int = 60) -> float:
