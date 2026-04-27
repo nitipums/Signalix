@@ -883,8 +883,8 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
              "flex": 3, "align": "end"},
         ]},
         {"type": "text", "text": stage_label,
-         "size": "xs", "color": stage_color, "weight": "bold",
-         "wrap": True, "margin": "xs"},
+         "size": "sm", "color": stage_color, "weight": "bold",
+         "wrap": True, "margin": "sm"},
     ]
 
     # ── Body Section 1: Price + Vol + Margin ──
@@ -924,7 +924,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
     body_contents.append({"type": "separator", "margin": "md"})
     body_contents.append({
         "type": "text", "text": "Trend & Key Levels",
-        "size": "xxs", "color": "#3498DB", "weight": "bold",
+        "size": "xs", "color": "#3498DB", "weight": "bold",
     })
     # 52W range row — price scale + pct-from-high
     body_contents.append({
@@ -1023,7 +1023,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
         body_contents.append({"type": "separator", "margin": "md"})
         body_contents.append({
             "type": "text", "text": "Trade Levels",
-            "size": "xxs", "color": "#F39C12", "weight": "bold",
+            "size": "xs", "color": "#F39C12", "weight": "bold",
         })
         body_contents.extend(trade_rows)
         # ── Calculation Notes ──
@@ -1041,18 +1041,18 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
             body_contents.append({"type": "separator", "margin": "md"})
             body_contents.append({
                 "type": "text", "text": "Calculation Notes",
-                "size": "xxs", "color": "#3498DB", "weight": "bold",
+                "size": "xs", "color": "#3498DB", "weight": "bold",
             })
             calc_rows = [
                 {"type": "text",
                  "text": f"1st leg: ฿{fib_start:,.2f} → ฿{fib_pivot:,.2f} (+{leg_pct:.0f}%)",
-                 "size": "xxs", "color": "#7F8C8D", "wrap": True, "margin": "xs"},
+                 "size": "xs", "color": "#7F8C8D", "wrap": True, "margin": "xs"},
                 {"type": "text",
                  "text": f"Retrace: {retrace_pct:.0f}% of 1st leg (฿{retrace_amt:,.2f})",
-                 "size": "xxs", "color": "#7F8C8D", "wrap": True},
+                 "size": "xs", "color": "#7F8C8D", "wrap": True},
                 {"type": "text",
                  "text": f"Target: ฿{pstop:,.2f} + 1.618 × ฿{range_:,.2f} = ฿{t1618:,.2f}",
-                 "size": "xxs", "color": "#7F8C8D", "wrap": True},
+                 "size": "xs", "color": "#7F8C8D", "wrap": True},
             ]
             # R:R as the final note (when math makes sense — close
             # between stop and target).
@@ -1064,7 +1064,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                 calc_rows.append({
                     "type": "text",
                     "text": f"R:R: {rr:.2f} : 1 (reward/risk)",
-                    "size": "xxs", "color": rr_color, "weight": "bold",
+                    "size": "xs", "color": rr_color, "weight": "bold",
                     "wrap": True,
                 })
             body_contents.extend(calc_rows)
@@ -1075,7 +1075,7 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
         body_contents.append({"type": "separator", "margin": "md"})
         body_contents.append({
             "type": "text", "text": "Analysis Insight",
-            "size": "xxs", "color": "#3498DB", "weight": "bold",
+            "size": "xs", "color": "#3498DB", "weight": "bold",
         })
         body_contents.append(_captain_advice_box(advice))
 
@@ -1127,12 +1127,14 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
         "footer": {
             "type": "box",
             "layout": "vertical",
-            "spacing": "sm",
+            "spacing": "md",
             "contents": [
+                {"type": "text", "text": "Actions",
+                 "size": "xs", "color": "#3498DB", "weight": "bold"},
                 {"type": "box", "layout": "horizontal", "spacing": "sm", "contents": footer_buttons},
-                {"type": "text", "text": f"Data: {getattr(signal, 'data_date', '') or '—'} · Scanned: {signal.scanned_at[:16].replace('T', ' ')}", "size": "xxs", "color": "#AAAAAA", "align": "center"},
+                {"type": "text", "text": f"Data: {getattr(signal, 'data_date', '') or '—'} · Scanned: {signal.scanned_at[:16].replace('T', ' ')}", "size": "xxs", "color": "#AAAAAA", "align": "center", "margin": "sm"},
             ],
-            "paddingAll": "12px",
+            "paddingAll": "16px",
         },
     }
 
