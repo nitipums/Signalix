@@ -336,9 +336,8 @@ def suite_sub_stage(base, secret):
     section("Sub-stage finite state machine (9 states)")
     fails = 0
     # 2-layer classifier — 11 sub-stages. Stage 2 expanded from 3 to 5
-    # (IGNITION/OVEREXTENDED/CONTRACTION/PIVOT_READY/MARKUP); legacy
-    # `early`/`running`/`pullback` filters route to the new constants
-    # (UNION for `pullback` → CONTRACTION ∪ PIVOT_READY).
+    # (IGNITION/OVEREXTENDED/CONTRACTION/PIVOT_READY/MARKUP). Legacy
+    # aliases (early/running/pullback) were hard-removed.
     SUB_STAGES = [
         ("base",         "STAGE_1_BASE",         1),
         ("prep",         "STAGE_1_PREP",         1),
@@ -354,9 +353,6 @@ def suite_sub_stage(base, secret):
         ("breakdown",    "STAGE_4_BREAKDOWN",    4),
         ("downtrend",    "STAGE_4_DOWNTREND",    4),
     ]
-    # Legacy command aliases — assert they still dispatch but skip the
-    # exact-constant assertion (route to new constants per refactor).
-    LEGACY_ALIAS_CMDS = ("early", "running", "pullback")
     seen_any_sub_stage = False
     for cmd, expected_const, expected_parent in SUB_STAGES:
         try:
@@ -384,16 +380,6 @@ def suite_sub_stage(base, secret):
                    seen_any_sub_stage,
                    "no sub_stage strings observed across all 11 filters — "
                    "scan path may not be writing the field")
-    # Legacy alias commands — assert dispatch only (constants vary
-    # per route; pullback is a UNION of CONTRACTION+PIVOT_READY).
-    for cmd in LEGACY_ALIAS_CMDS:
-        try:
-            q, _ = query(base, secret, cmd)
-            fails += check(f"legacy/{cmd}/dispatched",
-                           q.get("kind") == "list",
-                           f"kind={q.get('kind')} count={q.get('count')}")
-        except Exception as e:
-            fails += check(f"legacy/{cmd}", False, f"err: {e}")
     return fails
 
 
