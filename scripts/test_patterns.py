@@ -465,20 +465,25 @@ expect("pullback scan: target_1618 > target_1 (further extension)",
        sig_pb.target_1618 > sig_pb.target_1, True,
        f"target_1618={sig_pb.target_1618} target_1={sig_pb.target_1}")
 # Math: T1.0 = stop + (pivot - low_52w); T1.618 = stop + 1.618*(pivot-low_52w).
-# Targets use ZigZag-detected fib_start as Pin1. Math: T = stop + L × (pivot - fib_start).
+# Targets use ZigZag-detected fib_start (Pin1) and fib_pivot (Pin2).
+# Math: T = stop + L × (fib_pivot - fib_start).
 _anchor = sig_pb.fib_start if sig_pb.fib_start > 0 else sig_pb.low_52w
-_rng = sig_pb.pivot_price - _anchor
-expect("pullback scan: target_1 = stop + (pivot - fib_start)",
+_pin2 = sig_pb.fib_pivot if sig_pb.fib_pivot > 0 else sig_pb.pivot_price
+_rng = _pin2 - _anchor
+expect("pullback scan: target_1 = stop + (fib_pivot - fib_start)",
        round(sig_pb.target_1, 2),
        round(sig_pb.pivot_stop + _rng, 2))
-expect("pullback scan: target_1618 = stop + 1.618 × (pivot - fib_start)",
+expect("pullback scan: target_1618 = stop + 1.618 × (fib_pivot - fib_start)",
        round(sig_pb.target_1618, 2),
        round(sig_pb.pivot_stop + 1.618 * _rng, 2))
-expect("pullback scan: fib_start > 0 (anchor surfaced)",
+expect("pullback scan: fib_start > 0 (Pin1 surfaced)",
        sig_pb.fib_start > 0, True,
        f"fib_start={sig_pb.fib_start}")
-expect("pullback scan: fib_start < pivot_price (anchor below high)",
-       sig_pb.fib_start < sig_pb.pivot_price, True)
+expect("pullback scan: fib_pivot > 0 (Pin2 surfaced)",
+       sig_pb.fib_pivot > 0, True,
+       f"fib_pivot={sig_pb.fib_pivot}")
+expect("pullback scan: fib_start < fib_pivot (anchor below peak)",
+       sig_pb.fib_start < sig_pb.fib_pivot, True)
 
 # Downtrend signal: pivot fields stay zero (out of scope).
 sig_bear_pivot = scan_stock("BEARPIVOT", df_bear)

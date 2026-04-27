@@ -983,6 +983,25 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
                      "flex": 2, "align": "end"},
                 ],
             })
+        # 1st-leg peak (Pin2) — only shown when ZigZag found an earlier
+        # peak meaningfully BELOW current pivot (≥5% lower). Tells the
+        # user "the Fib calc uses this earlier peak as Pin2, not the
+        # current pivot — that's why the target may look conservative
+        # vs (52W low → current pivot) projection."
+        fib_pivot = getattr(signal, "fib_pivot", 0.0) or 0.0
+        if fib_pivot > 0 and fib_pivot < pivot * 0.95:
+            trade_rows.append({
+                "type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text", "text": "🔼 1st Peak", "size": "sm",
+                     "color": "#7F8C8D", "flex": 3},
+                    {"type": "text", "text": f"฿{fib_pivot:,.2f}",
+                     "size": "sm", "weight": "bold", "color": "#2C3E50",
+                     "flex": 3, "align": "end"},
+                    {"type": "text", "text": "Fib ref",
+                     "size": "xs", "color": "#7F8C8D",
+                     "flex": 2, "align": "end"},
+                ],
+            })
         gap_pivot = (signal.close - pivot) / pivot * 100
         gap_color = "#27AE60" if gap_pivot >= 0 else \
                     "#F39C12" if gap_pivot > -5 else "#7F8C8D"

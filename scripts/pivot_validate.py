@@ -132,7 +132,7 @@ def main():
         low_52w    = float(df["Low"].iloc[-min(252, len(df)):].min())
         old_pivot  = _old_pivot(df, sub)
         new_pivot, new_stop = compute_pivot(df, sub)
-        t1, t1618, fib_start = compute_targets(df, new_pivot, new_stop, low_52w)
+        t1, t1618, fib_start, fib_pivot = compute_targets(df, new_pivot, new_stop, low_52w)
         bars_back  = _bars_since(df, new_pivot)
 
         gap_high   = (new_pivot / high_52w - 1) * 100 if high_52w else 0.0
@@ -144,6 +144,7 @@ def main():
             "sym": sym, "sub": sub.replace("STAGE_", "S"),
             "close": close_now, "hi52": high_52w,
             "start": fib_start,  # Pin1 = ZigZag-detected cycle low
+            "fib_pivot": fib_pivot,  # Pin2 = 1st-leg peak
             "old": old_pivot, "new": new_pivot,
             "bars_back": bars_back,
             "gap_close": gap_close, "gap_hi": gap_high,
@@ -168,15 +169,17 @@ def main():
     # anchors match their chart-drawn Fib for each stock.
     print("\n" + "=" * 115)
     print(f"{'SYM':<7}{'SubStage':<18}{'Close':>8}"
-          f"{'Start':>8}{'Pivot':>8}{'Low':>8}{'Range':>8}"
+          f"{'Start':>8}{'Pivot':>8}{'1stPk':>8}{'Low':>8}{'Range':>8}"
           f"{'Target':>9}{'Upside':>9}")
     print("=" * 115)
     for r in rows:
-        rng = r['new'] - r['start']
+        rng = r['fib_pivot'] - r['start']
+        # If fib_pivot == new_pivot, mark the 1st-peak col with '—' for clarity.
+        first_peak_str = f"{r['fib_pivot']:>8.2f}" if r['fib_pivot'] < r['new'] * 0.95 else "       —"
         print(f"{r['sym']:<7}{r['sub']:<18}"
               f"{r['close']:>8.2f}"
-              f"{r['start']:>8.2f}{r['new']:>8.2f}{r['stop']:>8.2f}"
-              f"{rng:>8.2f}"
+              f"{r['start']:>8.2f}{r['new']:>8.2f}{first_peak_str}"
+              f"{r['stop']:>8.2f}{rng:>8.2f}"
               f"{r['t1618']:>9.2f}{r['upside']:>+8.1f}%")
 
     # ── Sanity gates ────────────────────────────────────────────────────
