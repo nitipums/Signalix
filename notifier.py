@@ -1511,6 +1511,350 @@ def build_daily_picks_carousel(
     return {"type": "carousel", "contents": bubbles}
 
 
+def build_portfolio_card(portfolio: dict, last_prices: dict | None = None) -> dict:
+    """Paper-trading portfolio summary card.
+
+    Shows starting equity → current equity, cash, open positions with
+    unrealized P&L, and recent closed trades. Last prices come from the
+    most recent scan's signals; fall back to entry_price when missing.
+    """
+    last_prices = last_prices or {}
+    starting = float(portfolio.get("starting_cash_thb") or 1_000_000)
+    cash = float(portfolio.get("cash_thb") or 0)
+    positions = list(portfolio.get("positions") or [])
+    closed = list(portfolio.get("closed_trades") or [])
+    pending = list(portfolio.get("pending_proposals") or [])
+
+    pos_value = 0.0
+    unrealized = 0.0
+    for pos in positions:
+        shares = int(pos.get("shares") or 0)
+        entry = float(pos.get("entry_price") or 0)
+        last = float(last_prices.get(pos.get("symbol", ""), entry))
+        pos_value += shares * last
+        unrealized += shares * (last - entry)
+
+    realized = sum(float(t.get("pnl_thb") or 0) for t in closed)
+    equity = cash + pos_value
+    total_pnl = equity - starting
+    total_pct = (total_pnl / starting * 100) if starting else 0.0
+    pnl_color = "#27AE60" if total_pnl >= 0 else "#E74C3C"
+
+    header_contents = [
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "💼 Paper Portfolio",
+             "weight": "bold", "size": "lg", "color": "#FFFFFF", "flex": 4},
+            {"type": "text",
+             "text": f"{total_pct:+.2f}%",
+             "size": "md", "color": pnl_color, "weight": "bold",
+             "flex": 2, "align": "end"},
+        ]},
+        {"type": "text",
+         "text": f"฿{starting:,.0f} → ฿{equity:,.0f}",
+         "size": "xs", "color": "#FFFFFF", "margin": "xs"},
+    ]
+
+    body_contents: list = [
+        # Equity / cash / positions split
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "Equity", "size": "sm", "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": f"฿{equity:,.0f}", "size": "sm",
+             "weight": "bold", "color": "#1A237E", "flex": 5, "align": "end"},
+        ]},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "Cash", "size": "sm", "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": f"฿{cash:,.0f}", "size": "sm",
+             "weight": "bold", "color": "#2C3E50", "flex": 5, "align": "end"},
+        ]},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "Positions", "size": "sm", "color": "#7F8C8D", "flex": 3},
+            {"type": "text",
+             "text": f"฿{pos_value:,.0f}  ({len(positions)} stock{'s' if len(positions) != 1 else ''})",
+             "size": "sm", "weight": "bold", "color": "#2C3E50",
+             "flex": 5, "align": "end"},
+        ]},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "Unrealized P&L", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text",
+             "text": f"{'+' if unrealized >= 0 else ''}฿{unrealized:,.0f}",
+             "size": "sm", "weight": "bold",
+             "color": "#27AE60" if unrealized >= 0 else "#E74C3C",
+             "flex": 5, "align": "end"},
+        ]},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "Realized P&L", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text",
+             "text": f"{'+' if realized >= 0 else ''}฿{realized:,.0f}  ({len(closed)} trades)",
+             "size": "sm", "weight": "bold",
+             "color": "#27AE60" if realized >= 0 else "#E74C3C",
+             "flex": 5, "align": "end"},
+        ]},
+    ]
+
+    # Open positions section
+    if positions:
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({"type": "text", "text": "Open positions",
+                              "size": "xxs", "color": "#3498DB", "weight": "bold"})
+        # Header row
+        body_contents.append({
+            "type": "box", "layout": "horizontal", "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": "SYM", "size": "xxs", "color": "#7F8C8D", "flex": 3},
+                {"type": "text", "text": "SH", "size": "xxs", "color": "#7F8C8D", "flex": 3, "align": "end"},
+                {"type": "text", "text": "Now", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+                {"type": "text", "text": "P&L%", "size": "xxs", "color": "#7F8C8D", "flex": 2, "align": "end"},
+            ],
+        })
+        for pos in positions:
+            sym = pos.get("symbol", "?")
+            shares = int(pos.get("shares") or 0)
+            entry = float(pos.get("entry_price") or 0)
+            last = float(last_prices.get(sym, entry))
+            chg_pct = ((last - entry) / entry * 100) if entry else 0.0
+            chg_color = "#27AE60" if chg_pct >= 0 else "#E74C3C"
+            body_contents.append({
+                "type": "box", "layout": "horizontal", "spacing": "sm",
+                "contents": [
+                    {"type": "text", "text": sym, "size": "sm",
+                     "weight": "bold", "color": "#2C3E50", "flex": 3},
+                    {"type": "text", "text": f"{shares:,}", "size": "xs",
+                     "color": "#7F8C8D", "flex": 3, "align": "end"},
+                    {"type": "text", "text": f"฿{last:.2f}", "size": "xs",
+                     "color": "#2C3E50", "flex": 2, "align": "end"},
+                    {"type": "text", "text": f"{chg_pct:+.1f}%", "size": "xs",
+                     "weight": "bold", "color": chg_color, "flex": 2, "align": "end"},
+                ],
+            })
+    else:
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({
+            "type": "text",
+            "text": "No open positions yet.",
+            "size": "sm", "color": "#95A5A6",
+            "align": "center", "margin": "md",
+        })
+
+    # Pending proposals notice
+    if pending:
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({
+            "type": "text",
+            "text": f"⏳ {len(pending)} proposal{'s' if len(pending) != 1 else ''} awaiting approval",
+            "size": "xs", "color": "#F39C12", "weight": "bold",
+            "align": "center",
+        })
+        body_contents.append({
+            "type": "text",
+            "text": "Type 'propose' to see them, or 'approve <SYM>' / 'skip <SYM>'",
+            "size": "xxs", "color": "#7F8C8D", "align": "center",
+            "wrap": True,
+        })
+
+    # Recent closed trades (last 3)
+    if closed:
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({"type": "text", "text": "Recent closed",
+                              "size": "xxs", "color": "#3498DB", "weight": "bold"})
+        for t in closed[-3:][::-1]:
+            sym = t.get("symbol", "?")
+            pnl = float(t.get("pnl_thb") or 0)
+            pnl_pct = float(t.get("pnl_pct") or 0)
+            reason = t.get("exit_reason", "")
+            body_contents.append({
+                "type": "box", "layout": "horizontal", "spacing": "sm",
+                "contents": [
+                    {"type": "text", "text": sym, "size": "sm",
+                     "weight": "bold", "color": "#2C3E50", "flex": 3},
+                    {"type": "text",
+                     "text": f"{'+' if pnl >= 0 else ''}฿{pnl:,.0f}",
+                     "size": "xs",
+                     "color": "#27AE60" if pnl >= 0 else "#E74C3C",
+                     "weight": "bold", "flex": 3, "align": "end"},
+                    {"type": "text", "text": f"{pnl_pct:+.1f}%",
+                     "size": "xs",
+                     "color": "#27AE60" if pnl_pct >= 0 else "#E74C3C",
+                     "flex": 2, "align": "end"},
+                    {"type": "text", "text": reason, "size": "xxs",
+                     "color": "#7F8C8D", "flex": 3, "align": "end"},
+                ],
+            })
+
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "contents": header_contents,
+            "backgroundColor": "#1A237E", "paddingAll": "12px",
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "xs",
+            "contents": body_contents, "paddingAll": "12px",
+        },
+        "footer": {
+            "type": "box", "layout": "vertical",
+            "contents": [{
+                "type": "text",
+                "text": "Type 'propose' for trade ideas · 'portfolio reset' to restart",
+                "size": "xxs", "color": "#7F8C8D", "align": "center", "wrap": True,
+            }],
+            "paddingAll": "8px",
+        },
+    }
+
+
+def build_trade_proposal_card(proposal: dict) -> dict:
+    """Single trade proposal card with approve/skip buttons.
+
+    Proposal dict shape:
+      {symbol, action, entry_price, stop, target_1618, shares, cost,
+       at_risk, sub_stage, im_pct, rr_ratio, rationale, expires_at, ...}
+    """
+    sym = proposal.get("symbol", "?")
+    action = proposal.get("action", "buy").upper()
+    entry = float(proposal.get("entry_price") or 0)
+    stop = float(proposal.get("stop") or 0)
+    target = float(proposal.get("target_1618") or 0)
+    shares = int(proposal.get("shares") or 0)
+    cost = float(proposal.get("cost") or 0)
+    at_risk = float(proposal.get("at_risk") or 0)
+    rr = float(proposal.get("rr_ratio") or 0)
+    sub_stage = proposal.get("sub_stage", "")
+    im_pct = int(proposal.get("im_pct") or 0)
+    rationale = proposal.get("rationale", "")
+
+    # Pretty sub-stage label
+    sub_label = SUB_STAGE_LABEL.get(sub_stage, sub_stage)
+    sub_color = SUB_STAGE_COLOR.get(sub_stage, "#7F8C8D")
+
+    risk_pct = ((stop - entry) / entry * 100) if entry else 0.0
+    upside_pct = ((target - entry) / entry * 100) if entry else 0.0
+
+    rr_color = "#27AE60" if rr >= 3 else "#F39C12" if rr >= 1.5 else "#E74C3C"
+    action_color = "#27AE60" if action == "BUY" else "#E74C3C"
+
+    body_contents = [
+        # Setup row
+        {"type": "text", "text": sub_label,
+         "size": "sm", "color": sub_color, "weight": "bold", "wrap": True},
+        # Trade levels
+        {"type": "separator", "margin": "md"},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "🎯 Entry", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": f"฿{entry:,.2f}", "size": "sm",
+             "weight": "bold", "color": "#2C3E50", "flex": 5, "align": "end"},
+        ]},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "⛔ Stop", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": f"฿{stop:,.2f}", "size": "sm",
+             "weight": "bold", "color": "#2C3E50", "flex": 4, "align": "end"},
+            {"type": "text", "text": f"{risk_pct:+.1f}%", "size": "xs",
+             "color": "#E74C3C", "weight": "bold", "flex": 2, "align": "end"},
+        ]},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "🎯 Target 1.618", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": f"฿{target:,.2f}", "size": "sm",
+             "weight": "bold", "color": "#2C3E50", "flex": 4, "align": "end"},
+            {"type": "text", "text": f"{upside_pct:+.1f}%", "size": "xs",
+             "color": "#27AE60", "weight": "bold", "flex": 2, "align": "end"},
+        ]},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "⚖️ R:R", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": f"{rr:.2f} : 1", "size": "sm",
+             "weight": "bold", "color": rr_color, "flex": 5, "align": "end"},
+        ]},
+        # Sizing
+        {"type": "separator", "margin": "md"},
+        {"type": "text", "text": "Sizing (1% risk)",
+         "size": "xxs", "color": "#3498DB", "weight": "bold"},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "Shares", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": f"{shares:,}", "size": "sm",
+             "weight": "bold", "color": "#2C3E50", "flex": 5, "align": "end"},
+        ]},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "Cost", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": f"฿{cost:,.0f}", "size": "sm",
+             "weight": "bold", "color": "#2C3E50", "flex": 5, "align": "end"},
+        ]},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "At-risk", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": f"฿{at_risk:,.0f}", "size": "sm",
+             "weight": "bold", "color": "#E74C3C", "flex": 5, "align": "end"},
+        ]},
+    ]
+    if im_pct:
+        body_contents.append({
+            "type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": "Margin tier", "size": "sm",
+                 "color": "#7F8C8D", "flex": 3},
+                {"type": "text", "text": f"IM{im_pct}", "size": "sm",
+                 "weight": "bold",
+                 "color": "#1ABC9C" if im_pct <= 60 else "#F39C12",
+                 "flex": 5, "align": "end"},
+            ],
+        })
+    if rationale:
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({
+            "type": "text", "text": rationale,
+            "size": "xs", "color": "#7F8C8D", "wrap": True,
+        })
+
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text",
+                     "text": f"🎯 {action} {sym}",
+                     "weight": "bold", "size": "lg", "color": "#FFFFFF",
+                     "flex": 5},
+                    {"type": "text", "text": "Proposal",
+                     "size": "xs", "color": "#FFFFFF",
+                     "flex": 2, "align": "end"},
+                ]},
+            ],
+            "backgroundColor": action_color, "paddingAll": "12px",
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "xs",
+            "contents": body_contents, "paddingAll": "12px",
+        },
+        "footer": {
+            "type": "box", "layout": "vertical", "spacing": "sm",
+            "contents": [
+                {"type": "box", "layout": "horizontal", "spacing": "sm",
+                 "contents": [
+                    {"type": "button",
+                     "action": {"type": "message", "label": "✅ Approve",
+                                "text": f"approve {sym}"},
+                     "style": "primary", "color": "#27AE60",
+                     "height": "sm", "flex": 1},
+                    {"type": "button",
+                     "action": {"type": "message", "label": "❌ Skip",
+                                "text": f"skip {sym}"},
+                     "style": "secondary", "height": "sm", "flex": 1},
+                 ]},
+                {"type": "text",
+                 "text": f"Or type 'approve {sym}' / 'skip {sym}'",
+                 "size": "xxs", "color": "#7F8C8D", "align": "center"},
+            ],
+            "paddingAll": "8px",
+        },
+    }
+
+
 def build_compact_stock_bubble(signal: StockSignal) -> dict:
     """Compact notification bubble — minimal info, tap to get full analysis."""
     pcolor = PATTERN_COLOR.get(signal.pattern, "#7F8C8D")

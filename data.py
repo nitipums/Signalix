@@ -2231,6 +2231,129 @@ def save_signals_to_firestore(signals: list, db) -> None:
         logger.error("save_signals_to_firestore failed: %s", exc)
 
 
+# ─── Paper-trading portfolio ──────────────────────────────────────────────
+# Single-user paper portfolio for the Signalix trading simulation.
+# Stored as a single Firestore doc (`paper_portfolio/default`). Tracks
+# starting cash (1M THB), open positions, closed trades, and pending
+# trade proposals awaiting user approval.
+#
+# Position sizing: Minervini-style 1% risk per trade.
+#   risk_thb        = equity × risk_pct
+#   risk_per_share  = entry - stop
+#   shares          = floor(risk_thb / risk_per_share)
+#   cost            = shares × entry
+# Capped at max_position_pct (default 20%) of equity.
+
+PAPER_PORTFOLIO_COLLECTION = "paper_portfolio"
+PAPER_PORTFOLIO_DOC = "default"
+
+
+def _new_paper_portfolio(starting_cash: float = 1_000_000.0) -> dict:
+    """Return a fresh portfolio dict with starting cash and empty positions."""
+    now = datetime.now(BANGKOK_TZ).isoformat()
+    return {
+        "starting_cash_thb": starting_cash,
+        "cash_thb": starting_cash,
+        "started_at": now,
+        "last_updated": now,
+        "max_positions": 5,
+        "risk_per_trade_pct": 1.0,
+        "max_position_pct": 20.0,
+        "positions": [],          # open positions
+        "closed_trades": [],      # historical closed trades
+        "pending_proposals": [],  # trade proposals awaiting approval
+    }
+
+
+def load_paper_portfolio(db) -> dict:
+    """Load paper portfolio state. Returns a fresh portfolio if none exists."""
+    if db is None:
+        return _new_paper_portfolio()
+    try:
+        doc = db.collection(PAPER_PORTFOLIO_COLLECTION).document(PAPER_PORTFOLIO_DOC).get()
+        if not doc.exists:
+            return _new_paper_portfolio()
+        data = doc.to_dict()
+        # Backfill any missing fields for forward compat with older docs.
+        defaults = _new_paper_portfolio()
+        for k, v in defaults.items():
+            data.setdefault(k, v)
+        return data
+    except Exception as exc:
+        logger.error("load_paper_portfolio failed: %s", exc)
+        return _new_paper_portfolio()
+
+
+def save_paper_portfolio(db, portfolio: dict) -> bool:
+    """Persist portfolio state. Returns True on success."""
+    if db is None:
+        return False
+    try:
+        portfolio["last_updated"] = datetime.now(BANGKOK_TZ).isoformat()
+        db.collection(PAPER_PORTFOLIO_COLLECTION).document(PAPER_PORTFOLIO_DOC).set(portfolio)
+        return True
+    except Exception as exc:
+        logger.error("save_paper_portfolio failed: %s", exc)
+        return False
+
+
+def reset_paper_portfolio(db, starting_cash: float = 1_000_000.0) -> dict:
+    """Reset portfolio to starting cash. Wipes positions + history."""
+    fresh = _new_paper_portfolio(starting_cash)
+    save_paper_portfolio(db, fresh)
+    return fresh
+
+
+def compute_position_size(equity_thb: float, entry: float, stop: float,
+                          risk_pct: float = 1.0,
+                          max_position_pct: float = 20.0) -> tuple[int, float, float]:
+    """Minervini 1%-risk position sizing.
+
+    Returns (shares, cost_thb, at_risk_thb). Returns (0, 0, 0) when the
+    stop is at-or-above entry (no valid risk).
+
+    risk_thb        = equity × risk_pct/100
+    risk_per_share  = entry - stop
+    shares          = floor(risk_thb / risk_per_share)
+    cost            = shares × entry
+    Cap at max_position_pct% of equity (concentration limit).
+    """
+    if entry <= 0 or stop <= 0 or entry <= stop or equity_thb <= 0:
+        return 0, 0.0, 0.0
+    risk_thb = equity_thb * (risk_pct / 100.0)
+    risk_per_share = entry - stop
+    shares = int(risk_thb / risk_per_share)
+    cost = shares * entry
+    max_cost = equity_thb * (max_position_pct / 100.0)
+    if cost > max_cost > 0:
+        shares = int(max_cost / entry)
+        cost = shares * entry
+    at_risk = shares * risk_per_share
+    return shares, cost, at_risk
+
+
+def portfolio_equity(portfolio: dict, last_prices: dict) -> tuple[float, float]:
+    """Compute current equity and unrealized P&L.
+
+    last_prices: {symbol: close_price} from latest scan. Positions held
+    in symbols missing from last_prices are valued at entry_price (no
+    unrealized change).
+
+    Returns (equity_thb, unrealized_pnl_thb).
+    """
+    cash = float(portfolio.get("cash_thb") or 0.0)
+    unrealized = 0.0
+    positions_value = 0.0
+    for pos in portfolio.get("positions") or []:
+        sym = pos.get("symbol", "")
+        shares = int(pos.get("shares") or 0)
+        entry = float(pos.get("entry_price") or 0)
+        last = float(last_prices.get(sym) or entry)
+        positions_value += shares * last
+        unrealized += shares * (last - entry)
+    return cash + positions_value, unrealized
+
+
 def save_signal_transitions(prev_signals: list, new_signals: list, db) -> int:
     """Detect sub_stage changes between previous and new scan, append a
     transition record to Firestore `signal_transitions` for each change.

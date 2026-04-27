@@ -2921,6 +2921,209 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             logger.error("build_daily_picks_carousel failed: %s", exc, exc_info=True)
             reply_text(reply_token, "ไม่สามารถสร้างการ์ดได้ในขณะนี้")
 
+    elif cmd in ("portfolio", "port", "p"):
+        # Paper-trading portfolio summary
+        from data import load_paper_portfolio
+        from notifier import build_portfolio_card
+        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
+        last_prices = {s.symbol: s.close for s in _last_signals}
+        try:
+            flex = build_portfolio_card(portfolio, last_prices)
+            reply_flex(reply_token, "💼 Paper Portfolio", flex)
+        except Exception as exc:
+            logger.error("build_portfolio_card failed: %s", exc, exc_info=True)
+            reply_text(reply_token, "ไม่สามารถแสดง portfolio ได้")
+
+    elif cmd in ("portfolio reset", "port reset", "reset portfolio"):
+        # Admin reset — wipes positions + history, restores 1M cash
+        from data import reset_paper_portfolio
+        portfolio = await loop.run_in_executor(None, reset_paper_portfolio, _db, 1_000_000.0)
+        reply_text(reply_token,
+                   f"✅ Portfolio reset: cash ฿{portfolio['cash_thb']:,.0f} "
+                   f"· no open positions · type 'propose' to see trade ideas.")
+
+    elif cmd in ("propose", "proposals", "ideas"):
+        # Generate fresh trade proposals from latest scan's BUY bucket
+        # (PIVOT_READY + IGNITION, marginable, sorted by strength score).
+        # Skips symbols already held; computes 1%-risk position size for
+        # each. Returns top 3 as a carousel of proposal cards.
+        from data import (load_paper_portfolio, save_paper_portfolio,
+                          compute_position_size, portfolio_equity)
+        from notifier import build_trade_proposal_card
+        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
+        held_syms = {p.get("symbol") for p in portfolio.get("positions") or []}
+        # Refresh equity from latest prices for accurate sizing
+        last_prices = {s.symbol: s.close for s in _last_signals}
+        equity, _ = portfolio_equity(portfolio, last_prices)
+        max_pos = int(portfolio.get("max_positions") or 5)
+        risk_pct = float(portfolio.get("risk_per_trade_pct") or 1.0)
+        max_pos_pct = float(portfolio.get("max_position_pct") or 20.0)
+        slots_open = max_pos - len(portfolio.get("positions") or [])
+        if slots_open <= 0:
+            reply_text(reply_token,
+                       f"Portfolio is full ({max_pos} positions). "
+                       "Close some before adding more.")
+            return
+        BUY_SUBS = {"STAGE_2_PIVOT_READY", "STAGE_2_IGNITION"}
+        candidates = [
+            s for s in _last_signals
+            if (getattr(s, "margin_im_pct", 0) > 0
+                and getattr(s, "sub_stage", "") in BUY_SUBS
+                and s.symbol not in held_syms
+                and getattr(s, "pivot_price", 0) > 0
+                and getattr(s, "pivot_stop", 0) > 0
+                and getattr(s, "target_1618", 0) > 0)
+        ]
+        candidates.sort(key=lambda s: s.strength_score, reverse=True)
+        proposals: list[dict] = []
+        for s in candidates[:5]:
+            entry = float(s.close)
+            stop = float(s.pivot_stop)
+            target = float(s.target_1618)
+            shares, cost, at_risk = compute_position_size(
+                equity, entry, stop, risk_pct, max_pos_pct)
+            if shares <= 0 or cost > portfolio.get("cash_thb", 0):
+                continue
+            risk = entry - stop
+            reward = target - entry
+            rr = reward / risk if risk > 0 else 0.0
+            if rr < 2.0:  # filter: only propose R:R >= 2:1
+                continue
+            proposals.append({
+                "symbol": s.symbol,
+                "action": "buy",
+                "entry_price": round(entry, 2),
+                "stop": round(stop, 2),
+                "target_1618": round(target, 2),
+                "shares": shares,
+                "cost": round(cost, 2),
+                "at_risk": round(at_risk, 2),
+                "rr_ratio": round(rr, 2),
+                "sub_stage": s.sub_stage,
+                "im_pct": s.margin_im_pct,
+                "rationale": (f"Score {s.strength_score:.0f} · "
+                              f"IM{s.margin_im_pct} · "
+                              f"upside +{(target-entry)/entry*100:.0f}%"),
+                "proposed_at": (s.scanned_at or ""),
+            })
+            if len(proposals) >= min(3, slots_open):
+                break
+        if not proposals:
+            reply_text(reply_token,
+                       "ไม่มี trade idea ที่ผ่าน R:R≥2:1 และมี cash พอใน portfolio วันนี้")
+            return
+        # Persist as pending proposals (replace any prior pending)
+        portfolio["pending_proposals"] = proposals
+        await loop.run_in_executor(None, save_paper_portfolio, _db, portfolio)
+        # Render carousel of proposal cards
+        bubbles = [build_trade_proposal_card(p) for p in proposals]
+        flex = bubbles[0] if len(bubbles) == 1 else {"type": "carousel", "contents": bubbles}
+        reply_flex(reply_token,
+                   f"🎯 {len(proposals)} Trade Proposal{'s' if len(proposals) != 1 else ''}",
+                   flex)
+
+    elif cmd.startswith("approve "):
+        # Approve a pending proposal: deduct cash, add position
+        from data import load_paper_portfolio, save_paper_portfolio
+        sym = cmd.replace("approve ", "").strip().upper()
+        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
+        proposals = portfolio.get("pending_proposals") or []
+        match = next((p for p in proposals if p.get("symbol") == sym), None)
+        if not match:
+            reply_text(reply_token, f"ไม่พบ proposal สำหรับ {sym}. ลอง 'propose' ก่อน")
+            return
+        cost = float(match.get("cost") or 0)
+        if cost > portfolio.get("cash_thb", 0):
+            reply_text(reply_token,
+                       f"Cash ไม่พอ: ต้องการ ฿{cost:,.0f} "
+                       f"แต่มี ฿{portfolio['cash_thb']:,.0f}")
+            return
+        # Open the position
+        new_pos = {
+            "symbol": sym,
+            "entry_date": match.get("proposed_at") or "",
+            "entry_price": match.get("entry_price"),
+            "shares": match.get("shares"),
+            "cost_basis": cost,
+            "stop_loss": match.get("stop"),
+            "target": match.get("target_1618"),
+            "im_pct": match.get("im_pct"),
+            "sub_stage_entry": match.get("sub_stage"),
+            "rationale": match.get("rationale"),
+            "status": "open",
+        }
+        portfolio["cash_thb"] = round(portfolio.get("cash_thb", 0) - cost, 2)
+        portfolio["positions"] = (portfolio.get("positions") or []) + [new_pos]
+        portfolio["pending_proposals"] = [
+            p for p in proposals if p.get("symbol") != sym]
+        await loop.run_in_executor(None, save_paper_portfolio, _db, portfolio)
+        reply_text(reply_token,
+                   f"✅ BOUGHT {sym}: {match['shares']:,}sh @ ฿{match['entry_price']:.2f} "
+                   f"(฿{cost:,.0f}). Stop ฿{match['stop']:.2f}, "
+                   f"Target ฿{match['target_1618']:.2f}. "
+                   f"Cash left: ฿{portfolio['cash_thb']:,.0f}")
+
+    elif cmd.startswith("skip "):
+        # Skip a pending proposal: just remove from pending list
+        from data import load_paper_portfolio, save_paper_portfolio
+        sym = cmd.replace("skip ", "").strip().upper()
+        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
+        proposals = portfolio.get("pending_proposals") or []
+        before = len(proposals)
+        portfolio["pending_proposals"] = [
+            p for p in proposals if p.get("symbol") != sym]
+        if len(portfolio["pending_proposals"]) == before:
+            reply_text(reply_token, f"ไม่พบ proposal สำหรับ {sym}.")
+            return
+        await loop.run_in_executor(None, save_paper_portfolio, _db, portfolio)
+        reply_text(reply_token, f"⏭️ Skipped {sym}.")
+
+    elif cmd.startswith("sell "):
+        # Manual sell of an open position at current price
+        from data import load_paper_portfolio, save_paper_portfolio
+        sym = cmd.replace("sell ", "").strip().upper()
+        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
+        positions = portfolio.get("positions") or []
+        match = next((p for p in positions if p.get("symbol") == sym), None)
+        if not match:
+            reply_text(reply_token, f"ไม่มีตำแหน่ง {sym} ใน portfolio.")
+            return
+        # Use latest scan price as exit price
+        last_sig = next((s for s in _last_signals if s.symbol == sym), None)
+        if not last_sig:
+            reply_text(reply_token, f"ไม่มีราคาล่าสุดของ {sym}.")
+            return
+        exit_price = float(last_sig.close)
+        shares = int(match.get("shares") or 0)
+        proceeds = shares * exit_price
+        entry = float(match.get("entry_price") or 0)
+        cost_basis = float(match.get("cost_basis") or (shares * entry))
+        pnl = proceeds - cost_basis
+        pnl_pct = (pnl / cost_basis * 100) if cost_basis else 0.0
+        closed = {
+            "symbol": sym,
+            "entry_date": match.get("entry_date"),
+            "exit_date": (last_sig.scanned_at or ""),
+            "entry_price": entry,
+            "exit_price": exit_price,
+            "shares": shares,
+            "cost_basis": cost_basis,
+            "proceeds": proceeds,
+            "pnl_thb": round(pnl, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "exit_reason": "manual sell",
+        }
+        portfolio["cash_thb"] = round(portfolio.get("cash_thb", 0) + proceeds, 2)
+        portfolio["positions"] = [p for p in positions if p.get("symbol") != sym]
+        portfolio["closed_trades"] = (portfolio.get("closed_trades") or []) + [closed]
+        await loop.run_in_executor(None, save_paper_portfolio, _db, portfolio)
+        emoji = "🟢" if pnl >= 0 else "🔴"
+        reply_text(reply_token,
+                   f"{emoji} SOLD {sym}: {shares:,}sh @ ฿{exit_price:.2f} "
+                   f"(฿{proceeds:,.0f}). P&L: {'+' if pnl >= 0 else ''}฿{pnl:,.0f} "
+                   f"({pnl_pct:+.1f}%). "
+                   f"Cash: ฿{portfolio['cash_thb']:,.0f}")
+
     elif cmd in ("margin50", "margin 50", "im50",
                   "margin60", "margin 60", "im60",
                   "margin70", "margin 70", "im70",
