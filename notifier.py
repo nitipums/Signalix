@@ -1085,6 +1085,32 @@ def build_single_stock_card(signal: StockSignal, in_watchlist: bool = False) -> 
             "size": "xxs", "color": "#F39C12", "weight": "bold",
         })
         body_contents.extend(trade_rows)
+        # ── Fib calculation breakdown ──
+        # Show the math step-by-step so the user can verify the
+        # auto-pick:   1st leg: Pin1 → Pin2 (+X%)
+        #              Retrace: A% of 1st leg
+        #              Target = stop + 1.618 × Range
+        # Fib_pivot is Pin2 (the 1st-leg peak); fall back to current
+        # pivot if Pin2 was the same (no earlier H qualified).
+        fib_start = getattr(signal, "fib_start", 0.0) or 0.0
+        fib_pivot = getattr(signal, "fib_pivot", 0.0) or pivot
+        if fib_start > 0 and fib_pivot > fib_start and t1618 > 0:
+            leg_pct = (fib_pivot / fib_start - 1) * 100
+            range_ = fib_pivot - fib_start
+            retrace_amt = fib_pivot - pstop
+            retrace_pct = (retrace_amt / range_ * 100) if range_ > 0 else 0
+            calc_rows = [
+                {"type": "text",
+                 "text": f"1st leg: ฿{fib_start:,.2f} → ฿{fib_pivot:,.2f} (+{leg_pct:.0f}%)",
+                 "size": "xxs", "color": "#7F8C8D", "wrap": True, "margin": "xs"},
+                {"type": "text",
+                 "text": f"Retrace: {retrace_pct:.0f}% of 1st leg (฿{retrace_amt:,.2f})",
+                 "size": "xxs", "color": "#7F8C8D", "wrap": True},
+                {"type": "text",
+                 "text": f"Target: ฿{pstop:,.2f} + 1.618 × ฿{range_:,.2f} = ฿{t1618:,.2f}",
+                 "size": "xxs", "color": "#7F8C8D", "wrap": True},
+            ]
+            body_contents.extend(calc_rows)
 
     # ── Body Section 4: Captain Signal advice ──
     advice = _captain_stock_advice(signal)

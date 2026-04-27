@@ -731,10 +731,20 @@ def compute_pivot(df: pd.DataFrame, sub_stage: str) -> tuple[float, float]:
     """
     if sub_stage not in _PIVOT_SUB_STAGES or len(df) < 15:
         return 0.0, 0.0
+    # PREP override: pivot = 52W high directly. PREP stocks haven't
+    # crested into Stage 2 yet — the relevant pivot is the resistance
+    # level they need to clear (the 52W high), NOT a recent intra-base
+    # shelf. Once they break above the 52W high they classify as
+    # IGNITION/MARKUP automatically and the swing-high logic below
+    # kicks in. Fixes RAM-class stocks where the 52W high sits OUTSIDE
+    # the 60-bar lookback window (RAM 60-bar=฿19.00 vs 52W=฿22.90).
+    if sub_stage == SUB_STAGE_1_PREP:
+        pivot = float(df["High"].iloc[-min(252, len(df)):].max())
+        stop  = float(df["Low"].iloc[-10:].min())
+        return pivot, stop
     if sub_stage in (
         SUB_STAGE_2_PIVOT_READY, SUB_STAGE_2_PULLBACK,  # new + legacy
         SUB_STAGE_2_IGNITION,    SUB_STAGE_2_EARLY,     # new + legacy
-        SUB_STAGE_1_PREP,
     ):
         pivot = _last_run_high(df, lookback=60)
     else:
