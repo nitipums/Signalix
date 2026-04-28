@@ -1816,6 +1816,124 @@ def build_trade_proposal_card(proposal: dict) -> dict:
     }
 
 
+def build_pivot_alert_card(signal: StockSignal, last_price: float,
+                           triggered_at: str = "") -> dict:
+    """Real-time alert card: pivot price crossed UP.
+
+    Shows the breakout trigger fired — last price has crossed above
+    the stored pivot. Compact bubble with the actionable info: current
+    price, pivot, stop, target, R:R. Header is bright green to grab
+    attention; tap-action opens the full single-stock card via
+    TradingView URL.
+    """
+    sym = signal.symbol
+    pivot = float(getattr(signal, "pivot_price", 0) or 0)
+    pstop = float(getattr(signal, "pivot_stop", 0) or 0)
+    target = float(getattr(signal, "target_1618", 0) or 0)
+    sub_stage = getattr(signal, "sub_stage", "") or ""
+    sub_label = SUB_STAGE_LABEL.get(sub_stage, sub_stage)
+
+    chg_from_pivot = ((last_price - pivot) / pivot * 100) if pivot else 0.0
+    risk_pct = ((pstop - last_price) / last_price * 100) if last_price else 0.0
+    upside_pct = ((target - last_price) / last_price * 100) if (last_price and target) else 0.0
+
+    # R:R based on current last_price as entry
+    rr = 0.0
+    if pstop > 0 and target > 0 and last_price > pstop and target > last_price:
+        rr = (target - last_price) / (last_price - pstop)
+    rr_color = "#27AE60" if rr >= 3 else "#F39C12" if rr >= 1.5 else "#E74C3C"
+
+    body_contents = [
+        # Sub-stage
+        {"type": "text", "text": sub_label,
+         "size": "sm", "weight": "bold",
+         "color": SUB_STAGE_COLOR.get(sub_stage, "#27AE60"),
+         "wrap": True},
+        # Last price hero
+        {"type": "box", "layout": "baseline", "margin": "md", "contents": [
+            {"type": "text", "text": f"฿{last_price:,.2f}",
+             "weight": "bold", "size": "xxl", "color": "#1A237E", "flex": 5},
+            {"type": "text",
+             "text": f"{chg_from_pivot:+.2f}% vs pivot",
+             "size": "sm", "color": "#27AE60", "weight": "bold",
+             "flex": 4, "align": "end"},
+        ]},
+        {"type": "separator", "margin": "md"},
+        # Trade levels
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "🎯 Pivot", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": f"฿{pivot:,.2f}", "size": "sm",
+             "weight": "bold", "color": "#2C3E50", "flex": 5, "align": "end"},
+        ]},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "⛔ Stop", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": f"฿{pstop:,.2f}", "size": "sm",
+             "weight": "bold", "color": "#2C3E50", "flex": 4, "align": "end"},
+            {"type": "text", "text": f"{risk_pct:+.1f}%", "size": "xs",
+             "color": "#E74C3C", "weight": "bold", "flex": 2, "align": "end"},
+        ]},
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": "🎯 Target 1.618", "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": f"฿{target:,.2f}", "size": "sm",
+             "weight": "bold", "color": "#2C3E50", "flex": 4, "align": "end"},
+            {"type": "text", "text": f"{upside_pct:+.1f}%", "size": "xs",
+             "color": "#27AE60", "weight": "bold", "flex": 2, "align": "end"},
+        ]},
+    ]
+    if rr > 0:
+        body_contents.append({
+            "type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": "⚖️ R:R", "size": "sm",
+                 "color": "#7F8C8D", "flex": 3},
+                {"type": "text", "text": f"{rr:.2f} : 1", "size": "sm",
+                 "weight": "bold", "color": rr_color, "flex": 5, "align": "end"},
+            ],
+        })
+    if triggered_at:
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({
+            "type": "text",
+            "text": f"Triggered: {triggered_at}",
+            "size": "xxs", "color": "#7F8C8D", "align": "end",
+        })
+
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "action": ({"type": "uri", "uri": signal.tradingview_url}
+                       if signal.tradingview_url else None),
+            "contents": [
+                {"type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text",
+                     "text": f"🚨 PIVOT TRIGGERED · {sym}",
+                     "weight": "bold", "size": "lg", "color": "#FFFFFF",
+                     "flex": 5, "wrap": True},
+                ]},
+                {"type": "text", "text": "Real-time monitor · BREAKOUT signal",
+                 "size": "xxs", "color": "#FFFFFF", "margin": "xs"},
+            ],
+            "backgroundColor": "#27AE60", "paddingAll": "12px",
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "xs",
+            "contents": body_contents, "paddingAll": "12px",
+        },
+        "footer": {
+            "type": "box", "layout": "vertical",
+            "contents": [{
+                "type": "text",
+                "text": f"Tap to view full analysis · type '{sym}' for the full card",
+                "size": "xxs", "color": "#7F8C8D", "align": "center", "wrap": True,
+            }],
+            "paddingAll": "8px",
+        },
+    }
+
+
 def build_compact_stock_bubble(signal: StockSignal) -> dict:
     """Compact notification bubble — minimal info, tap to get full analysis."""
     pcolor = PATTERN_COLOR.get(signal.pattern, "#7F8C8D")

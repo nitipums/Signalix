@@ -43,6 +43,36 @@ jobs:
         X-Scan-Secret: "${SCAN_SECRET}"
       body: '{"scan_type": "full", "broadcast": true, "mode": "full"}'
 
+  # Real-time pivot monitor — every 30 minutes during SET market hours.
+  # Cron `*/30 10-16 * * 1-5` ticks at :00 and :30 every hour from 10:00
+  # to 16:30 ICT, weekdays. The /monitor/check endpoint internally
+  # short-circuits outside the actual SET sessions (10:00-12:30 +
+  # 14:30-16:30) via market_session_id() so the 13:00 / 13:30 / 14:00
+  # ticks return early with kind=outside_market_hours.
+  #
+  # For each user with a watchlist, the endpoint pulls Settrade
+  # real-time quotes for their watchlist symbols and sends a LINE
+  # push alert when last price ≥ stored pivot_price. Dedup is
+  # per-user, per-symbol, per-session (AM / PM) so each alert
+  # fires at most once per session.
+  #
+  # Setup once:
+  #   gcloud scheduler jobs create http signalix-pivot-monitor \
+  #     --location=asia-southeast1 \
+  #     --schedule="*/30 10-16 * * 1-5" \
+  #     --time-zone="Asia/Bangkok" \
+  #     --http-method=POST \
+  #     --uri="${CLOUD_RUN_URL}/monitor/check?secret=${SCAN_SECRET}"
+  - name: signalix-pivot-monitor
+    description: "Pivot-cross alerts every 30 min during SET market hours"
+    schedule: "*/30 10-16 * * 1-5"
+    timeZone: "Asia/Bangkok"
+    httpTarget:
+      uri: "${CLOUD_RUN_URL}/monitor/check?secret=${SCAN_SECRET}"
+      httpMethod: POST
+      headers:
+        Content-Type: application/json
+
   # Monthly health-check for SET50 / SET100 / MAI member lists. Runs on the
   # 2nd of each month at 09:00 ICT (after SET's quarterly batches typically
   # land). With no body, the endpoint just LOGS current member counts —

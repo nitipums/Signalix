@@ -2304,6 +2304,84 @@ def reset_paper_portfolio(db, starting_cash: float = 1_000_000.0) -> dict:
     return fresh
 
 
+# ─── Real-time pivot monitor state ────────────────────────────────────────
+# Per-user dedup state for the watchlist alert system. Stored as one
+# Firestore doc per user: `monitor_state/{user_id}` containing a map
+# of {symbol: {"pivot_up": "<session_id>"}}. Session IDs are
+# YYYY-MM-DD-AM / YYYY-MM-DD-PM so the alert re-arms each new session.
+
+MONITOR_STATE_COLLECTION = "monitor_state"
+
+
+def market_session_id(now: "datetime | None" = None) -> str:
+    """Return current SET session id (YYYY-MM-DD-AM / -PM) or '' if
+    outside market hours.
+
+    SET trading sessions (Bangkok time):
+      Morning:   10:00 – 12:30
+      Afternoon: 14:30 – 16:30
+    Pre-open / midday break / after-hours return ''. Weekends also
+    return '' so weekend ticks are no-ops.
+    """
+    now = now or datetime.now(BANGKOK_TZ)
+    if now.weekday() >= 5:  # Sat/Sun
+        return ""
+    hm = now.hour * 60 + now.minute
+    if 600 <= hm < 750:  # 10:00 ≤ now < 12:30
+        return f"{now.strftime('%Y-%m-%d')}-AM"
+    if 870 <= hm < 990:  # 14:30 ≤ now < 16:30
+        return f"{now.strftime('%Y-%m-%d')}-PM"
+    return ""
+
+
+def load_monitor_state(db, user_id: str) -> dict:
+    """Load per-user dedup state. Returns empty {alerts: {}} if missing."""
+    if db is None or not user_id:
+        return {"alerts": {}}
+    try:
+        doc = db.collection(MONITOR_STATE_COLLECTION).document(user_id).get()
+        if not doc.exists:
+            return {"alerts": {}}
+        d = doc.to_dict() or {}
+        d.setdefault("alerts", {})
+        return d
+    except Exception as exc:
+        logger.error("load_monitor_state(%s) failed: %s", user_id, exc)
+        return {"alerts": {}}
+
+
+def save_monitor_state(db, user_id: str, state: dict) -> bool:
+    """Persist per-user dedup state."""
+    if db is None or not user_id:
+        return False
+    try:
+        state["last_updated"] = datetime.now(BANGKOK_TZ).isoformat()
+        db.collection(MONITOR_STATE_COLLECTION).document(user_id).set(state)
+        return True
+    except Exception as exc:
+        logger.error("save_monitor_state(%s) failed: %s", user_id, exc)
+        return False
+
+
+def list_users_with_watchlists(db) -> list[tuple[str, list[str]]]:
+    """Return [(user_id, watchlist), ...] for all users with non-empty
+    watchlists. Used by the monitor to know whom to alert.
+    """
+    if db is None:
+        return []
+    try:
+        out: list[tuple[str, list[str]]] = []
+        for doc in db.collection("users").stream():
+            data = doc.to_dict() or {}
+            wl = data.get("watchlist") or []
+            if wl:
+                out.append((doc.id, wl))
+        return out
+    except Exception as exc:
+        logger.error("list_users_with_watchlists failed: %s", exc)
+        return []
+
+
 def compute_position_size(equity_thb: float, entry: float, stop: float,
                           risk_pct: float = 1.0,
                           max_position_pct: float = 20.0) -> tuple[int, float, float]:

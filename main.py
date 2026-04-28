@@ -2011,6 +2011,132 @@ async def sync_ath_endpoint(
     }
 
 
+@app.post("/monitor/check")
+async def monitor_check_endpoint(request: Request):
+    """Real-time pivot monitor — checks watchlist symbols against
+    Settrade real-time quotes; sends a LINE push alert when price
+    crosses ABOVE the stored pivot_price (breakout trigger).
+
+    Scheduled by Cloud Scheduler every 30 min during SET market hours
+    (10:00-12:30, 14:30-16:30 ICT, Mon-Fri). The endpoint internally
+    short-circuits outside market hours.
+
+    Dedup: per-user, per-symbol, per-session (AM / PM). Re-arms when
+    the session changes so morning-only alerts can re-fire in the
+    afternoon if the trigger crosses again.
+
+    Auth: secret query param (?secret=...) matched against
+    settings.scan_token. Same gate as /scan.
+    """
+    settings = get_settings()
+    if request.query_params.get("secret") != settings.scan_token:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    loop = asyncio.get_running_loop()
+    from data import (market_session_id, load_monitor_state,
+                      save_monitor_state, list_users_with_watchlists)
+    from notifier import build_pivot_alert_card, multicast_flex
+
+    session_id = market_session_id()
+    if not session_id:
+        return {
+            "kind": "monitor_check",
+            "skipped": "outside_market_hours",
+            "now": datetime.now(BANGKOK_TZ).isoformat(),
+            "alerts_sent": 0,
+        }
+
+    if not _last_signals:
+        return {"kind": "monitor_check", "skipped": "no_scan_yet",
+                "session": session_id, "alerts_sent": 0}
+
+    # Index signals by symbol for fast lookup
+    sig_by_sym = {s.symbol: s for s in _last_signals}
+
+    # All users with watchlists
+    user_lists = await loop.run_in_executor(
+        None, list_users_with_watchlists, _db)
+    if not user_lists:
+        return {"kind": "monitor_check", "skipped": "no_users",
+                "session": session_id, "alerts_sent": 0}
+
+    # Collect unique watchlist symbols across all users for one bulk
+    # quote fetch (Settrade's get_bulk_quotes is parallel internally).
+    all_syms: set[str] = set()
+    for _uid, wl in user_lists:
+        all_syms.update(wl)
+    sym_list = [s for s in all_syms if s in sig_by_sym
+                and getattr(sig_by_sym[s], "pivot_price", 0) > 0]
+    if not sym_list:
+        return {"kind": "monitor_check", "skipped": "no_pivots_in_watchlists",
+                "session": session_id, "alerts_sent": 0}
+
+    # Fetch real-time quotes via Settrade
+    try:
+        from settrade_client import get_bulk_quotes, is_api_available as _st_ok
+        if not _st_ok():
+            return {"kind": "monitor_check", "skipped": "settrade_unavailable",
+                    "session": session_id, "alerts_sent": 0}
+        quotes = await loop.run_in_executor(
+            None, get_bulk_quotes, sym_list)
+    except Exception as exc:
+        logger.error("/monitor/check Settrade fetch failed: %s", exc)
+        return {"kind": "monitor_check", "error": str(exc), "alerts_sent": 0}
+
+    # Per-user: detect pivot crossings and dedup
+    alerts_sent = 0
+    triggered_log: list[dict] = []
+    for uid, watchlist in user_lists:
+        state = await loop.run_in_executor(None, load_monitor_state, _db, uid)
+        alerts = state.get("alerts") or {}
+        state_dirty = False
+        for sym in watchlist:
+            if sym not in sig_by_sym or sym not in quotes:
+                continue
+            sig = sig_by_sym[sym]
+            pivot = float(getattr(sig, "pivot_price", 0) or 0)
+            if pivot <= 0:
+                continue
+            quote = quotes[sym] or {}
+            last = float(quote.get("last") or 0)
+            if last <= 0:
+                continue
+            # Trigger: last price ≥ pivot
+            if last >= pivot:
+                prev_session = (alerts.get(sym) or {}).get("pivot_up", "")
+                if prev_session == session_id:
+                    continue  # already alerted this session
+                # Build + send the alert
+                try:
+                    card = build_pivot_alert_card(
+                        sig, last_price=last,
+                        triggered_at=datetime.now(BANGKOK_TZ).strftime("%Y-%m-%d %H:%M"))
+                    await loop.run_in_executor(
+                        None, multicast_flex, [uid],
+                        f"🚨 PIVOT TRIGGERED · {sym}", card)
+                    alerts.setdefault(sym, {})["pivot_up"] = session_id
+                    state_dirty = True
+                    alerts_sent += 1
+                    triggered_log.append({
+                        "user": uid[:8] + "…", "symbol": sym,
+                        "pivot": pivot, "last": last,
+                    })
+                except Exception as exc:
+                    logger.error("monitor alert failed (%s/%s): %s", uid, sym, exc)
+        if state_dirty:
+            state["alerts"] = alerts
+            await loop.run_in_executor(None, save_monitor_state, _db, uid, state)
+
+    return {
+        "kind": "monitor_check",
+        "session": session_id,
+        "users_checked": len(user_lists),
+        "symbols_checked": len(sym_list),
+        "alerts_sent": alerts_sent,
+        "triggered": triggered_log,
+    }
+
+
 @app.post("/admin/refresh_index_members")
 async def refresh_index_members_endpoint(
     request: Request,
