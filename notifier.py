@@ -511,10 +511,10 @@ def build_single_stock_card(signal: StockSignal) -> dict:
                          "color": "#27AE60" if signal.pct_from_52w_high >= -5 else "#E67E22"},
                     ],
                 }] if getattr(signal, "pct_from_52w_high", 0) != 0 else []),
-                # Risk management section
+                # Margin section
                 *([
                     {"type": "separator"},
-                    {"type": "text", "text": "⚖️ Risk Management (ATR-based)", "size": "xxs", "color": "#F39C12", "weight": "bold"},
+                    {"type": "text", "text": "⚖️ Margin (ATR-based)", "size": "xxs", "color": "#F39C12", "weight": "bold"},
                     _detail_row("Stop Loss", f"฿{signal.stop_loss:,.2f}",
                                 f"-{(signal.close - signal.stop_loss) / signal.close * 100:.1f}%", "#E74C3C"),
                     _detail_row("Target (2:1)", f"฿{signal.target_price:,.2f}",
@@ -1149,7 +1149,7 @@ def build_watchlist_stock_card(signal: StockSignal, fundamentals: dict) -> dict:
     if getattr(signal, "stop_loss", 0) > 0:
         body_contents += [
             {"type": "separator"},
-            {"type": "text", "text": "⚖️ Risk Management (ATR-based)", "size": "xxs", "color": "#F39C12", "weight": "bold"},
+            {"type": "text", "text": "⚖️ Margin (ATR-based)", "size": "xxs", "color": "#F39C12", "weight": "bold"},
             _detail_row("Stop Loss", f"฿{signal.stop_loss:,.2f}",
                         f"-{(signal.close - signal.stop_loss) / signal.close * 100:.1f}%", "#E74C3C"),
             _detail_row("Target (2:1)", f"฿{signal.target_price:,.2f}",
@@ -1285,13 +1285,25 @@ def build_guide_carousel() -> dict:
                 _guide_row("🚀 Breakout", "ราคา > 52W high + Vol ≥ 1.4x avg", "#27AE60"),
                 _guide_row("🏆 ATH Breakout", "Breakout + ใกล้/สูงกว่า All-Time High", "#F39C12"),
                 _guide_row("🔍 VCP", "ความผันผวนหดตัว 3+ ครั้ง + Vol แห้ง", "#2980B9"),
-                _guide_row("🎯 VCP Low Cheat", "Entry ที่ low ของ VCP contraction สุดท้าย", "#1ABC9C"),
-                _guide_row("⚙️ Consolidating", "Base หดตัว รอ breakout", "#95A5A6"),
-                _guide_row("📉 Going Down", "Stage 4 downtrend ชัดเจน", "#E74C3C"),
+                _guide_row("🎯 VCP Low Cheat", "Entry ที่ low ของ VCP + Vol แห้ง", "#1ABC9C"),
                 {"type": "separator"},
                 {"type": "text", "text": "Strategy: ซื้อ Breakout/VCP ใน Stage 2 เท่านั้น", "size": "xxs", "color": "#7F8C8D", "wrap": True},
             ],
             "paddingAll": "16px",
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "xs",
+            "contents": [
+                {"type": "box", "layout": "horizontal", "spacing": "xs", "contents": [
+                    {"type": "button", "action": {"type": "message", "label": "Breakout", "text": "breakout"}, "style": "primary", "color": "#1B5E20", "height": "sm", "flex": 1},
+                    {"type": "button", "action": {"type": "message", "label": "ATH", "text": "ath"}, "style": "primary", "color": "#E65100", "height": "sm", "flex": 1},
+                    {"type": "button", "action": {"type": "message", "label": "VCP", "text": "vcp"}, "style": "primary", "color": "#0D47A1", "height": "sm", "flex": 1},
+                ]},
+                {"type": "button", "action": {"type": "message", "label": "Stage 2 Stocks", "text": "stage2"}, "style": "secondary", "height": "sm"},
+            ],
+            "paddingAll": "8px",
         },
     }
 
@@ -1341,13 +1353,8 @@ def build_guide_carousel() -> dict:
             "spacing": "xs",
             "contents": [
                 _cmd_button("ตลาด", "Market Breadth"),
-                _cmd_button("ดัชนี", "SET50/MAI/sSET"),
                 _cmd_button("sector", "กลุ่มอุตสาหกรรม"),
-                _cmd_button("breakout", "หุ้น Breakout"),
-                _cmd_button("vcp", "VCP Setups"),
-                _cmd_button("stage2", "Stage 2 Stocks"),
                 _cmd_button("watchlist", "Watchlist ของคุณ"),
-                _cmd_button("guide", "คู่มือ (การ์ดนี้)"),
             ],
             "paddingAll": "16px",
         },
@@ -1412,7 +1419,7 @@ def build_stage_cycle_card() -> dict:
                     "ขายออกทั้งหมดถ้ายังถืออยู่\n"
                     "รอให้กลับมา Stage 1 ก่อนสนใจใหม่",
                     "ขายหมด/หลีกเลี่ยง"),
-                {"type": "text", "text": "Risk Management: ตัด Loss ทันทีที่ -7-8% จาก entry\nไม่เฉลี่ยลงในหุ้นขาลง", "size": "xxs", "color": "#E74C3C", "wrap": True},
+                {"type": "text", "text": "⚠️ Margin: ตัด Loss ทันที -7-8% จาก entry | ห้ามเฉลี่ยลง", "size": "xxs", "color": "#E74C3C", "wrap": True},
             ],
             "paddingAll": "16px",
         },
