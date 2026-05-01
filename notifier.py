@@ -1934,6 +1934,509 @@ def build_pivot_alert_card(signal: StockSignal, last_price: float,
     }
 
 
+def build_trade_open_alert(position: dict, scan_ts: str = "") -> dict:
+    """Auto-trade entry alert. Blue header per spec.
+
+    Layout:
+      📋 New Trade Logged · OPEN · $TICKER
+      Setup    : Pivot Ready Breakout
+      Entry    : 25.50
+      Stop     : 24.00
+      Target   : 28.50
+      R:R      : 1 : 2.0
+      Risk     : 1,500 THB
+      ⏰ 01 May 2026 09:32
+    """
+    sym = position.get("symbol", "?")
+    setup = position.get("setup_name", "")
+    entry = float(position.get("entry_price") or 0)
+    stop = float(position.get("stop_loss") or 0)
+    target = float(position.get("target") or 0)
+    shares = int(position.get("shares") or 0)
+    cost = float(position.get("cost_basis") or 0)
+    at_risk = float(position.get("at_risk_thb") or 0)
+    rr = 0.0
+    if stop > 0 and target > 0 and entry > stop:
+        rr = (target - entry) / (entry - stop)
+    when_text = ""
+    if scan_ts:
+        try:
+            from datetime import datetime as _dt
+            d = _dt.fromisoformat(scan_ts.replace("Z", "+00:00"))
+            when_text = d.strftime("%d %b %Y %H:%M")
+        except Exception:
+            when_text = scan_ts[:16].replace("T", " ")
+
+    def row(label, value, value_color="#2C3E50"):
+        return {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": label, "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": value, "size": "sm",
+             "weight": "bold", "color": value_color, "flex": 5, "align": "end"},
+        ]}
+
+    body_contents = [
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": f"🔵 OPEN", "size": "md",
+             "weight": "bold", "color": "#2980B9", "flex": 2},
+            {"type": "text", "text": sym, "size": "lg",
+             "weight": "bold", "color": "#1A237E", "flex": 5, "align": "end"},
+        ]},
+        {"type": "separator", "margin": "md"},
+        row("Setup", setup or "—"),
+        row("Entry", f"฿{entry:,.2f}"),
+        row("Stop", f"฿{stop:,.2f}", "#E74C3C"),
+        row("Target", f"฿{target:,.2f}", "#27AE60"),
+        row("R:R", f"1 : {rr:.2f}",
+            "#27AE60" if rr >= 3 else "#F39C12" if rr >= 1.5 else "#E74C3C"),
+        row("Shares", f"{shares:,}"),
+        row("Cost", f"฿{cost:,.0f}"),
+        row("Risk", f"฿{at_risk:,.0f}", "#E74C3C"),
+    ]
+    if when_text:
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({
+            "type": "text", "text": f"⏰ {when_text}",
+            "size": "xxs", "color": "#7F8C8D", "align": "end",
+        })
+
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": f"📋 New Trade Logged · {sym}",
+                 "weight": "bold", "size": "md", "color": "#FFFFFF"},
+                {"type": "text", "text": "Auto-trading · v1",
+                 "size": "xxs", "color": "#FFFFFF", "margin": "xs"},
+            ],
+            "backgroundColor": "#2980B9", "paddingAll": "12px",
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "xs",
+            "contents": body_contents, "paddingAll": "12px",
+        },
+    }
+
+
+def build_trade_close_alert(trade: dict, monthly_stats: dict | None = None) -> dict:
+    """Auto-trade exit alert. Green (WIN) or red (LOSS) header per spec.
+
+    Layout (WIN variant):
+      ✅ Trade Closed · [Hit Target]
+      🟢 WIN  |  $TICKER
+      Entry    : 25.50 → 28.40
+      P&L      : +2,900 THB (+11.4%)
+      R:R Real : 1 : 1.93
+      Hold     : 3 days
+      📊 Month P&L : +8,200 THB · Win Rate 67% (4/6)
+    """
+    sym = trade.get("symbol", "?")
+    pnl = float(trade.get("pnl_thb") or 0)
+    pnl_pct = float(trade.get("pnl_pct") or 0)
+    is_win = pnl > 0
+    entry = float(trade.get("entry_price") or 0)
+    exit_p = float(trade.get("exit_price") or 0)
+    realized_r = float(trade.get("realized_r") or 0)
+    hold_days = int(trade.get("hold_days") or 0)
+    reason = trade.get("exit_reason", "manual")
+
+    reason_label = {
+        "target_hit": "Hit Target",
+        "stop_hit": "Hit Stop",
+        "stage_degrade": "Sub-stage Degrade",
+        "manual": "Manual Exit",
+    }.get(reason, reason)
+
+    header_color = "#27AE60" if is_win else "#C0392B"
+    header_emoji = "✅" if is_win else "🛑"
+    badge_emoji = "🟢" if is_win else "🔴"
+    badge_label = "WIN" if is_win else "LOSS"
+    pnl_color = "#27AE60" if is_win else "#E74C3C"
+
+    def row(label, value, value_color="#2C3E50"):
+        return {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": label, "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": value, "size": "sm",
+             "weight": "bold", "color": value_color, "flex": 5, "align": "end"},
+        ]}
+
+    body_contents = [
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": f"{badge_emoji} {badge_label}",
+             "size": "md", "weight": "bold", "color": pnl_color, "flex": 2},
+            {"type": "text", "text": sym, "size": "lg",
+             "weight": "bold", "color": "#1A237E", "flex": 5, "align": "end"},
+        ]},
+        {"type": "separator", "margin": "md"},
+        row("Entry → Exit", f"฿{entry:,.2f} → ฿{exit_p:,.2f}"),
+        row("P&L", f"{'+' if pnl >= 0 else ''}฿{pnl:,.0f} ({pnl_pct:+.1f}%)", pnl_color),
+        row("R realized", f"{'+' if realized_r >= 0 else ''}{realized_r:.2f} R",
+            pnl_color),
+        row("Hold", f"{hold_days} day{'s' if hold_days != 1 else ''}"),
+    ]
+    exit_detail = trade.get("exit_detail") or ""
+    if exit_detail:
+        body_contents.append({"type": "text", "text": exit_detail,
+                              "size": "xxs", "color": "#7F8C8D", "wrap": True,
+                              "margin": "sm"})
+    if monthly_stats:
+        m_pnl = float(monthly_stats.get("month_pnl_thb") or 0)
+        m_wins = int(monthly_stats.get("month_wins") or 0)
+        m_total = int(monthly_stats.get("month_total") or 0)
+        win_rate = (m_wins / m_total * 100) if m_total else 0.0
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({
+            "type": "text",
+            "text": f"📊 Month P&L: {'+' if m_pnl >= 0 else ''}฿{m_pnl:,.0f}",
+            "size": "xs", "color": "#27AE60" if m_pnl >= 0 else "#E74C3C",
+            "weight": "bold",
+        })
+        body_contents.append({
+            "type": "text",
+            "text": f"Win rate: {win_rate:.0f}% ({m_wins}/{m_total})",
+            "size": "xs", "color": "#7F8C8D",
+        })
+
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+                {"type": "text",
+                 "text": f"{header_emoji} Trade Closed · {reason_label}",
+                 "weight": "bold", "size": "md", "color": "#FFFFFF"},
+                {"type": "text", "text": f"{sym} · auto-trading",
+                 "size": "xxs", "color": "#FFFFFF", "margin": "xs"},
+            ],
+            "backgroundColor": header_color, "paddingAll": "12px",
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "xs",
+            "contents": body_contents, "paddingAll": "12px",
+        },
+    }
+
+
+def _journal_compact_row(trade: dict) -> dict:
+    """Compact row used in build_journal_carousel — one trade per row."""
+    sym = trade.get("symbol", "?")
+    setup = trade.get("setup_name", "")
+    status = trade.get("status", "open")
+    pnl = float(trade.get("pnl_thb") or 0)
+    pnl_pct = float(trade.get("pnl_pct") or 0)
+    entry_date = (trade.get("entry_date") or "")[:10]  # YYYY-MM-DD
+
+    is_open = status == "open"
+    badge_color = "#2980B9" if is_open else ("#27AE60" if pnl >= 0 else "#C0392B")
+    badge_text = "OPEN" if is_open else ("WIN" if pnl >= 0 else "LOSS")
+    pnl_text = "—" if is_open else (
+        f"{'+' if pnl >= 0 else ''}฿{pnl:,.0f} ({pnl_pct:+.1f}%)")
+    pnl_color = "#7F8C8D" if is_open else (
+        "#27AE60" if pnl >= 0 else "#E74C3C")
+
+    return {
+        "type": "box", "layout": "vertical", "spacing": "xs",
+        "paddingAll": "8px",
+        "contents": [
+            {"type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": sym, "size": "md",
+                 "weight": "bold", "color": "#1A237E", "flex": 3},
+                {"type": "text", "text": badge_text, "size": "xs",
+                 "weight": "bold", "color": badge_color,
+                 "flex": 2, "align": "end"},
+            ]},
+            {"type": "text", "text": setup or "—",
+             "size": "xs", "color": "#7F8C8D", "wrap": True},
+            {"type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": entry_date, "size": "xxs",
+                 "color": "#7F8C8D", "flex": 3},
+                {"type": "text", "text": pnl_text, "size": "xxs",
+                 "weight": "bold", "color": pnl_color,
+                 "flex": 5, "align": "end"},
+            ]},
+            {"type": "separator", "margin": "sm"},
+        ],
+    }
+
+
+def build_journal_carousel(trades: list, title: str = "Trade Journal",
+                            rows_per_bubble: int = 8) -> dict:
+    """Carousel of compact trade-row bubbles — paginated by rows_per_bubble."""
+    if not trades:
+        return {
+            "type": "bubble", "size": "mega",
+            "header": {
+                "type": "box", "layout": "vertical",
+                "contents": [{"type": "text", "text": title,
+                              "weight": "bold", "size": "md", "color": "#FFFFFF"}],
+                "backgroundColor": "#1A237E", "paddingAll": "12px",
+            },
+            "body": {
+                "type": "box", "layout": "vertical",
+                "contents": [{"type": "text",
+                              "text": "ยังไม่มี trade ใน journal",
+                              "size": "sm", "color": "#7F8C8D",
+                              "align": "center", "margin": "lg"}],
+                "paddingAll": "12px",
+            },
+        }
+    chunks = [trades[i:i + rows_per_bubble]
+              for i in range(0, len(trades), rows_per_bubble)]
+    n = len(chunks)
+    bubbles: list = []
+    for idx, chunk in enumerate(chunks):
+        body_contents = [_journal_compact_row(t) for t in chunk]
+        bubbles.append({
+            "type": "bubble", "size": "mega",
+            "header": {
+                "type": "box", "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": title,
+                     "weight": "bold", "size": "md", "color": "#FFFFFF"},
+                    {"type": "text",
+                     "text": f"Card {idx + 1}/{n} · {len(trades)} trade{'s' if len(trades) != 1 else ''}",
+                     "size": "xxs", "color": "#FFFFFF"},
+                ],
+                "backgroundColor": "#1A237E", "paddingAll": "12px",
+            },
+            "body": {
+                "type": "box", "layout": "vertical", "spacing": "none",
+                "contents": body_contents, "paddingAll": "8px",
+            },
+            "footer": {
+                "type": "box", "layout": "vertical",
+                "contents": [{
+                    "type": "text",
+                    "text": "Type 'journal <SYM>' for trade detail",
+                    "size": "xxs", "color": "#7F8C8D", "align": "center",
+                }],
+                "paddingAll": "8px",
+            },
+        })
+    return bubbles[0] if len(bubbles) == 1 else {"type": "carousel", "contents": bubbles}
+
+
+def build_trade_detail_card(trade: dict) -> dict:
+    """Full detail of a single trade — entry + exit + reasoning + math."""
+    sym = trade.get("symbol", "?")
+    status = trade.get("status", "open")
+    setup = trade.get("setup_name", "—")
+    timeframe = trade.get("timeframe", "1D")
+    entry_reason = trade.get("entry_reason", "")
+    entry_price = float(trade.get("entry_price") or 0)
+    shares = int(trade.get("shares") or 0)
+    cost_basis = float(trade.get("cost_basis") or 0)
+    stop = float(trade.get("stop_loss") or 0)
+    target = float(trade.get("target") or 0)
+    entry_date = (trade.get("entry_date") or "")[:10]
+
+    is_open = status == "open"
+    header_color = "#2980B9" if is_open else "#1A237E"
+    badge_text = "🔵 OPEN" if is_open else "✅ CLOSED"
+
+    def row(label, value, value_color="#2C3E50"):
+        return {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": label, "size": "sm",
+             "color": "#7F8C8D", "flex": 3},
+            {"type": "text", "text": value, "size": "sm",
+             "weight": "bold", "color": value_color, "flex": 5, "align": "end"},
+        ]}
+
+    body_contents: list = [
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": badge_text, "size": "md",
+             "weight": "bold", "color": header_color, "flex": 3},
+            {"type": "text", "text": sym, "size": "lg",
+             "weight": "bold", "color": "#1A237E", "flex": 5, "align": "end"},
+        ]},
+        {"type": "text", "text": setup, "size": "xs",
+         "color": "#7F8C8D", "wrap": True},
+        {"type": "separator", "margin": "md"},
+        {"type": "text", "text": "Entry", "size": "xxs",
+         "color": "#3498DB", "weight": "bold"},
+        row("Date", entry_date or "—"),
+        row("Timeframe", timeframe),
+        row("Price", f"฿{entry_price:,.2f}"),
+        row("Shares", f"{shares:,}"),
+        row("Cost", f"฿{cost_basis:,.0f}"),
+        row("Stop", f"฿{stop:,.2f}", "#E74C3C"),
+        row("Target", f"฿{target:,.2f}", "#27AE60"),
+    ]
+    if entry_reason:
+        body_contents.append({"type": "text", "text": entry_reason,
+                              "size": "xxs", "color": "#7F8C8D",
+                              "wrap": True, "margin": "sm"})
+
+    if not is_open:
+        exit_price = float(trade.get("exit_price") or 0)
+        exit_date = (trade.get("exit_date") or "")[:10]
+        pnl = float(trade.get("pnl_thb") or 0)
+        pnl_pct = float(trade.get("pnl_pct") or 0)
+        realized_r = float(trade.get("realized_r") or 0)
+        hold_days = int(trade.get("hold_days") or 0)
+        reason = trade.get("exit_reason", "")
+        exit_detail = trade.get("exit_detail", "")
+        pnl_color = "#27AE60" if pnl >= 0 else "#E74C3C"
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({"type": "text", "text": "Exit",
+                              "size": "xxs", "color": "#3498DB",
+                              "weight": "bold"})
+        body_contents.extend([
+            row("Date", exit_date or "—"),
+            row("Price", f"฿{exit_price:,.2f}"),
+            row("Reason", reason or "—"),
+            row("P&L", f"{'+' if pnl >= 0 else ''}฿{pnl:,.0f} ({pnl_pct:+.1f}%)", pnl_color),
+            row("R realized", f"{realized_r:+.2f} R", pnl_color),
+            row("Hold", f"{hold_days} day{'s' if hold_days != 1 else ''}"),
+        ])
+        if exit_detail:
+            body_contents.append({"type": "text", "text": exit_detail,
+                                  "size": "xxs", "color": "#7F8C8D",
+                                  "wrap": True, "margin": "sm"})
+
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "contents": [{"type": "text", "text": f"📋 Trade Detail · {sym}",
+                          "weight": "bold", "size": "md", "color": "#FFFFFF"}],
+            "backgroundColor": header_color, "paddingAll": "12px",
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "xs",
+            "contents": body_contents, "paddingAll": "12px",
+        },
+    }
+
+
+def build_analytics_dashboard_card(analytics: dict) -> dict:
+    """Analytics dashboard — win rate, P&L, profit factor, by-setup breakdown."""
+    n = int(analytics.get("total_trades") or 0)
+    if n == 0:
+        return {
+            "type": "bubble", "size": "mega",
+            "header": {
+                "type": "box", "layout": "vertical",
+                "contents": [{"type": "text", "text": "📊 Trade Analytics",
+                              "weight": "bold", "size": "md", "color": "#FFFFFF"}],
+                "backgroundColor": "#1A237E", "paddingAll": "12px",
+            },
+            "body": {
+                "type": "box", "layout": "vertical",
+                "contents": [{"type": "text",
+                              "text": "ยังไม่มี trade ที่ปิด — analytics จะปรากฏหลังจาก trade แรกถูกปิด",
+                              "size": "sm", "color": "#7F8C8D",
+                              "wrap": True, "align": "center", "margin": "lg"}],
+                "paddingAll": "12px",
+            },
+        }
+
+    wins = int(analytics.get("wins") or 0)
+    win_rate = float(analytics.get("win_rate_pct") or 0)
+    total_pnl = float(analytics.get("total_pnl_thb") or 0)
+    pf = float(analytics.get("profit_factor") or 0)
+    avg_r = float(analytics.get("avg_r_realized") or 0)
+    month_pnl = float(analytics.get("month_pnl_thb") or 0)
+    month_total = int(analytics.get("month_total") or 0)
+    month_wins = int(analytics.get("month_wins") or 0)
+    by_setup = analytics.get("by_setup") or {}
+    best = analytics.get("best_trade") or {}
+    worst = analytics.get("worst_trade") or {}
+
+    pnl_color = "#27AE60" if total_pnl >= 0 else "#E74C3C"
+    win_rate_color = "#27AE60" if win_rate >= 50 else "#F39C12" if win_rate >= 35 else "#E74C3C"
+    pf_color = "#27AE60" if pf >= 2 else "#F39C12" if pf >= 1 else "#E74C3C"
+
+    def row(label, value, value_color="#2C3E50"):
+        return {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": label, "size": "sm",
+             "color": "#7F8C8D", "flex": 4},
+            {"type": "text", "text": value, "size": "sm",
+             "weight": "bold", "color": value_color, "flex": 5, "align": "end"},
+        ]}
+
+    body_contents: list = [
+        {"type": "text", "text": "Overall", "size": "xxs",
+         "color": "#3498DB", "weight": "bold"},
+        row("Trades", f"{n}  ({wins}W / {n - wins}L)"),
+        row("Win Rate", f"{win_rate:.1f}%", win_rate_color),
+        row("Total P&L", f"{'+' if total_pnl >= 0 else ''}฿{total_pnl:,.0f}", pnl_color),
+        row("Profit Factor", f"{pf:.2f}", pf_color),
+        row("Avg R realized", f"{avg_r:+.2f} R",
+            "#27AE60" if avg_r >= 0 else "#E74C3C"),
+    ]
+    # This month
+    body_contents.append({"type": "separator", "margin": "md"})
+    body_contents.append({"type": "text", "text": "This month",
+                          "size": "xxs", "color": "#3498DB", "weight": "bold"})
+    body_contents.append(row("P&L",
+        f"{'+' if month_pnl >= 0 else ''}฿{month_pnl:,.0f}",
+        "#27AE60" if month_pnl >= 0 else "#E74C3C"))
+    if month_total:
+        body_contents.append(row("Trades",
+            f"{month_total}  ({month_wins}W / {month_total - month_wins}L)"))
+    # Best / worst
+    if best and best.get("symbol"):
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({"type": "text", "text": "Best / Worst",
+                              "size": "xxs", "color": "#3498DB", "weight": "bold"})
+        body_contents.append(row(f"🏆 {best.get('symbol', '?')}",
+            f"{'+' if (best.get('pnl_thb') or 0) >= 0 else ''}฿{float(best.get('pnl_thb') or 0):,.0f}",
+            "#27AE60"))
+    if worst and worst.get("symbol") and worst.get("symbol") != best.get("symbol"):
+        body_contents.append(row(f"💀 {worst.get('symbol', '?')}",
+            f"{'+' if (worst.get('pnl_thb') or 0) >= 0 else ''}฿{float(worst.get('pnl_thb') or 0):,.0f}",
+            "#E74C3C" if (worst.get('pnl_thb') or 0) < 0 else "#27AE60"))
+    # By setup
+    if by_setup:
+        body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({"type": "text", "text": "By setup",
+                              "size": "xxs", "color": "#3498DB", "weight": "bold"})
+        for setup, s in sorted(by_setup.items(),
+                                key=lambda kv: -kv[1].get("pnl", 0)):
+            wr = s.get("win_rate_pct", 0)
+            pnl_setup = s.get("pnl", 0)
+            body_contents.append({
+                "type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text", "text": setup, "size": "xs",
+                     "color": "#2C3E50", "flex": 5, "wrap": True},
+                    {"type": "text", "text": f"{wr:.0f}%·{s['trades']}T",
+                     "size": "xxs", "color": "#7F8C8D",
+                     "flex": 3, "align": "end"},
+                    {"type": "text",
+                     "text": f"{'+' if pnl_setup >= 0 else ''}฿{pnl_setup:,.0f}",
+                     "size": "xxs",
+                     "color": "#27AE60" if pnl_setup >= 0 else "#E74C3C",
+                     "weight": "bold", "flex": 4, "align": "end"},
+                ],
+            })
+
+    return {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "contents": [{"type": "text", "text": "📊 Trade Analytics",
+                          "weight": "bold", "size": "md", "color": "#FFFFFF"}],
+            "backgroundColor": "#1A237E", "paddingAll": "12px",
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "spacing": "xs",
+            "contents": body_contents, "paddingAll": "12px",
+        },
+        "footer": {
+            "type": "box", "layout": "vertical",
+            "contents": [{
+                "type": "text",
+                "text": "Type 'journal' to see trade list",
+                "size": "xxs", "color": "#7F8C8D", "align": "center",
+            }],
+            "paddingAll": "8px",
+        },
+    }
+
+
 def build_compact_stock_bubble(signal: StockSignal) -> dict:
     """Compact notification bubble — minimal info, tap to get full analysis."""
     pcolor = PATTERN_COLOR.get(signal.pattern, "#7F8C8D")

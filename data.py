@@ -2249,19 +2249,24 @@ PAPER_PORTFOLIO_DOC = "default"
 
 
 def _new_paper_portfolio(starting_cash: float = 1_000_000.0) -> dict:
-    """Return a fresh portfolio dict with starting cash and empty positions."""
+    """Return a fresh portfolio dict with starting cash and empty positions.
+
+    Position-count + concentration caps removed per user spec ("remove
+    all limits"). 1% risk per trade kept as the sizing math anchor —
+    that's the trade-management rule, not an arbitrary limit.
+    """
     now = datetime.now(BANGKOK_TZ).isoformat()
     return {
         "starting_cash_thb": starting_cash,
         "cash_thb": starting_cash,
         "started_at": now,
         "last_updated": now,
-        "max_positions": 5,
+        "max_positions": None,        # None = unlimited (was 5)
         "risk_per_trade_pct": 1.0,
-        "max_position_pct": 20.0,
-        "positions": [],          # open positions
-        "closed_trades": [],      # historical closed trades
-        "pending_proposals": [],  # trade proposals awaiting approval
+        "max_position_pct": None,     # None = no concentration cap (was 20)
+        "positions": [],              # open positions
+        "closed_trades": [],          # historical closed trades
+        "pending_proposals": [],      # legacy (auto-trading skips this)
     }
 
 
@@ -2384,7 +2389,7 @@ def list_users_with_watchlists(db) -> list[tuple[str, list[str]]]:
 
 def compute_position_size(equity_thb: float, entry: float, stop: float,
                           risk_pct: float = 1.0,
-                          max_position_pct: float = 20.0) -> tuple[int, float, float]:
+                          max_position_pct: "float | None" = None) -> tuple[int, float, float]:
     """Minervini 1%-risk position sizing.
 
     Returns (shares, cost_thb, at_risk_thb). Returns (0, 0, 0) when the
@@ -2394,7 +2399,11 @@ def compute_position_size(equity_thb: float, entry: float, stop: float,
     risk_per_share  = entry - stop
     shares          = floor(risk_thb / risk_per_share)
     cost            = shares × entry
-    Cap at max_position_pct% of equity (concentration limit).
+
+    `max_position_pct` is the concentration cap (e.g. 20 = 20% of
+    equity). Pass None to skip the cap entirely — used by the
+    auto-trading module which has the cap removed per user spec
+    ("remove all limits").
     """
     if entry <= 0 or stop <= 0 or entry <= stop or equity_thb <= 0:
         return 0, 0.0, 0.0
@@ -2402,12 +2411,411 @@ def compute_position_size(equity_thb: float, entry: float, stop: float,
     risk_per_share = entry - stop
     shares = int(risk_thb / risk_per_share)
     cost = shares * entry
-    max_cost = equity_thb * (max_position_pct / 100.0)
-    if cost > max_cost > 0:
-        shares = int(max_cost / entry)
-        cost = shares * entry
+    if max_position_pct is not None and max_position_pct > 0:
+        max_cost = equity_thb * (max_position_pct / 100.0)
+        if cost > max_cost:
+            shares = int(max_cost / entry)
+            cost = shares * entry
     at_risk = shares * risk_per_share
     return shares, cost, at_risk
+
+
+# ─── Trade journal helpers ────────────────────────────────────────────────
+# Setup-name + entry/exit-reason auto-derivation. Skips the spec's
+# free-text input form entirely (LIFF / image-upload deferred to v2);
+# we synthesize human-readable reason strings from the sub_stage +
+# Fib anchor data already on each StockSignal.
+
+SETUP_NAME_BY_SUB_STAGE = {
+    "STAGE_1_PREP":         "Pre-Stage-2 Setup",
+    "STAGE_2_IGNITION":     "Ignition Kickoff",
+    "STAGE_2_PIVOT_READY":  "Pivot Ready Breakout",
+    "STAGE_2_CONTRACTION":  "Stage 2 Contraction",
+    "STAGE_2_MARKUP":       "Stage 2 Markup",
+    "STAGE_2_OVEREXTENDED": "Overextended (avoid)",
+    # Legacy aliases — old Firestore docs may still carry these
+    "STAGE_2_EARLY":        "Ignition Kickoff",
+    "STAGE_2_RUNNING":      "Stage 2 Markup",
+    "STAGE_2_PULLBACK":     "Stage 2 Contraction",
+}
+
+
+def derive_setup_name(sub_stage: str) -> str:
+    """Map a sub_stage constant to a human-readable setup name."""
+    return SETUP_NAME_BY_SUB_STAGE.get(sub_stage, sub_stage or "Unknown setup")
+
+
+def derive_entry_reason(signal, rr_ratio: float = 0.0) -> str:
+    """Synthesize the trade-entry reason string from a StockSignal.
+
+    Format:  '{setup} · Pin1=฿X → Pin2=฿Y (1st leg +N%); R:R Z:1; Score S'
+
+    Falls back gracefully when Fib anchors are missing (older signals).
+    """
+    sub_stage = getattr(signal, "sub_stage", "") or ""
+    setup = derive_setup_name(sub_stage)
+    fib_start = float(getattr(signal, "fib_start", 0) or 0)
+    fib_pivot = float(getattr(signal, "fib_pivot", 0) or 0)
+    score = float(getattr(signal, "strength_score", 0) or 0)
+    parts = [setup]
+    if fib_start > 0 and fib_pivot > fib_start:
+        leg_pct = (fib_pivot / fib_start - 1) * 100
+        parts.append(f"Pin1=฿{fib_start:.2f} → Pin2=฿{fib_pivot:.2f} (1st leg +{leg_pct:.0f}%)")
+    if rr_ratio > 0:
+        parts.append(f"R:R {rr_ratio:.2f}:1")
+    if score > 0:
+        parts.append(f"Score {score:.0f}")
+    return " · ".join(parts)
+
+
+def derive_exit_detail(trade: dict, exit_price: float,
+                       current_sub_stage: str = "") -> str:
+    """Synthesize the trade-exit detail string.
+
+    Pulls exit_reason from the trade dict (set by the auto-sell
+    decision) and formats a one-line description for the journal.
+    """
+    reason = trade.get("exit_reason", "")
+    target = float(trade.get("target") or 0)
+    stop = float(trade.get("stop_loss") or 0)
+    entry_sub = trade.get("sub_stage_entry", "") or trade.get("entry_sub_stage", "")
+    if reason == "target_hit":
+        return f"Hit Target ฿{target:.2f} at ฿{exit_price:.2f}"
+    if reason == "stop_hit":
+        return f"Stop ฿{stop:.2f} hit at ฿{exit_price:.2f}"
+    if reason == "stage_degrade":
+        return f"Sub-stage degraded {entry_sub or '?'} → {current_sub_stage or '?'}"
+    if reason == "manual":
+        return f"Manual sell at ฿{exit_price:.2f}"
+    return f"Exit at ฿{exit_price:.2f}"
+
+
+def auto_trade_decisions(signals: list, portfolio: dict,
+                         pivot_crossings: "set[str] | None" = None,
+                         max_buys_per_tick: int = 3) -> dict:
+    """Pure decision function. Given current scan signals + portfolio
+    state + (optional) symbols that just crossed pivot UP this tick,
+    return a dict of {buys: [...], sells: [...]} with full trade
+    metadata. Caller mutates state and pushes alerts.
+
+    SELLS take priority — checked first (free up cash for buys).
+
+    Sell triggers (in priority order):
+      1. target_hit:    last_price ≥ stored target
+      2. stop_hit:      last_price ≤ stored stop_loss
+      3. stage_degrade: signal's current sub_stage is OVEREXTENDED /
+                        Stage 3 / Stage 4 AND price < pivot
+                        (avoids selling on a single-bar overextension
+                        when the trend is still intact above pivot)
+
+    Buy candidates:
+      - Top `max_buys_per_tick` from BUY-bucket sub-stages
+        (PIVOT_READY + IGNITION) sorted by strength_score
+      - Marginable only (margin_im_pct > 0)
+      - Not already held
+      - Has positive R:R ≥ 2.0
+      - Sufficient cash for sized position
+      - Pivot-crossing watchlist symbols also included via
+        `pivot_crossings` set (passed in by the monitor tick)
+    """
+    sig_by_sym = {s.symbol: s for s in signals}
+    pivot_crossings = pivot_crossings or set()
+
+    held = {p.get("symbol"): p for p in (portfolio.get("positions") or [])}
+    cash = float(portfolio.get("cash_thb") or 0)
+    risk_pct = float(portfolio.get("risk_per_trade_pct") or 1.0)
+    max_pos_pct = portfolio.get("max_position_pct")
+
+    sells: list[dict] = []
+    buys: list[dict] = []
+
+    # ── Sells: scan every open position ────────────────────────────────
+    for sym, pos in list(held.items()):
+        sig = sig_by_sym.get(sym)
+        if sig is None:
+            continue  # no fresh data; can't decide
+        last = float(getattr(sig, "close", 0) or 0)
+        if last <= 0:
+            continue
+        target = float(pos.get("target") or 0)
+        stop = float(pos.get("stop_loss") or 0)
+        cur_sub = getattr(sig, "sub_stage", "") or ""
+        pivot_now = float(getattr(sig, "pivot_price", 0) or 0)
+
+        exit_reason = ""
+        if target > 0 and last >= target:
+            exit_reason = "target_hit"
+        elif stop > 0 and last <= stop:
+            exit_reason = "stop_hit"
+        elif (cur_sub in {"STAGE_2_OVEREXTENDED",
+                          "STAGE_3_VOLATILE", "STAGE_3_DIST_DIST",
+                          "STAGE_4_BREAKDOWN", "STAGE_4_DOWNTREND"}
+              and pivot_now > 0 and last < pivot_now):
+            exit_reason = "stage_degrade"
+        if exit_reason:
+            sells.append({
+                "trade_id": pos.get("trade_id"),
+                "symbol": sym,
+                "exit_price": last,
+                "exit_reason": exit_reason,
+                "current_sub_stage": cur_sub,
+                "position": pos,
+            })
+
+    # Compute provisional cash AFTER sells so buys can use freed cash
+    cash_after_sells = cash
+    for s in sells:
+        pos = s["position"]
+        cash_after_sells += int(pos.get("shares") or 0) * float(s["exit_price"])
+
+    # Equity after sells (positions value not yet adjusted for the
+    # pending sells — easier to use cash_after_sells + remaining
+    # positions' value at last price for sizing).
+    remaining_positions_value = 0.0
+    sell_syms = {s["symbol"] for s in sells}
+    for sym, pos in held.items():
+        if sym in sell_syms:
+            continue
+        sig = sig_by_sym.get(sym)
+        last = float(getattr(sig, "close", 0) or pos.get("entry_price") or 0) if sig else float(pos.get("entry_price") or 0)
+        remaining_positions_value += int(pos.get("shares") or 0) * last
+    equity_for_sizing = cash_after_sells + remaining_positions_value
+
+    # ── Buys: BUY-bucket candidates + pivot-crossing watchlist ─────────
+    held_after = held.keys() - sell_syms
+    BUY_SUBS = {"STAGE_2_PIVOT_READY", "STAGE_2_IGNITION"}
+    candidates = [
+        s for s in signals
+        if (s.symbol not in held_after
+            and getattr(s, "margin_im_pct", 0) > 0
+            and getattr(s, "sub_stage", "") in BUY_SUBS
+            and getattr(s, "pivot_price", 0) > 0
+            and getattr(s, "pivot_stop", 0) > 0
+            and getattr(s, "target_1618", 0) > 0)
+    ]
+    candidates.sort(key=lambda s: s.strength_score, reverse=True)
+
+    # Pivot-crossing watchlist: prepend any symbol that crossed pivot
+    # this tick (override BUY-bucket priority — these are time-sensitive).
+    crossed_first = []
+    for sym in pivot_crossings:
+        sig = sig_by_sym.get(sym)
+        if sig is None or sym in held_after:
+            continue
+        if (getattr(sig, "margin_im_pct", 0) > 0
+                and getattr(sig, "pivot_price", 0) > 0
+                and getattr(sig, "pivot_stop", 0) > 0
+                and getattr(sig, "target_1618", 0) > 0):
+            crossed_first.append(sig)
+    # Dedup with candidates (crossings come first)
+    seen = {s.symbol for s in crossed_first}
+    candidates = crossed_first + [c for c in candidates if c.symbol not in seen]
+
+    avail_cash = cash_after_sells
+    for s in candidates:
+        if len(buys) >= max_buys_per_tick:
+            break
+        entry = float(s.close)
+        stop = float(s.pivot_stop)
+        target = float(s.target_1618)
+        risk = entry - stop
+        if risk <= 0:
+            continue
+        rr = (target - entry) / risk if risk > 0 else 0
+        if rr < 2.0:
+            continue
+        shares, cost, at_risk = compute_position_size(
+            equity_for_sizing, entry, stop, risk_pct, max_pos_pct)
+        if shares <= 0 or cost > avail_cash:
+            continue
+        buys.append({
+            "symbol": s.symbol,
+            "entry_price": round(entry, 2),
+            "shares": shares,
+            "cost": round(cost, 2),
+            "at_risk": round(at_risk, 2),
+            "stop": round(stop, 2),
+            "target": round(target, 2),
+            "rr": round(rr, 2),
+            "sub_stage": s.sub_stage,
+            "score": float(s.strength_score or 0),
+            "im_pct": int(getattr(s, "margin_im_pct", 0) or 0),
+            "fib_start": round(float(getattr(s, "fib_start", 0) or 0), 2),
+            "fib_pivot": round(float(getattr(s, "fib_pivot", 0) or 0), 2),
+            "scanned_at": s.scanned_at,
+            "signal": s,  # caller can use for entry_reason
+            "is_crossing": s.symbol in pivot_crossings,
+        })
+        avail_cash -= cost
+
+    return {"buys": buys, "sells": sells}
+
+
+def execute_auto_trades(portfolio: dict, decisions: dict,
+                        scan_ts: str = "") -> tuple[list[dict], list[dict]]:
+    """Apply buys/sells to the portfolio dict in-place.
+
+    `decisions` is the output of `auto_trade_decisions()`.
+
+    Returns (executed_buys, executed_closes) where each item is the
+    fully-decorated position/closed-trade dict — caller pushes alerts
+    for these.
+    """
+    import uuid as _uuid
+    now = datetime.now(BANGKOK_TZ).isoformat()
+    scan_ts = scan_ts or now
+
+    executed_buys: list[dict] = []
+    executed_closes: list[dict] = []
+
+    # ── Sells first (free up cash) ─────────────────────────────────────
+    by_sym = {p.get("symbol"): p for p in (portfolio.get("positions") or [])}
+    for sell in decisions.get("sells") or []:
+        sym = sell["symbol"]
+        pos = by_sym.get(sym)
+        if pos is None:
+            continue
+        exit_price = float(sell["exit_price"])
+        shares = int(pos.get("shares") or 0)
+        proceeds = shares * exit_price
+        cost_basis = float(pos.get("cost_basis") or (shares * float(pos.get("entry_price") or 0)))
+        pnl = proceeds - cost_basis
+        pnl_pct = (pnl / cost_basis * 100) if cost_basis else 0.0
+        # Initial risk = entry - stop, in THB across the position
+        risk_per_share = max(0.0, float(pos.get("entry_price") or 0) - float(pos.get("stop_loss") or 0))
+        initial_risk = shares * risk_per_share
+        realized_r = (pnl / initial_risk) if initial_risk > 0 else 0.0
+        # Hold days
+        try:
+            entry_d = datetime.fromisoformat(pos.get("entry_date") or now)
+            exit_d = datetime.fromisoformat(scan_ts)
+            hold_days = max(0, (exit_d.date() - entry_d.date()).days)
+        except Exception:
+            hold_days = 0
+        closed = dict(pos)  # copy entry metadata (setup_name, entry_reason, fib, ...)
+        # Set exit_reason BEFORE calling derive_exit_detail (the helper
+        # reads it from the dict).
+        closed["exit_reason"] = sell["exit_reason"]
+        closed.update({
+            "exit_date": scan_ts,
+            "exit_price": round(exit_price, 2),
+            "exit_detail": derive_exit_detail(closed, exit_price,
+                                               sell.get("current_sub_stage", "")),
+            "proceeds": round(proceeds, 2),
+            "pnl_thb": round(pnl, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "hold_days": hold_days,
+            "realized_r": round(realized_r, 2),
+            "lesson_note": "",  # placeholder for v2 'note' command
+            "status": "closed",
+        })
+        portfolio["cash_thb"] = round(float(portfolio.get("cash_thb") or 0) + proceeds, 2)
+        portfolio["positions"] = [p for p in (portfolio.get("positions") or [])
+                                   if p.get("symbol") != sym]
+        portfolio["closed_trades"] = (portfolio.get("closed_trades") or []) + [closed]
+        executed_closes.append(closed)
+
+    # ── Buys ──────────────────────────────────────────────────────────
+    for buy in decisions.get("buys") or []:
+        sym = buy["symbol"]
+        cost = float(buy["cost"])
+        if cost > float(portfolio.get("cash_thb") or 0):
+            continue  # cash drained by prior buys this tick
+        sig = buy.get("signal")
+        rr = float(buy.get("rr") or 0)
+        position = {
+            "trade_id": _uuid.uuid4().hex[:12],
+            "symbol": sym,
+            "entry_date": scan_ts,
+            "entry_price": float(buy["entry_price"]),
+            "shares": int(buy["shares"]),
+            "cost_basis": cost,
+            "stop_loss": float(buy["stop"]),
+            "target": float(buy["target"]),
+            "im_pct": int(buy.get("im_pct") or 0),
+            "at_risk_thb": float(buy.get("at_risk") or 0),
+            "setup_name": derive_setup_name(buy.get("sub_stage", "")),
+            "timeframe": "1D",
+            "entry_reason": derive_entry_reason(sig, rr) if sig else "",
+            "entry_score": float(buy.get("score") or 0),
+            "entry_fib": {
+                "start": float(buy.get("fib_start") or 0),
+                "pivot": float(buy.get("fib_pivot") or 0),
+                "target_1618": float(buy["target"]),
+            },
+            "sub_stage_entry": buy.get("sub_stage", ""),
+            "is_pivot_crossing": bool(buy.get("is_crossing")),
+            "status": "open",
+        }
+        portfolio["cash_thb"] = round(float(portfolio.get("cash_thb") or 0) - cost, 2)
+        portfolio["positions"] = (portfolio.get("positions") or []) + [position]
+        executed_buys.append(position)
+
+    return executed_buys, executed_closes
+
+
+def compute_trade_analytics(portfolio: dict) -> dict:
+    """Aggregate stats over closed_trades for the Analytics dashboard."""
+    closed = list(portfolio.get("closed_trades") or [])
+    n = len(closed)
+    if n == 0:
+        return {
+            "total_trades": 0, "wins": 0, "losses": 0,
+            "win_rate_pct": 0.0,
+            "total_pnl_thb": 0.0,
+            "gross_win_thb": 0.0, "gross_loss_thb": 0.0,
+            "profit_factor": 0.0,
+            "avg_r_realized": 0.0,
+            "best_trade": None, "worst_trade": None,
+            "by_setup": {},
+            "month_pnl_thb": 0.0,
+            "month_wins": 0, "month_total": 0,
+        }
+    wins = [t for t in closed if (t.get("pnl_thb") or 0) > 0]
+    losses = [t for t in closed if (t.get("pnl_thb") or 0) <= 0]
+    gross_win = sum(float(t.get("pnl_thb") or 0) for t in wins)
+    gross_loss = sum(float(t.get("pnl_thb") or 0) for t in losses)
+    total = gross_win + gross_loss
+    pf = (gross_win / abs(gross_loss)) if gross_loss < 0 else 0.0
+    avg_r = sum(float(t.get("realized_r") or 0) for t in closed) / n if n else 0.0
+    best = max(closed, key=lambda t: float(t.get("pnl_thb") or 0))
+    worst = min(closed, key=lambda t: float(t.get("pnl_thb") or 0))
+
+    # By-setup breakdown
+    by_setup: dict = {}
+    for t in closed:
+        setup = t.get("setup_name") or "Unknown"
+        s = by_setup.setdefault(setup, {"trades": 0, "wins": 0, "pnl": 0.0})
+        s["trades"] += 1
+        if (t.get("pnl_thb") or 0) > 0:
+            s["wins"] += 1
+        s["pnl"] += float(t.get("pnl_thb") or 0)
+    for s in by_setup.values():
+        s["win_rate_pct"] = (s["wins"] / s["trades"] * 100) if s["trades"] else 0.0
+
+    # This-month aggregate (using exit_date YYYY-MM- prefix)
+    now = datetime.now(BANGKOK_TZ)
+    month_prefix = now.strftime("%Y-%m")
+    month_trades = [t for t in closed
+                    if (t.get("exit_date") or "").startswith(month_prefix)]
+    month_pnl = sum(float(t.get("pnl_thb") or 0) for t in month_trades)
+    month_wins = sum(1 for t in month_trades if (t.get("pnl_thb") or 0) > 0)
+
+    return {
+        "total_trades": n,
+        "wins": len(wins), "losses": len(losses),
+        "win_rate_pct": round(len(wins) / n * 100, 1),
+        "total_pnl_thb": round(total, 2),
+        "gross_win_thb": round(gross_win, 2),
+        "gross_loss_thb": round(gross_loss, 2),
+        "profit_factor": round(pf, 2),
+        "avg_r_realized": round(avg_r, 2),
+        "best_trade": best, "worst_trade": worst,
+        "by_setup": by_setup,
+        "month_pnl_thb": round(month_pnl, 2),
+        "month_wins": month_wins,
+        "month_total": len(month_trades),
+    }
 
 
 def portfolio_equity(portfolio: dict, last_prices: dict) -> tuple[float, float]:

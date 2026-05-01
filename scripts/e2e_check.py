@@ -721,6 +721,54 @@ def suite_daily_picks(base, secret):
     return fails
 
 
+def suite_trade_log(base, secret):
+    """Trade log + analytics endpoints (paper-trading auto-trader).
+
+    Confirms (a) `journal` and `analytics` commands dispatch correctly,
+    (b) portfolio caps are removed (max_positions / max_position_pct
+    None or unset — sanity for the 'no limit' user spec), (c) analytics
+    dict has all expected fields. Doesn't assert specific trade content
+    because state varies — just validates the contract.
+    """
+    section("Trade log + analytics (paper-trading auto-trader)")
+    fails = 0
+    try:
+        q, _ = query(base, secret, "journal")
+        fails += check("journal/dispatched", q.get("kind") == "journal",
+                       f"kind={q.get('kind')}")
+        # No-cap invariant: max_positions and max_position_pct must be
+        # None (or absent) per the 'remove all limits' user spec.
+        max_pos = q.get("max_positions")
+        max_pct = q.get("max_position_pct")
+        fails += check("journal/no_max_positions_cap",
+                       max_pos is None,
+                       f"max_positions={max_pos} — should be None (unlimited)")
+        fails += check("journal/no_max_position_pct_cap",
+                       max_pct is None,
+                       f"max_position_pct={max_pct} — should be None (no cap)")
+        for k in ("starting_cash_thb", "cash_thb",
+                  "open_count", "closed_count"):
+            fails += check(f"journal/has_{k}", k in q, f"missing {k!r}")
+    except Exception as exc:
+        fails += check("journal", False, f"err: {exc}")
+
+    try:
+        q, _ = query(base, secret, "analytics")
+        fails += check("analytics/dispatched", q.get("kind") == "analytics",
+                       f"kind={q.get('kind')}")
+        for k in ("total_trades", "wins", "losses", "win_rate_pct",
+                  "total_pnl_thb", "profit_factor", "avg_r_realized",
+                  "by_setup", "month_pnl_thb"):
+            fails += check(f"analytics/has_{k}", k in q, f"missing {k!r}")
+        # Win rate sanity: 0 ≤ win_rate ≤ 100
+        wr = q.get("win_rate_pct", 0)
+        fails += check("analytics/win_rate_in_range", 0 <= wr <= 100,
+                       f"win_rate_pct={wr}")
+    except Exception as exc:
+        fails += check("analytics", False, f"err: {exc}")
+    return fails
+
+
 def suite_stage_weakening(base, secret):
     """Invariant coverage for the stage_weakening modifier shipped
     alongside breakout_attempt + unclosed-VCP. Works by probing a
@@ -1158,6 +1206,7 @@ def main():
     total_fails += suite_sub_stage(base, secret)
     total_fails += suite_pivot(base, secret)
     total_fails += suite_daily_picks(base, secret)
+    total_fails += suite_trade_log(base, secret)
     total_fails += suite_persistence(base, secret)
     total_fails += suite_index_scope(base, secret)
     total_fails += suite_margin(base, secret)

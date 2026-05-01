@@ -156,10 +156,14 @@ if len(df_vcp) < 100:
     extra_n = 100 - len(df_vcp)
     pad_idx = pd.date_range(end=df_vcp.index[0] - pd.Timedelta(days=1),
                             periods=extra_n, freq="B")
+    # pandas can return N or N±1 entries for freq="B" depending on the
+    # end-date / version; sync the values arrays to the actual index
+    # length to avoid 'Length of values does not match length of index'.
+    n = len(pad_idx)
     pad = pd.DataFrame({
-        "Open": [48.0] * extra_n, "High": [48.5] * extra_n,
-        "Low": [47.5] * extra_n, "Close": [48.0] * extra_n,
-        "Volume": [2_500_000] * extra_n,
+        "Open": [48.0] * n, "High": [48.5] * n,
+        "Low": [47.5] * n, "Close": [48.0] * n,
+        "Volume": [2_500_000] * n,
     }, index=pad_idx)
     df_vcp = pd.concat([pad, df_vcp])
 
@@ -810,6 +814,167 @@ for verb in ("WATCH", "TRADE", "TRIM", "AVOID"):
            verb in picker_json, True)
 expect("picker: Stage 2 bubble has dual footer (full + Pivot Ready)",
        "Pivot Ready" in picker_json, True)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Trade-log + analytics module (auto-trading / journal / dashboard)
+print("\nTrade log — setup names, entry reasons, exit details, analytics")
+from data import (derive_setup_name, derive_entry_reason, derive_exit_detail,
+                  compute_trade_analytics, _new_paper_portfolio,
+                  compute_position_size, auto_trade_decisions,
+                  execute_auto_trades)
+from notifier import (build_trade_open_alert, build_trade_close_alert,
+                      build_journal_carousel, build_trade_detail_card,
+                      build_analytics_dashboard_card)
+
+# ── derive_setup_name: sub_stage → friendly name ──
+expect("setup_name: PIVOT_READY → Pivot Ready Breakout",
+       derive_setup_name("STAGE_2_PIVOT_READY"), "Pivot Ready Breakout")
+expect("setup_name: IGNITION → Ignition Kickoff",
+       derive_setup_name("STAGE_2_IGNITION"), "Ignition Kickoff")
+expect("setup_name: PREP → Pre-Stage-2 Setup",
+       derive_setup_name("STAGE_1_PREP"), "Pre-Stage-2 Setup")
+expect("setup_name: legacy EARLY → Ignition Kickoff (alias)",
+       derive_setup_name("STAGE_2_EARLY"), "Ignition Kickoff")
+expect("setup_name: unknown → fallback to literal",
+       derive_setup_name("WEIRD_STAGE"), "WEIRD_STAGE")
+
+# ── derive_exit_detail: branches by exit_reason ──
+expect("exit_detail: target_hit",
+       "Hit Target" in derive_exit_detail({"target": 28.50, "exit_reason": "target_hit"}, 28.40),
+       True)
+expect("exit_detail: stop_hit",
+       "Stop" in derive_exit_detail({"stop_loss": 24.00, "exit_reason": "stop_hit"}, 23.90),
+       True)
+expect("exit_detail: stage_degrade",
+       "degraded" in derive_exit_detail(
+           {"exit_reason": "stage_degrade", "sub_stage_entry": "STAGE_2_IGNITION"},
+           25.00, "STAGE_2_OVEREXTENDED"),
+       True)
+expect("exit_detail: manual",
+       "Manual sell" in derive_exit_detail({"exit_reason": "manual"}, 25.00),
+       True)
+
+# ── position sizing: no concentration cap when None ──
+sh, cost, ar = compute_position_size(1_000_000, 100, 99, 1.0, None)
+expect("position_size: no cap → 10000 shares (1% risk / ฿1 risk per share)",
+       sh, 10000)
+expect("position_size: at_risk = 10K (1% of 1M)",
+       round(ar, 2), 9999.00 if ar < 9999.5 else 10000.00)
+# Sanity: with 20% cap, same setup is throttled
+sh20, cost20, _ = compute_position_size(1_000_000, 100, 99, 1.0, 20.0)
+expect("position_size: 20% cap → 2000 shares (cost ฿200K = 20% of equity)",
+       sh20, 2000)
+
+# ── compute_trade_analytics: empty + 3-trade portfolio ──
+empty_p = _new_paper_portfolio()
+empty_a = compute_trade_analytics(empty_p)
+expect("analytics empty: total_trades=0", empty_a["total_trades"], 0)
+expect("analytics empty: win_rate=0", empty_a["win_rate_pct"], 0.0)
+
+p3 = _new_paper_portfolio()
+p3["closed_trades"] = [
+    {"pnl_thb": 5000.0, "realized_r": 2.0, "setup_name": "Pivot Ready Breakout",
+     "exit_date": "2026-04-15T16:00:00+07:00", "symbol": "AAA"},
+    {"pnl_thb": -1000.0, "realized_r": -1.0, "setup_name": "Pivot Ready Breakout",
+     "exit_date": "2026-04-20T16:00:00+07:00", "symbol": "BBB"},
+    {"pnl_thb": 3000.0, "realized_r": 1.5, "setup_name": "Ignition Kickoff",
+     "exit_date": "2026-04-25T16:00:00+07:00", "symbol": "CCC"},
+]
+a3 = compute_trade_analytics(p3)
+expect("analytics 3-trade: total_trades=3", a3["total_trades"], 3)
+expect("analytics 3-trade: wins=2", a3["wins"], 2)
+expect("analytics 3-trade: win_rate=66.7", a3["win_rate_pct"], 66.7)
+expect("analytics 3-trade: total_pnl=7000", a3["total_pnl_thb"], 7000.0)
+expect("analytics 3-trade: profit_factor=8.0 (8000 wins / 1000 losses)",
+       a3["profit_factor"], 8.0)
+expect("analytics 3-trade: by_setup has 'Pivot Ready Breakout' with 2 trades",
+       a3["by_setup"]["Pivot Ready Breakout"]["trades"], 2)
+expect("analytics 3-trade: by_setup 'Ignition Kickoff' has 1 trade",
+       a3["by_setup"]["Ignition Kickoff"]["trades"], 1)
+
+# ── auto_trade_decisions: minimal smoke test on synthetic portfolio ──
+# Build a portfolio with one open position whose stop has been hit;
+# auto-trade should detect and queue the sell. No buys (we don't
+# pass any signals matching BUY criteria).
+class _FakeSig:
+    """Just enough fields for auto_trade_decisions to read."""
+    def __init__(self, symbol, sub_stage, close, pivot_price, pivot_stop,
+                 target_1618=0.0, fib_start=0.0, fib_pivot=0.0,
+                 strength_score=50, margin_im_pct=0, scanned_at="2026-04-27T16:00"):
+        self.symbol = symbol; self.sub_stage = sub_stage
+        self.close = close
+        self.pivot_price = pivot_price; self.pivot_stop = pivot_stop
+        self.target_1618 = target_1618
+        self.fib_start = fib_start; self.fib_pivot = fib_pivot
+        self.strength_score = strength_score
+        self.margin_im_pct = margin_im_pct
+        self.scanned_at = scanned_at
+
+portfolio_with_loser = _new_paper_portfolio()
+portfolio_with_loser["positions"] = [{
+    "trade_id": "abc123", "symbol": "AAA",
+    "entry_price": 10.00, "shares": 100, "cost_basis": 1000.0,
+    "stop_loss": 9.00, "target": 12.00,
+    "entry_date": "2026-04-25T16:00:00+07:00",
+    "status": "open", "setup_name": "Pivot Ready Breakout",
+}]
+# Signal with close BELOW stop → trigger stop_hit
+sig_stopped = _FakeSig("AAA", "STAGE_2_PIVOT_READY", close=8.50,
+                        pivot_price=10.00, pivot_stop=9.00, target_1618=12.00)
+decisions = auto_trade_decisions([sig_stopped], portfolio_with_loser)
+expect("auto_trade: sell queued for stopped position",
+       len(decisions["sells"]), 1)
+expect("auto_trade: sell exit_reason=stop_hit",
+       decisions["sells"][0]["exit_reason"], "stop_hit")
+expect("auto_trade: no buys queued (no BUY-bucket candidates)",
+       len(decisions["buys"]), 0)
+
+# ── execute_auto_trades: actually applies the sell ──
+buys, closes = execute_auto_trades(portfolio_with_loser, decisions,
+                                    scan_ts="2026-04-28T16:00:00+07:00")
+expect("execute: 1 close, 0 buy", (len(buys), len(closes)), (0, 1))
+expect("execute: position removed from portfolio",
+       len(portfolio_with_loser["positions"]), 0)
+expect("execute: closed_trades now has 1 entry",
+       len(portfolio_with_loser["closed_trades"]), 1)
+closed = portfolio_with_loser["closed_trades"][0]
+expect("execute: pnl_thb negative for stop_hit",
+       closed["pnl_thb"] < 0, True,
+       f"pnl_thb={closed['pnl_thb']}")
+expect("execute: cash refunded (8.50 × 100 = 850)",
+       portfolio_with_loser["cash_thb"], 1_000_000.00 + 850.00)
+expect("execute: exit_detail surfaces 'Stop'",
+       "Stop" in (closed.get("exit_detail") or ""),
+       True)
+
+# ── card render smoke tests ──
+test_pos = {"symbol": "BTG", "setup_name": "Pivot Ready Breakout",
+            "entry_price": 25.50, "stop_loss": 24.00, "target": 28.50,
+            "shares": 100, "cost_basis": 2550.0, "at_risk_thb": 150.0}
+expect("trade_open_alert renders bubble",
+       build_trade_open_alert(test_pos)["type"], "bubble")
+test_close = {"symbol": "BTG", "pnl_thb": 2900, "pnl_pct": 11.4,
+              "entry_price": 25.50, "exit_price": 28.40,
+              "realized_r": 1.93, "hold_days": 3, "exit_reason": "target_hit"}
+expect("trade_close_alert (WIN) renders bubble",
+       build_trade_close_alert(test_close)["type"], "bubble")
+test_close_loss = {"symbol": "XYZ", "pnl_thb": -1600, "pnl_pct": -6.3,
+                   "entry_price": 25.50, "exit_price": 23.90,
+                   "realized_r": -1.07, "hold_days": 1, "exit_reason": "stop_hit"}
+expect("trade_close_alert (LOSS) renders bubble",
+       build_trade_close_alert(test_close_loss)["type"], "bubble")
+expect("journal_carousel empty → bubble with 'no trade' message",
+       build_journal_carousel([], "Empty")["type"], "bubble")
+expect("journal_carousel non-empty → bubble or carousel",
+       build_journal_carousel([test_close], "Test")["type"]
+       in {"bubble", "carousel"}, True)
+expect("trade_detail_card renders bubble",
+       build_trade_detail_card(test_close)["type"], "bubble")
+expect("analytics_dashboard renders bubble",
+       build_analytics_dashboard_card(a3)["type"], "bubble")
+expect("analytics_dashboard empty renders bubble",
+       build_analytics_dashboard_card(empty_a)["type"], "bubble")
 
 
 print()

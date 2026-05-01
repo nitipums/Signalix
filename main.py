@@ -971,6 +971,62 @@ async def test_query(cmd: str, x_scan_secret: Optional[str] = Header(default=Non
             "sell":  [_signal_snapshot(s) for s in sell],
         }
 
+    # ── Trade log / journal / analytics (paper-trading auto-trader) ──
+    if c in ("journal", "j", "trades"):
+        from data import load_paper_portfolio
+        portfolio = load_paper_portfolio(_db)
+        opens = list(portfolio.get("positions") or [])
+        closeds = list(portfolio.get("closed_trades") or [])
+        return {
+            "kind": "journal",
+            "label": "Trade Journal",
+            "open_count": len(opens),
+            "closed_count": len(closeds),
+            "starting_cash_thb": portfolio.get("starting_cash_thb"),
+            "cash_thb": portfolio.get("cash_thb"),
+            "max_positions": portfolio.get("max_positions"),  # None = unlimited
+            "max_position_pct": portfolio.get("max_position_pct"),  # None = no cap
+            "first_5_open": [
+                {"symbol": p.get("symbol"),
+                 "setup_name": p.get("setup_name"),
+                 "entry_price": p.get("entry_price"),
+                 "shares": p.get("shares"),
+                 "stop_loss": p.get("stop_loss"),
+                 "target": p.get("target"),
+                 "status": "open"}
+                for p in opens[:5]
+            ],
+            "first_5_closed": [
+                {"symbol": t.get("symbol"),
+                 "setup_name": t.get("setup_name"),
+                 "exit_reason": t.get("exit_reason"),
+                 "pnl_thb": t.get("pnl_thb"),
+                 "pnl_pct": t.get("pnl_pct"),
+                 "realized_r": t.get("realized_r"),
+                 "status": "closed"}
+                for t in closeds[-5:][::-1]
+            ],
+        }
+    if c in ("analytics", "stats", "perf", "performance"):
+        from data import load_paper_portfolio, compute_trade_analytics
+        portfolio = load_paper_portfolio(_db)
+        analytics = compute_trade_analytics(portfolio)
+        # Drop the heavy 'best_trade' / 'worst_trade' dicts to keep the
+        # response small; expose just the symbol + pnl for those.
+        analytics["best_trade"] = (
+            {"symbol": (analytics["best_trade"] or {}).get("symbol"),
+             "pnl_thb": (analytics["best_trade"] or {}).get("pnl_thb")}
+            if analytics.get("best_trade") else None)
+        analytics["worst_trade"] = (
+            {"symbol": (analytics["worst_trade"] or {}).get("symbol"),
+             "pnl_thb": (analytics["worst_trade"] or {}).get("pnl_thb")}
+            if analytics.get("worst_trade") else None)
+        return {
+            "kind": "analytics",
+            "label": "Trade Analytics",
+            **analytics,
+        }
+
     # ── Margin tier filters (Krungsri Marginable Securities List) ─────
     # Lower IM% = more leverage. `margin` (no number) = all marginable.
     MARGIN_TIER_TOKENS = {
@@ -1962,11 +2018,61 @@ async def scan(
     if not body.broadcast:
         return {"scanned": len(signals), "mode": body.mode, "breadth": breadth.__dict__}
 
+    # ── Auto-trading hook (scan-time entries + exits) ──
+    # Runs only when broadcast=true (scheduled scans), NOT during
+    # deploy-time pre-warm (broadcast=false). Decisions are computed
+    # on the latest signals + portfolio; sells fire first to free up
+    # cash for buys. Each entry/exit pushes a broadcast card.
+    auto_trade_summary = {"buys": 0, "sells": 0}
+    try:
+        from data import (auto_trade_decisions, execute_auto_trades,
+                          load_paper_portfolio, save_paper_portfolio,
+                          compute_trade_analytics)
+        from notifier import (build_trade_open_alert, build_trade_close_alert,
+                              broadcast_flex)
+        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
+        decisions = auto_trade_decisions(signals, portfolio)
+        if decisions["buys"] or decisions["sells"]:
+            scan_ts = (signals[0].scanned_at if signals else
+                       datetime.now(BANGKOK_TZ).isoformat())
+            executed_buys, executed_closes = execute_auto_trades(
+                portfolio, decisions, scan_ts)
+            await loop.run_in_executor(None, save_paper_portfolio, _db, portfolio)
+            # Push close alerts FIRST (frees mental space before opens)
+            month_stats = compute_trade_analytics(portfolio)
+            for closed in executed_closes:
+                try:
+                    card = build_trade_close_alert(closed, month_stats)
+                    await loop.run_in_executor(
+                        None, broadcast_flex,
+                        f"{'✅' if (closed.get('pnl_thb') or 0) >= 0 else '🛑'} "
+                        f"Trade Closed · {closed.get('symbol', '')}",
+                        card)
+                except Exception as exc:
+                    logger.error("trade-close broadcast failed (%s): %s",
+                                 closed.get("symbol"), exc)
+            for pos in executed_buys:
+                try:
+                    card = build_trade_open_alert(pos, scan_ts)
+                    await loop.run_in_executor(
+                        None, broadcast_flex,
+                        f"📋 Auto-Buy · {pos.get('symbol', '')}", card)
+                except Exception as exc:
+                    logger.error("trade-open broadcast failed (%s): %s",
+                                 pos.get("symbol"), exc)
+            auto_trade_summary = {"buys": len(executed_buys),
+                                   "sells": len(executed_closes)}
+            logger.info("auto-trade scan: %d buys, %d sells", *auto_trade_summary.values())
+    except Exception as exc:
+        logger.error("auto-trade scan-hook failed: %s", exc, exc_info=True)
+
     # Always broadcast the full report (market + breakouts + fallen + per-user watchlist)
     # regardless of scan_type — every scheduled scan sends the same consistent output
     _broadcast_full_report(breadth, signals)
 
-    return {"scanned": len(signals), "mode": body.mode, "broadcast": body.scan_type}
+    return {"scanned": len(signals), "mode": body.mode,
+            "broadcast": body.scan_type,
+            "auto_trade": auto_trade_summary}
 
 
 @app.post("/sync_ath")
@@ -2127,6 +2233,66 @@ async def monitor_check_endpoint(request: Request):
             state["alerts"] = alerts
             await loop.run_in_executor(None, save_monitor_state, _db, uid, state)
 
+    # ── Auto-trade hook: real-time entries on pivot-cross + exits ──
+    # Overlay live quotes onto the cached signals so auto-trade math
+    # uses the freshest prices for stop/target detection and entry.
+    # Only runs if at least one alert fired (cheap optimization) OR
+    # if there are open positions to check exits on.
+    auto_trade_summary = {"buys": 0, "sells": 0}
+    try:
+        from data import (load_paper_portfolio, save_paper_portfolio,
+                          auto_trade_decisions, execute_auto_trades,
+                          compute_trade_analytics)
+        from notifier import (build_trade_open_alert, build_trade_close_alert,
+                              broadcast_flex)
+        from dataclasses import replace as _dc_replace
+        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
+        has_open = bool(portfolio.get("positions") or [])
+        crossing_set = {row["symbol"] for row in triggered_log}
+        if has_open or crossing_set:
+            # Build overlay-signals with live prices for symbols we have quotes for
+            overlay_signals: list = []
+            for sig in _last_signals:
+                live = (quotes.get(sig.symbol) or {}).get("last")
+                if live and float(live) > 0:
+                    overlay_signals.append(_dc_replace(sig, close=float(live)))
+                else:
+                    overlay_signals.append(sig)
+            decisions = auto_trade_decisions(
+                overlay_signals, portfolio,
+                pivot_crossings=crossing_set)
+            if decisions["buys"] or decisions["sells"]:
+                now_ts = datetime.now(BANGKOK_TZ).isoformat()
+                executed_buys, executed_closes = execute_auto_trades(
+                    portfolio, decisions, now_ts)
+                await loop.run_in_executor(None, save_paper_portfolio, _db, portfolio)
+                month_stats = compute_trade_analytics(portfolio)
+                for closed in executed_closes:
+                    try:
+                        card = build_trade_close_alert(closed, month_stats)
+                        await loop.run_in_executor(
+                            None, broadcast_flex,
+                            f"{'✅' if (closed.get('pnl_thb') or 0) >= 0 else '🛑'} "
+                            f"Trade Closed · {closed.get('symbol', '')}", card)
+                    except Exception as exc:
+                        logger.error("trade-close broadcast failed (%s): %s",
+                                     closed.get("symbol"), exc)
+                for pos in executed_buys:
+                    try:
+                        card = build_trade_open_alert(pos, now_ts)
+                        await loop.run_in_executor(
+                            None, broadcast_flex,
+                            f"📋 Auto-Buy · {pos.get('symbol', '')}", card)
+                    except Exception as exc:
+                        logger.error("trade-open broadcast failed (%s): %s",
+                                     pos.get("symbol"), exc)
+                auto_trade_summary = {"buys": len(executed_buys),
+                                      "sells": len(executed_closes)}
+                logger.info("auto-trade monitor: %d buys, %d sells",
+                            *auto_trade_summary.values())
+    except Exception as exc:
+        logger.error("auto-trade monitor-hook failed: %s", exc, exc_info=True)
+
     return {
         "kind": "monitor_check",
         "session": session_id,
@@ -2134,6 +2300,7 @@ async def monitor_check_endpoint(request: Request):
         "symbols_checked": len(sym_list),
         "alerts_sent": alerts_sent,
         "triggered": triggered_log,
+        "auto_trade": auto_trade_summary,
     }
 
 
@@ -3047,6 +3214,99 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
             logger.error("build_daily_picks_carousel failed: %s", exc, exc_info=True)
             reply_text(reply_token, "ไม่สามารถสร้างการ์ดได้ในขณะนี้")
 
+    elif cmd in ("journal", "j", "trades", "trade log"):
+        # Trade journal — full list (open + last 20 closed) as carousel
+        from data import load_paper_portfolio
+        from notifier import build_journal_carousel
+        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
+        opens = list(portfolio.get("positions") or [])
+        closeds = list(portfolio.get("closed_trades") or [])
+        # Show all open + most recent 20 closed (newest first)
+        for o in opens:
+            o["status"] = "open"
+        for c in closeds:
+            c["status"] = "closed"
+        closeds_recent = sorted(closeds, key=lambda t: t.get("exit_date", ""),
+                                 reverse=True)[:20]
+        all_trades = opens + closeds_recent
+        try:
+            flex = build_journal_carousel(all_trades, "📋 Trade Journal")
+            reply_flex(reply_token, "📋 Trade Journal", flex)
+        except Exception as exc:
+            logger.error("build_journal_carousel failed: %s", exc, exc_info=True)
+            reply_text(reply_token, "ไม่สามารถแสดง journal ได้")
+
+    elif cmd in ("journal open", "j open", "open trades"):
+        from data import load_paper_portfolio
+        from notifier import build_journal_carousel
+        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
+        opens = list(portfolio.get("positions") or [])
+        for o in opens:
+            o["status"] = "open"
+        try:
+            flex = build_journal_carousel(opens, "📋 Open Positions")
+            reply_flex(reply_token, "📋 Open Positions", flex)
+        except Exception as exc:
+            logger.error("journal open failed: %s", exc)
+            reply_text(reply_token, "ไม่สามารถแสดง open trades ได้")
+
+    elif cmd in ("journal closed", "j closed", "closed trades"):
+        from data import load_paper_portfolio
+        from notifier import build_journal_carousel
+        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
+        closeds = list(portfolio.get("closed_trades") or [])
+        for c in closeds:
+            c["status"] = "closed"
+        closeds = sorted(closeds, key=lambda t: t.get("exit_date", ""),
+                         reverse=True)
+        try:
+            flex = build_journal_carousel(closeds, "✅ Closed Trades")
+            reply_flex(reply_token, "✅ Closed Trades", flex)
+        except Exception as exc:
+            logger.error("journal closed failed: %s", exc)
+            reply_text(reply_token, "ไม่สามารถแสดง closed trades ได้")
+
+    elif cmd.startswith("journal ") or cmd.startswith("j "):
+        # journal <SYM> — detail view of last trade for that symbol
+        from data import load_paper_portfolio
+        from notifier import build_trade_detail_card, build_journal_carousel
+        sym = (cmd.replace("journal ", "").replace("j ", "").strip().upper())
+        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
+        opens = [p for p in (portfolio.get("positions") or [])
+                 if p.get("symbol") == sym]
+        closeds = [t for t in (portfolio.get("closed_trades") or [])
+                   if t.get("symbol") == sym]
+        for o in opens:
+            o["status"] = "open"
+        for c in closeds:
+            c["status"] = "closed"
+        all_trades = opens + sorted(closeds, key=lambda t: t.get("exit_date", ""),
+                                     reverse=True)
+        if not all_trades:
+            reply_text(reply_token, f"ไม่มี trade ของ {sym} ใน journal.")
+            return
+        try:
+            if len(all_trades) == 1:
+                flex = build_trade_detail_card(all_trades[0])
+            else:
+                flex = build_journal_carousel(all_trades, f"📋 {sym} trades")
+            reply_flex(reply_token, f"📋 {sym} trades", flex)
+        except Exception as exc:
+            logger.error("journal <SYM> failed: %s", exc)
+            reply_text(reply_token, "ไม่สามารถแสดง trade detail ได้")
+
+    elif cmd in ("analytics", "stats", "perf", "performance"):
+        from data import load_paper_portfolio, compute_trade_analytics
+        from notifier import build_analytics_dashboard_card
+        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
+        analytics = compute_trade_analytics(portfolio)
+        try:
+            flex = build_analytics_dashboard_card(analytics)
+            reply_flex(reply_token, "📊 Trade Analytics", flex)
+        except Exception as exc:
+            logger.error("build_analytics_dashboard_card failed: %s", exc, exc_info=True)
+            reply_text(reply_token, "ไม่สามารถแสดง analytics ได้")
+
     elif cmd in ("portfolio", "port", "p"):
         # Paper-trading portfolio summary
         from data import load_paper_portfolio
@@ -3069,140 +3329,19 @@ async def _handle_text_query(text: str, reply_token: Optional[str], user_id: Opt
                    f"· no open positions · type 'propose' to see trade ideas.")
 
     elif cmd in ("propose", "proposals", "ideas"):
-        # Generate fresh trade proposals from latest scan's BUY bucket
-        # (PIVOT_READY + IGNITION, marginable, sorted by strength score).
-        # Skips symbols already held; computes 1%-risk position size for
-        # each. Returns top 3 as a carousel of proposal cards.
-        from data import (load_paper_portfolio, save_paper_portfolio,
-                          compute_position_size, portfolio_equity)
-        from notifier import build_trade_proposal_card
-        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
-        held_syms = {p.get("symbol") for p in portfolio.get("positions") or []}
-        # Refresh equity from latest prices for accurate sizing
-        last_prices = {s.symbol: s.close for s in _last_signals}
-        equity, _ = portfolio_equity(portfolio, last_prices)
-        max_pos = int(portfolio.get("max_positions") or 5)
-        risk_pct = float(portfolio.get("risk_per_trade_pct") or 1.0)
-        max_pos_pct = float(portfolio.get("max_position_pct") or 20.0)
-        slots_open = max_pos - len(portfolio.get("positions") or [])
-        if slots_open <= 0:
-            reply_text(reply_token,
-                       f"Portfolio is full ({max_pos} positions). "
-                       "Close some before adding more.")
-            return
-        BUY_SUBS = {"STAGE_2_PIVOT_READY", "STAGE_2_IGNITION"}
-        candidates = [
-            s for s in _last_signals
-            if (getattr(s, "margin_im_pct", 0) > 0
-                and getattr(s, "sub_stage", "") in BUY_SUBS
-                and s.symbol not in held_syms
-                and getattr(s, "pivot_price", 0) > 0
-                and getattr(s, "pivot_stop", 0) > 0
-                and getattr(s, "target_1618", 0) > 0)
-        ]
-        candidates.sort(key=lambda s: s.strength_score, reverse=True)
-        proposals: list[dict] = []
-        for s in candidates[:5]:
-            entry = float(s.close)
-            stop = float(s.pivot_stop)
-            target = float(s.target_1618)
-            shares, cost, at_risk = compute_position_size(
-                equity, entry, stop, risk_pct, max_pos_pct)
-            if shares <= 0 or cost > portfolio.get("cash_thb", 0):
-                continue
-            risk = entry - stop
-            reward = target - entry
-            rr = reward / risk if risk > 0 else 0.0
-            if rr < 2.0:  # filter: only propose R:R >= 2:1
-                continue
-            proposals.append({
-                "symbol": s.symbol,
-                "action": "buy",
-                "entry_price": round(entry, 2),
-                "stop": round(stop, 2),
-                "target_1618": round(target, 2),
-                "shares": shares,
-                "cost": round(cost, 2),
-                "at_risk": round(at_risk, 2),
-                "rr_ratio": round(rr, 2),
-                "sub_stage": s.sub_stage,
-                "im_pct": s.margin_im_pct,
-                "rationale": (f"Score {s.strength_score:.0f} · "
-                              f"IM{s.margin_im_pct} · "
-                              f"upside +{(target-entry)/entry*100:.0f}%"),
-                "proposed_at": (s.scanned_at or ""),
-            })
-            if len(proposals) >= min(3, slots_open):
-                break
-        if not proposals:
-            reply_text(reply_token,
-                       "ไม่มี trade idea ที่ผ่าน R:R≥2:1 และมี cash พอใน portfolio วันนี้")
-            return
-        # Persist as pending proposals (replace any prior pending)
-        portfolio["pending_proposals"] = proposals
-        await loop.run_in_executor(None, save_paper_portfolio, _db, portfolio)
-        # Render carousel of proposal cards
-        bubbles = [build_trade_proposal_card(p) for p in proposals]
-        flex = bubbles[0] if len(bubbles) == 1 else {"type": "carousel", "contents": bubbles}
-        reply_flex(reply_token,
-                   f"🎯 {len(proposals)} Trade Proposal{'s' if len(proposals) != 1 else ''}",
-                   flex)
-
-    elif cmd.startswith("approve "):
-        # Approve a pending proposal: deduct cash, add position
-        from data import load_paper_portfolio, save_paper_portfolio
-        sym = cmd.replace("approve ", "").strip().upper()
-        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
-        proposals = portfolio.get("pending_proposals") or []
-        match = next((p for p in proposals if p.get("symbol") == sym), None)
-        if not match:
-            reply_text(reply_token, f"ไม่พบ proposal สำหรับ {sym}. ลอง 'propose' ก่อน")
-            return
-        cost = float(match.get("cost") or 0)
-        if cost > portfolio.get("cash_thb", 0):
-            reply_text(reply_token,
-                       f"Cash ไม่พอ: ต้องการ ฿{cost:,.0f} "
-                       f"แต่มี ฿{portfolio['cash_thb']:,.0f}")
-            return
-        # Open the position
-        new_pos = {
-            "symbol": sym,
-            "entry_date": match.get("proposed_at") or "",
-            "entry_price": match.get("entry_price"),
-            "shares": match.get("shares"),
-            "cost_basis": cost,
-            "stop_loss": match.get("stop"),
-            "target": match.get("target_1618"),
-            "im_pct": match.get("im_pct"),
-            "sub_stage_entry": match.get("sub_stage"),
-            "rationale": match.get("rationale"),
-            "status": "open",
-        }
-        portfolio["cash_thb"] = round(portfolio.get("cash_thb", 0) - cost, 2)
-        portfolio["positions"] = (portfolio.get("positions") or []) + [new_pos]
-        portfolio["pending_proposals"] = [
-            p for p in proposals if p.get("symbol") != sym]
-        await loop.run_in_executor(None, save_paper_portfolio, _db, portfolio)
+        # DEPRECATED: auto-trading replaced the propose/approve flow.
         reply_text(reply_token,
-                   f"✅ BOUGHT {sym}: {match['shares']:,}sh @ ฿{match['entry_price']:.2f} "
-                   f"(฿{cost:,.0f}). Stop ฿{match['stop']:.2f}, "
-                   f"Target ฿{match['target_1618']:.2f}. "
-                   f"Cash left: ฿{portfolio['cash_thb']:,.0f}")
+                   "🤖 Auto-trading is on — trades execute automatically at "
+                   "scan time and on pivot crossings. No approval needed.\n\n"
+                   "Type 'journal' to see trade history, 'portfolio' for "
+                   "current positions, or 'analytics' for performance stats.")
 
-    elif cmd.startswith("skip "):
-        # Skip a pending proposal: just remove from pending list
-        from data import load_paper_portfolio, save_paper_portfolio
-        sym = cmd.replace("skip ", "").strip().upper()
-        portfolio = await loop.run_in_executor(None, load_paper_portfolio, _db)
-        proposals = portfolio.get("pending_proposals") or []
-        before = len(proposals)
-        portfolio["pending_proposals"] = [
-            p for p in proposals if p.get("symbol") != sym]
-        if len(portfolio["pending_proposals"]) == before:
-            reply_text(reply_token, f"ไม่พบ proposal สำหรับ {sym}.")
-            return
-        await loop.run_in_executor(None, save_paper_portfolio, _db, portfolio)
-        reply_text(reply_token, f"⏭️ Skipped {sym}.")
+    elif cmd.startswith("approve ") or cmd.startswith("skip "):
+        # DEPRECATED: legacy approval flow. Friendly redirect.
+        reply_text(reply_token,
+                   "🤖 Auto-trading replaced the approval flow — you don't "
+                   "need to approve trades anymore. Type 'journal' to see "
+                   "what auto-trading did most recently.")
 
     elif cmd.startswith("sell "):
         # Manual sell of an open position at current price
