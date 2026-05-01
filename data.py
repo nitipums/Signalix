@@ -2271,7 +2271,14 @@ def _new_paper_portfolio(starting_cash: float = 1_000_000.0) -> dict:
 
 
 def load_paper_portfolio(db) -> dict:
-    """Load paper portfolio state. Returns a fresh portfolio if none exists."""
+    """Load paper portfolio state. Returns a fresh portfolio if none exists.
+
+    Forward-compat migration:
+      - Older docs may carry max_positions=5 and max_position_pct=20 from
+        the propose/approve era. Auto-trading dropped both caps per user
+        spec ('remove all limits'). Normalize to None on load so the
+        in-memory state reflects current rules.
+    """
     if db is None:
         return _new_paper_portfolio()
     try:
@@ -2283,6 +2290,9 @@ def load_paper_portfolio(db) -> dict:
         defaults = _new_paper_portfolio()
         for k, v in defaults.items():
             data.setdefault(k, v)
+        # One-shot migration: drop legacy caps to None.
+        data["max_positions"] = None
+        data["max_position_pct"] = None
         return data
     except Exception as exc:
         logger.error("load_paper_portfolio failed: %s", exc)
